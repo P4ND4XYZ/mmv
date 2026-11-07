@@ -1,0 +1,110 @@
+use std::{
+    ops::Range,
+    path::{Path, PathBuf},
+};
+
+/// Prototype condition: case-sensitive, non-overlapping literal UTF-8 search.
+pub fn find_matches(text: &str, query: &str) -> Vec<Range<usize>> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    text.match_indices(query)
+        .map(|(start, found)| start..start + found.len())
+        .collect()
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ImageLocation {
+    File(PathBuf),
+    Url(String),
+}
+
+/// The document path must be absolute; relative URLs are resolved against it,
+/// not against the process working directory.
+pub fn resolve_image(document: &Path, source: &str) -> Result<ImageLocation, String> {
+    // A drive-letter path is not a URL scheme on Windows.
+    if Path::new(source).is_absolute() {
+        return Ok(ImageLocation::File(source.into()));
+    }
+    let base = url::Url::from_file_path(document)
+        .map_err(|_| "document path must be absolute".to_string())?;
+    let resolved = base.join(source).map_err(|error| error.to_string())?;
+    match resolved.scheme() {
+        "file" => resolved
+            .to_file_path()
+            .map(ImageLocation::File)
+            .map_err(|_| "invalid file URL".to_string()),
+        "http" | "https" => Ok(ImageLocation::Url(resolved.into())),
+        scheme => Err(format!("unsupported image scheme: {scheme}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn japanese_matches_use_distinct_utf8_byte_ranges() {
+        assert_eq!(find_matches("日本語と日本語", "日本語"), vec![0..9, 12..21]);
+    }
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)] // Expected values are vectors of match ranges, not indices.
+    fn literal_search_conditions_are_explicit() {
+        for (text, query, expected) in [
+            ("aaa", "aa", vec![0..2]),
+            ("a.b A.B", "a.b", vec![0..3]),
+            ("a\nb", "a\nb", vec![0..3]),
+            ("abc", "", vec![]),
+            ("abc", "z", vec![]),
+        ] {
+            assert_eq!(find_matches(text, query), expected, "query={query:?}");
+        }
+    }
+
+    fn document() -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(r"C:\documents\日本語\sample.md")
+        } else {
+            PathBuf::from("/documents/日本語/sample.md")
+        }
+    }
+
+    #[test]
+    fn image_paths_are_document_relative_and_url_decoded() {
+        assert_eq!(
+            resolve_image(&document(), "images/local%20image.svg").unwrap(),
+            ImageLocation::File(document().parent().unwrap().join("images/local image.svg"))
+        );
+        assert_eq!(
+            resolve_image(&document(), "../other.svg").unwrap(),
+            ImageLocation::File(
+                document()
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .join("other.svg")
+            )
+        );
+    }
+
+    #[test]
+    fn absolute_file_and_web_image_sources_are_preserved() {
+        let path = document().with_extension("svg");
+        let url = url::Url::from_file_path(&path).unwrap();
+        assert_eq!(
+            resolve_image(&document(), url.as_str()).unwrap(),
+            ImageLocation::File(path.clone())
+        );
+        assert_eq!(
+            resolve_image(&document(), path.to_str().unwrap()).unwrap(),
+            ImageLocation::File(path)
+        );
+        assert_eq!(
+            resolve_image(&document(), "https://example.com/image.png").unwrap(),
+            ImageLocation::Url("https://example.com/image.png".into())
+        );
+        assert!(resolve_image(&document(), "javascript:alert(1)").is_err());
+    }
+}

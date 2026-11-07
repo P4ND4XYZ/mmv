@@ -4,3 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+gpui-kit = { version = "=0.9.0", features = ["syntect"] }
+reqwest_client = { package = "gpui-pre-reqwest-client", version = "=0.3.11" }
+url = "2.5"
+
+[features]
+ui-tests = ["gpui-kit/test-support"]
+
+[profile.dev]
+debug = "limited"
