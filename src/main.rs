@@ -64,6 +64,10 @@ fn run_gui() -> std::io::Result<()> {
         .with_http_client(Arc::new(reqwest_client::ReqwestClient::new()))
         .run(move |cx| {
             gpui_kit::init(cx);
+            // Never scan TEMP or wait for cleanup on the UI/document-read path.
+            cx.background_executor()
+                .spawn(async { infra::cleanup_mermaid_scratch() })
+                .detach();
             ui::bind_keys(cx);
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {

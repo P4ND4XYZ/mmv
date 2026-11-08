@@ -37,5 +37,5 @@ pub use {
 
 pub use document::read_document;
 pub use logging::log_diagram_failure;
-pub use mermaid::generate_diagram;
+pub use mermaid::{cleanup_mermaid_scratch, generate_diagram};
 pub use watch::{FileWatch, WatchNotice};

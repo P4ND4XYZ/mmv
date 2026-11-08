@@ -1,11 +1,13 @@
 #[cfg(windows)]
 mod process;
+mod scratch;
+
+use scratch::Scratch;
 
 use std::{
     fs::{self, File},
     path::PathBuf,
     process::{Command, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
 
@@ -51,43 +53,27 @@ fn mermaid_command() -> Result<Command, String> {
     }
 }
 
-struct Scratch(PathBuf);
-
-impl Scratch {
-    fn new() -> Result<Self, String> {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        loop {
-            let path = std::env::temp_dir().join(format!(
-                "mmv-mermaid-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-            match fs::create_dir(&path) {
-                Ok(()) => return Ok(Self(path)),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(format!("creating Mermaid temporary directory: {error}")),
-            }
-        }
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        if let Err(error) = fs::remove_dir_all(&self.0) {
-            eprintln!(
-                "removing Mermaid temporary directory {}: {error}",
-                self.0.display()
-            );
-        }
-    }
+/// Run once on a background worker at GUI startup. Cleanup is best-effort and
+/// independent of document reads and diagram generation.
+pub fn cleanup_mermaid_scratch() {
+    scratch::cleanup();
 }
 
 fn render(source: &str, command: &mut Command) -> Result<Vec<u8>, String> {
-    let scratch = Scratch::new()?;
-    let input = scratch.0.join("input.mmd");
-    let output = scratch.0.join("output.png");
-    let config = scratch.0.join("config.json");
-    let stderr = scratch.0.join("stderr.txt");
+    let scratch =
+        Scratch::new().map_err(|error| format!("creating Mermaid temporary directory: {error}"))?;
+    render_with_scratch(source, command, scratch)
+}
+
+fn render_with_scratch(
+    source: &str,
+    command: &mut Command,
+    scratch: Scratch,
+) -> Result<Vec<u8>, String> {
+    let input = scratch.path().join("input.mmd");
+    let output = scratch.path().join("output.png");
+    let config = scratch.path().join("config.json");
+    let stderr = scratch.path().join("stderr.txt");
     fs::write(&input, source).map_err(|error| format!("writing Mermaid source: {error}"))?;
     fs::write(
         &config,
