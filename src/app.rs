@@ -9,7 +9,7 @@ pub use crate::core::{ImageLocation, LinkTarget, resolve_image, resolve_link};
 pub use document::{
     Document, DocumentKey, DocumentOperation, ExternalRequestId, Generation, LoadedDocument,
     OperationError, OperationOrigin, OperationResult, PendingMovementPolicy, PositionRequest,
-    PositionTarget, ReadCompletion, ReadRequest, ReadResult, WatchTarget,
+    PositionTarget, ReadCompletion, ReadRequest, ReadRequestId, ReadResult, WatchTarget,
 };
 #[cfg(test)]
 pub use mermaid::{Diagram, DiagramStatus};

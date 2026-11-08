@@ -5,18 +5,19 @@ use super::{
     security::{Handle, Namespace, UserSecurity},
 };
 use crate::app::ExternalOperation;
-use std::os::windows::process::CommandExt;
+use std::{io, marker::PhantomData, os::windows::ffi::OsStrExt as _, rc::Rc, time::Instant};
+#[cfg(test)]
 use std::{
-    io,
-    marker::PhantomData,
+    os::windows::process::CommandExt,
     process::{Child, Command, Stdio},
-    rc::Rc,
-    time::Instant,
 };
 use windows_sys::Win32::{
     Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT},
     Security::Authorization::SE_KERNEL_OBJECT,
-    System::Threading::{CREATE_NO_WINDOW, CreateMutexW, ReleaseMutex, WaitForSingleObject},
+    System::Threading::{
+        CREATE_NO_WINDOW, CreateMutexW, CreateProcessW, PROCESS_INFORMATION, ReleaseMutex,
+        STARTUPINFOW, WaitForSingleObject,
+    },
 };
 
 /// Must be dropped on the acquiring thread. Abandonment is recovered by the next
@@ -61,27 +62,56 @@ pub fn gui_is_alive(namespace: &Namespace) -> io::Result<bool> {
 }
 
 pub const INTERNAL_GUI_ARGUMENT: &str = "--mmv-internal-gui";
-fn gui_command() -> io::Result<Command> {
-    let mut command = Command::new(std::env::current_exe()?);
-    command
-        .arg(INTERNAL_GUI_ARGUMENT)
-        .creation_flags(CREATE_NO_WINDOW)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    Ok(command)
+fn gui_command() -> io::Result<(Vec<u16>, Vec<u16>)> {
+    let executable: Vec<u16> = std::env::current_exe()?.as_os_str().encode_wide().collect();
+    // Windows filenames cannot contain quotes. Preserve UTF-16 without a lossy
+    // conversion and quote argv[0]; the sole other argument is a fixed constant.
+    let command = std::iter::once(b'"' as u16)
+        .chain(executable.iter().copied())
+        .chain(format!("\" {INTERNAL_GUI_ARGUMENT}").encode_utf16())
+        .chain(Some(0))
+        .collect();
+    Ok((executable.into_iter().chain(Some(0)).collect(), command))
 }
-/// No shell, arbitrary executable, inherited console or inherited standard streams.
-/// Dropping Child does not terminate the independently living GUI.
-pub fn spawn_gui() -> io::Result<Child> {
-    gui_command()?.spawn()
+/// Start the same executable without a shell, console or ANY inherited handles.
+/// Stdio::null alone does not exclude other inheritable handles: retaining a
+/// caller's redirected pipe write-end prevents EOF even after its CLI exits.
+fn spawn_gui() -> io::Result<()> {
+    let (executable, mut command) = gui_command()?;
+    let startup = STARTUPINFOW {
+        cb: size_of::<STARTUPINFOW>() as u32,
+        ..Default::default()
+    };
+    let mut process = PROCESS_INFORMATION::default();
+    // No STARTF_USESTDHANDLES, no inherited handles; GPUI separately uses focus:false.
+    if unsafe {
+        CreateProcessW(
+            executable.as_ptr(),
+            command.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            CREATE_NO_WINDOW,
+            std::ptr::null(),
+            std::ptr::null(),
+            &startup,
+            &mut process,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    // The GUI lives independently; neither handle is needed for arbitration.
+    let _process = Handle::new(process.hProcess)?;
+    let _thread = Handle::new(process.hThread)?;
+    Ok(())
 }
 
 pub fn connect_or_start(
     namespace: &Namespace,
     operation: &ExternalOperation,
 ) -> io::Result<PipeClient> {
-    connect_with(namespace, operation, || spawn_gui().map(|_| ()))
+    connect_with(namespace, operation, spawn_gui)
 }
 fn connect_with(
     namespace: &Namespace,
@@ -321,11 +351,13 @@ mod tests {
         .err()
         .unwrap();
         assert_eq!(error.kind(), io::ErrorKind::NotConnected);
-        let command = gui_command().unwrap();
-        assert_eq!(command.get_program(), std::env::current_exe().unwrap());
+        let (executable, command) = gui_command().unwrap();
+        let expected = std::env::current_exe().unwrap();
+        let units: Vec<u16> = expected.as_os_str().encode_wide().chain(Some(0)).collect();
+        assert_eq!(executable, units);
         assert_eq!(
-            command.get_args().collect::<Vec<_>>(),
-            [INTERNAL_GUI_ARGUMENT]
+            String::from_utf16(&command[..command.len() - 1]).unwrap(),
+            format!("\"{}\" {INTERNAL_GUI_ARGUMENT}", expected.display())
         );
     }
 }

@@ -3,48 +3,34 @@ mod mermaid;
 mod watch;
 
 #[cfg(windows)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Deadline API is reserved for the next product CLI wiring step"
-    )
-)]
 mod deadline;
 #[cfg(windows)]
-#[expect(
-    dead_code,
-    reason = "Windows instance API is not wired into main until the next session"
-)]
 mod instance;
 #[cfg(windows)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Windows transport API is not wired into GUI delivery until the next session"
-    )
-)]
 mod ipc;
 #[cfg(windows)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Production namespace is reserved for the next product startup wiring step"
-    )
-)]
 mod security;
 
+#[cfg(all(windows, test, feature = "ui-tests"))]
+pub use ipc::PipeClient;
+
+#[cfg(all(windows, test, feature = "ui-tests"))]
+pub(crate) mod test_support {
+    use super::{Deadline, Namespace};
+
+    pub fn namespace() -> Namespace {
+        Namespace::isolated()
+    }
+
+    pub fn deadline(duration: std::time::Duration) -> Deadline {
+        Deadline::after(duration)
+    }
+}
 #[cfg(windows)]
-#[expect(
-    unused_imports,
-    reason = "Public Windows foundation exports for the next CLI/GUI wiring step"
-)]
 pub use {
     deadline::Deadline,
-    instance::{INTERNAL_GUI_ARGUMENT, InstanceGuard, connect_or_start, gui_is_alive, spawn_gui},
-    ipc::{Incoming, PipeClient, PipeServer, Reply, Request, Response},
+    instance::{INTERNAL_GUI_ARGUMENT, InstanceGuard, connect_or_start},
+    ipc::{PipeServer, Reply, Request, Response},
     security::Namespace,
 };
 

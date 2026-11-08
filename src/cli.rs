@@ -79,13 +79,6 @@ impl From<clap::Error> for CliOutput {
 
 /// `cwd` is the invoking CLI's absolute working directory, not the GUI's.
 /// Resolve paths without requiring that the file exists; reading belongs to infra.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Formal CLI is connected to main after Windows IPC/instance implementation."
-    )
-)]
 pub fn parse_from<I, T>(args: I, cwd: &Path) -> Result<ExternalOperation, CliOutput>
 where
     I: IntoIterator<Item = T>,
@@ -128,13 +121,6 @@ where
 }
 
 /// Call only for a completed operation/read (never for OperationResult::Pending).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "CLI execution output is consumed by main after IPC response wiring."
-    )
-)]
 pub fn execution_output(outcome: Result<(), impl Display>) -> CliOutput {
     match outcome {
         Ok(()) => CliOutput {

@@ -37,8 +37,13 @@ use windows_sys::Win32::{
 pub struct Reply {
     id: crate::app::ExternalRequestId,
     sender: mpsc::SyncSender<Response>,
+    alive: Arc<std::sync::atomic::AtomicBool>,
 }
 impl Reply {
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     pub fn send(self, response: Response) -> stdio::Result<()> {
         if response.id != self.id {
             return Err(invalid("reply request ID mismatch"));
@@ -144,9 +149,13 @@ impl PipeServer {
             active,
         })
     }
+    /// Nonblocking cancellation; move the server off the UI thread before joining.
+    pub fn request_shutdown(&self) {
+        self.stop.signal();
+    }
     /// Cancels outstanding I/O, drains final completions, and joins every worker.
     pub fn shutdown(&mut self) {
-        self.stop.signal();
+        self.request_shutdown();
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -214,12 +223,21 @@ fn serve(
     let id = request.id.clone();
     let deadline = Deadline::response(Instant::now());
     let (sender, response) = mpsc::sync_channel(1);
+    struct Alive(Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for Alive {
+        fn drop(&mut self) {
+            self.0.store(false, std::sync::atomic::Ordering::Release);
+        }
+    }
+    // Covers every return path: disconnect, timeout, shutdown and normal receipt.
+    let alive = Alive(Arc::new(std::sync::atomic::AtomicBool::new(true)));
     incoming
         .try_send(Ok(Incoming {
             request,
             reply: Reply {
                 id: id.clone(),
                 sender,
+                alive: alive.0.clone(),
             },
         }))
         .map_err(|_| {

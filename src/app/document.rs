@@ -31,7 +31,6 @@ pub struct ReadRequest {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OperationOrigin {
-    Initial,
     Keyboard,
     Link,
     External,

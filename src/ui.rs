@@ -76,20 +76,11 @@ impl Viewer {
         }
     }
 
-    pub fn open(&mut self, cx: &mut Context<Self>) {
-        self.request_operation(
-            DocumentOperation::Initial(self.path.clone()),
-            OperationOrigin::Initial,
-            None,
-            cx,
-        );
-    }
-
     #[cfg_attr(
         not(all(test, feature = "ui-tests")),
         expect(
             dead_code,
-            reason = "External request adapter is exercised by UI tests; IPC is connected in stage 5."
+            reason = "Convenience adapter used by UI tests; production IPC uses request_external."
         )
     )]
     pub fn request_document(
@@ -106,15 +97,9 @@ impl Viewer {
         )
     }
 
-    /// IPC receives Complete synchronously, or waits for the existing ReadCompletion
-    /// event carrying the same external ID. This adapter never changes input focus.
-    #[cfg_attr(
-        not(all(test, feature = "ui-tests")),
-        expect(
-            dead_code,
-            reason = "Public external operations are connected by main after Windows IPC implementation."
-        )
-    )]
+    /// IPC receives Complete synchronously, or waits for ReadCompletion keyed by
+    /// the returned ReadRequestId (external IDs can collide across connections).
+    /// This adapter never changes input focus.
     pub fn request_external(
         &mut self,
         operation: ExternalOperation,
@@ -122,6 +107,9 @@ impl Viewer {
         cx: &mut Context<Self>,
     ) -> OperationResult {
         let operation = match operation {
+            ExternalOperation::Open(path) if self.app.document().is_none() => {
+                DocumentOperation::Initial(path)
+            }
             ExternalOperation::Open(path) => DocumentOperation::Open(path),
             ExternalOperation::Back => DocumentOperation::Back,
             ExternalOperation::Forward => DocumentOperation::Forward,

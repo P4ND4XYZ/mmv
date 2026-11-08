@@ -4,6 +4,7 @@ mod history;
 mod modes;
 mod operations;
 mod phase_one;
+mod production;
 
 use std::{cell::RefCell, path::PathBuf, rc::Rc, time::Instant};
 
