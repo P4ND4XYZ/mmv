@@ -2,16 +2,23 @@ use std::{
     collections::{BTreeMap, VecDeque},
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::Instant,
 };
 
 use crate::core::HeadingIds;
+use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::{
-    base::text::editor_host::{BlockNode, parse_markdown},
-    component::text::{MarkdownExtensions, TextView, TextViewState, TextViewStyle},
+    base::text::{
+        TextView,
+        editor_host::{BlockNode, parse_markdown},
+    },
+    component::text::{
+        MarkdownExtensions, MarkdownNode, MarkdownParseContext, MarkdownPlugin, TextViewState,
+        markdown_ast,
+    },
 };
 use gpui_kit::{prelude::*, *};
 
@@ -52,7 +59,34 @@ pub(super) struct DocumentView {
 pub(super) struct DocumentAnalysis {
     pub generation: Generation,
     pub blocks: Vec<Option<std::ops::Range<usize>>>,
+    pub links: Vec<std::ops::Range<usize>>,
     headings: BTreeMap<String, HeadingLocation>,
+}
+
+struct LinkRanges(Arc<Mutex<Vec<std::ops::Range<usize>>>>);
+
+impl MarkdownPlugin for LinkRanges {
+    fn name(&self) -> &str {
+        "mmv-link-ranges"
+    }
+
+    fn parse(
+        &self,
+        node: &markdown_ast::Node,
+        cx: &MarkdownParseContext<'_>,
+    ) -> Option<MarkdownNode> {
+        if matches!(
+            node,
+            markdown_ast::Node::Link(_) | markdown_ast::Node::LinkReference(_)
+        ) && let Some(position) = node.position()
+        {
+            self.0
+                .lock()
+                .expect("link ranges")
+                .push(cx.offset() + position.start.offset..cx.offset() + position.end.offset);
+        }
+        None
+    }
 }
 
 struct HeadingLocation {
@@ -165,10 +199,13 @@ impl Viewer {
         if snapshot.source() != document.source {
             return Err("本文を解析中です".into());
         }
-        let extensions = MarkdownExtensions::default().plugin(MermaidPlugin {
-            discovered: Default::default(),
-            images: Default::default(),
-        });
+        let links = Arc::new(Mutex::new(Vec::new()));
+        let extensions = MarkdownExtensions::default()
+            .plugin(MermaidPlugin {
+                discovered: Default::default(),
+                images: Default::default(),
+            })
+            .plugin(LinkRanges(links.clone()));
         let blocks = parse_markdown(&document.source, extensions.into())
             .map_err(|error| format!("文書の位置を取得できません: {error}"))?;
         let mut ids = HeadingIds::default();
@@ -223,6 +260,12 @@ impl Viewer {
             blocks: blocks
                 .iter()
                 .map(|block| block.span().map(|span| span.start..span.end))
+                .collect(),
+            links: links
+                .lock()
+                .expect("link ranges")
+                .iter()
+                .filter_map(|range| snapshot.range_for_source(range.clone()))
                 .collect(),
             headings,
         });
@@ -373,6 +416,7 @@ impl Viewer {
                     }
                 } else {
                     list.set_offset_from_scrollbar(point(px(0.), px(0.)));
+                    self.message_is_error = false;
                     self.message = Some(format!("見出しが見つかりません: {id}"));
                 }
             }
@@ -457,6 +501,7 @@ impl Viewer {
         code_style.display = Some(Display::Flex);
         code_style.flex_direction = Some(FlexDirection::Row);
         code_style.text.white_space = Some(WhiteSpace::Nowrap);
+        let style = self.palette.text_style(cx.theme(), table_style, code_style);
 
         input::bind_body_actions(div(), cx)
             .debug_selector(|| "document-body".to_string())
@@ -475,11 +520,7 @@ impl Viewer {
             .when(centered, |body| body.justify_center())
             .child(
                 TextView::new(&self.document.text)
-                    .style(
-                        TextViewStyle::default()
-                            .table(table_style)
-                            .code_block(code_style),
-                    )
+                    .style(style)
                     .plugin(MermaidPlugin {
                         discovered: self.document.discovered_diagrams.clone(),
                         images: self.document.diagram_images.clone(),

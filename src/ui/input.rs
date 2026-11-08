@@ -177,11 +177,13 @@ impl Viewer {
                     Err(error) => {
                         self.cancel_input(window, cx);
                         self.message = Some(error);
+                        self.message_is_error = true;
                         return;
                     }
                 };
                 let outcome = self.app.confirm_search(input, from);
                 self.apply_search(outcome == SearchOutcome::Found, cx);
+                self.message_is_error = false;
                 self.message = match outcome {
                     SearchOutcome::Found => None,
                     SearchOutcome::NotFound => Some("一致する文字列がありません".into()),
@@ -200,7 +202,10 @@ impl Viewer {
                         self.apply_search(false, cx);
                         self.message = None;
                     }
-                    _ => self.message = Some(format!("未対応のコマンド: :{input}")),
+                    _ => {
+                        self.message_is_error = false;
+                        self.message = Some(format!("未対応のコマンド: :{input}"));
+                    }
                 }
             }
             Mode::Normal => return,

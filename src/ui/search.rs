@@ -1,4 +1,5 @@
-use gpui_kit::{Context, component::text::RangeHighlight, rgb};
+use crate::config::Group;
+use gpui_kit::{Context, component::text::RangeHighlight};
 
 use super::Viewer;
 
@@ -36,25 +37,16 @@ impl Viewer {
         if self.document.text.read(cx).rendered_text().source() != document.source {
             return;
         }
-        let current = self.app.current_match();
-        let highlights = self
+        if let Err(error) = self.analyze_document(cx) {
+            self.display_error = Some(error);
+            return;
+        }
+        let highlights = self.range_highlights();
+        let target = self
             .app
-            .matches()
-            .iter()
-            .filter(|_| self.app.highlights_visible())
-            .enumerate()
-            .map(|(ix, range)| {
-                RangeHighlight::new(
-                    range.clone(),
-                    if Some(ix) == current {
-                        rgb(0xffb347).opacity(0.65)
-                    } else {
-                        rgb(0xffe28a).opacity(0.45)
-                    },
-                )
-            })
-            .collect::<Vec<_>>();
-        let target = current.and_then(|ix| self.app.matches().get(ix)).cloned();
+            .current_match()
+            .and_then(|ix| self.app.matches().get(ix))
+            .cloned();
         let result = self.document.text.update(cx, |text, cx| {
             text.set_range_highlights(highlights, cx)?;
             if let Some(target) = target.filter(|_| reveal) {
@@ -63,5 +55,39 @@ impl Viewer {
             Ok::<_, gpui_kit::component::text::RangeHighlightError>(())
         });
         self.display_error = result.err().map(|error| error.to_string());
+    }
+
+    pub(super) fn range_highlights(&self) -> Vec<RangeHighlight> {
+        let link = self.palette.get(Group::Link).bg;
+        let mut highlights = self
+            .document
+            .analysis
+            .as_ref()
+            .expect("current analysis")
+            .links
+            .iter()
+            .cloned()
+            .map(|range| RangeHighlight::new(range, link))
+            .collect::<Vec<_>>();
+        highlights.extend(
+            self.app
+                .matches()
+                .iter()
+                .filter(|_| self.app.highlights_visible())
+                .enumerate()
+                .map(|(ix, range)| {
+                    RangeHighlight::new(
+                        range.clone(),
+                        self.palette
+                            .get(if Some(ix) == self.app.current_match() {
+                                Group::SearchCurrent
+                            } else {
+                                Group::Search
+                            })
+                            .bg,
+                    )
+                }),
+        );
+        highlights
     }
 }

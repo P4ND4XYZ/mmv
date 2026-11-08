@@ -3,6 +3,7 @@ mod input;
 mod mermaid;
 mod search;
 mod status;
+mod theme;
 
 use std::{path::PathBuf, sync::Arc, time::Instant};
 
@@ -30,12 +31,10 @@ pub struct Viewer {
     input: Prompt,
     body_focus: FocusHandle,
     message: Option<String>,
+    message_is_error: bool,
     display_error: Option<String>,
-    #[expect(
-        dead_code,
-        reason = "Consumed by the display and theme implementation stages."
-    )]
     config: crate::config::Config,
+    palette: theme::Palette,
     config_notice: bool,
     // Links wait for an unresolved heading's layout so history records a
     // measured departure distance, not the new TextView's temporary zero.
@@ -76,6 +75,12 @@ impl Viewer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let mode = match config.colorscheme {
+            crate::config::ColorScheme::Dark => gpui_kit::component::ThemeMode::Dark,
+            crate::config::ColorScheme::Light => gpui_kit::component::ThemeMode::Light,
+        };
+        gpui_kit::component::Theme::change(mode, None, cx);
+        let palette = theme::Palette::resolve(&config, cx.theme());
         let document = DocumentView::new(started, cx);
         let input = Prompt::new(window, cx);
         let body_focus = cx.focus_handle();
@@ -87,8 +92,10 @@ impl Viewer {
             input,
             body_focus,
             message: None,
+            message_is_error: false,
             display_error: None,
             config,
+            palette,
             config_notice,
             deferred_links: Default::default(),
             next_operation_order: 0,
@@ -360,6 +367,23 @@ impl Viewer {
         }
     }
 
+    fn status_severity(&self) -> Option<crate::config::Group> {
+        use crate::config::Group;
+        if self.app.error().is_some() || self.display_error.is_some() {
+            Some(Group::Error)
+        } else if self.message.is_some() {
+            Some(if self.message_is_error {
+                Group::Error
+            } else {
+                Group::Warning
+            })
+        } else if self.config_notice {
+            Some(Group::Error)
+        } else {
+            None
+        }
+    }
+
     fn status_text(&self) -> String {
         self.app
             .error()
@@ -400,19 +424,25 @@ impl Render for Viewer {
             .map(|doc| doc.path.clone())
             .unwrap_or_else(|| self.path.clone());
         let status = self.status_text();
-
+        let severity = self.status_severity();
+        let normal = self.palette.get(crate::config::Group::Normal);
         let body = self.render_document(path.clone(), window.viewport_size().width, cx);
-        let status_line = status::render_status_line(&self.app.mode, &path, cx);
-        let command_line =
-            status::render_command_line(&self.app.mode, &self.input.state, status, cx);
+        let status_line = status::render_status_line(&self.app.mode, &path, &self.palette);
+        let command_line = status::render_command_line(
+            &self.app.mode,
+            &self.input.state,
+            status,
+            severity,
+            &self.palette,
+        );
 
         input::bind_root_actions(div(), cx)
             .key_context("Evaluation")
             .size_full()
             .flex()
             .flex_col()
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
+            .bg(normal.bg)
+            .text_color(normal.fg)
             .font_family("Yu Gothic UI")
             .child(body)
             .child(status_line)

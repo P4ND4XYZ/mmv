@@ -61,7 +61,12 @@ fn all_documented_groups_are_accepted() {
     ];
     let mut script = String::from("local m=require('mmv')\n");
     for group in groups {
-        script.push_str(&format!("m.set_hl('{group}', {{fg='#123456'}})\n"));
+        let attributes = match group {
+            "Search" | "SearchCurrent" => "bg='#123456'",
+            "Border" => "fg='#123456'",
+            _ => "fg='#123456',bg='#654321'",
+        };
+        script.push_str(&format!("m.set_hl('{group}', {{{attributes}}})\n"));
     }
     assert_eq!(run(&script).unwrap().highlights.len(), groups.len());
 }
@@ -83,6 +88,9 @@ fn invalid_values_reject_the_entire_script_even_if_caught() {
         "m.setup({view={max_width=1/0}})",
         "m.set_hl('NoSuch',{})",
         "m.set_hl('Normal',{bold=true})",
+        "m.set_hl('Search',{fg='#123456'})",
+        "m.set_hl('SearchCurrent',{fg='#123456'})",
+        "m.set_hl('Border',{bg='#123456'})",
         "m.set_hl('Normal',{[1]='x'})",
         "m.set_hl('Normal',{fg=123})",
         "m.set_hl('Normal',{fg='#123'})",

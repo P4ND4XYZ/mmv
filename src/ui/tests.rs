@@ -7,6 +7,7 @@ mod modes;
 mod operations;
 mod phase_one;
 mod production;
+mod theme;
 
 use std::{cell::RefCell, path::PathBuf, rc::Rc, time::Instant};
 

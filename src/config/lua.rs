@@ -141,6 +141,12 @@ fn set_hl(config: &mut Config, args: MultiValue) -> Result<(), String> {
     for pair in table(args.next().unwrap(), "highlight attributes")?.pairs::<Value, Value>() {
         let (key, value) = pair.map_err(|e| e.to_string())?;
         match string(key, "highlight attribute")?.as_str() {
+            "fg" if matches!(group, Group::Search | Group::SearchCurrent) => {
+                return Err(format!("{name}: fg is not supported"));
+            }
+            "bg" if group == Group::Border => {
+                return Err(format!("{name}: bg is not supported"));
+            }
             "fg" => highlight.fg = Some(color(value)?),
             "bg" => highlight.bg = Some(color(value)?),
             key => return Err(format!("unknown highlight attribute: {key}")),
