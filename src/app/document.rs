@@ -43,25 +43,8 @@ pub enum DocumentOperation {
     Initial(PathBuf),
     Open(PathBuf),
     Reload,
-    Heading {
-        path: Option<PathBuf>,
-        id: String,
-    },
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "History keys and external commands are connected in stages 4/5."
-        )
-    )]
+    Heading { path: Option<PathBuf>, id: String },
     Back,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "History keys and external commands are connected in stages 4/5."
-        )
-    )]
     Forward,
 }
 

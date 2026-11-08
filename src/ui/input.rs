@@ -2,7 +2,7 @@ use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::{prelude::*, *};
 
 use super::Viewer;
-use crate::app::{Mode, SearchOutcome};
+use crate::app::{DocumentOperation, Mode, OperationOrigin, SearchOutcome};
 
 actions!(
     evaluation,
@@ -12,6 +12,8 @@ actions!(
         NextMatch,
         PreviousMatch,
         Reload,
+        Back,
+        Forward,
         ScrollDown,
         ScrollUp,
         HalfPageDown,
@@ -30,6 +32,8 @@ pub fn bind_keys(cx: &mut gpui_kit::App) {
         KeyBinding::new("n", NextMatch, Some("EvaluationNormal")),
         KeyBinding::new("shift-n", PreviousMatch, Some("EvaluationNormal")),
         KeyBinding::new("f5", Reload, Some("EvaluationNormal")),
+        KeyBinding::new("ctrl-o", Back, Some("EvaluationNormal")),
+        KeyBinding::new("ctrl-i", Forward, Some("EvaluationNormal")),
         KeyBinding::new("j", ScrollDown, Some("EvaluationNormal")),
         KeyBinding::new("k", ScrollUp, Some("EvaluationNormal")),
         KeyBinding::new("ctrl-d", HalfPageDown, Some("EvaluationNormal")),
@@ -121,6 +125,12 @@ pub(super) fn bind_body_actions(body: Div, cx: &mut Context<Viewer>) -> Div {
     .on_action(cx.listener(|this, _: &PageUp, _, cx| this.scroll_input(0., -1., cx)))
     .on_action(cx.listener(|this, _: &FirstLine, _, cx| this.scroll_edge_input(false, cx)))
     .on_action(cx.listener(|this, _: &LastLine, _, cx| this.scroll_edge_input(true, cx)))
+    .on_action(cx.listener(|this, _: &Back, _, cx| {
+        this.history_input(DocumentOperation::Back, cx);
+    }))
+    .on_action(cx.listener(|this, _: &Forward, _, cx| {
+        this.history_input(DocumentOperation::Forward, cx);
+    }))
     .on_action(cx.listener(|this, _: &NextMatch, _, cx| this.step_match(true, cx)))
     .on_action(cx.listener(|this, _: &PreviousMatch, _, cx| this.step_match(false, cx)))
 }
@@ -199,6 +209,12 @@ impl Viewer {
         self.app.step_match(forward);
         self.apply_search(true, cx);
         cx.notify();
+    }
+
+    fn history_input(&mut self, operation: DocumentOperation, cx: &mut Context<Self>) {
+        if self.app.mode == Mode::Normal {
+            self.request_operation(operation, OperationOrigin::Keyboard, None, cx);
+        }
     }
 
     fn scroll_input(&mut self, lines: f32, pages: f32, cx: &mut Context<Self>) {
