@@ -39,6 +39,36 @@ pub fn resolve_image(document: &Path, source: &str) -> Result<ImageLocation, Str
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum LinkTarget {
+    File(PathBuf),
+    Web(String),
+    Heading,
+}
+
+/// Local files are opened from the beginning; fragment navigation is not yet supported.
+pub fn resolve_link(document: &Path, source: &str) -> Result<LinkTarget, String> {
+    if source.is_empty() || source.starts_with('#') {
+        return Ok(LinkTarget::Heading);
+    }
+    // A drive-letter path is not a URL scheme on Windows.
+    let path = source.split_once('#').map_or(source, |(path, _)| path);
+    if Path::new(path).is_absolute() {
+        return Ok(LinkTarget::File(path.into()));
+    }
+    let base = url::Url::from_file_path(document)
+        .map_err(|_| "document path must be absolute".to_string())?;
+    let resolved = base.join(source).map_err(|error| error.to_string())?;
+    match resolved.scheme() {
+        "file" => resolved
+            .to_file_path()
+            .map(LinkTarget::File)
+            .map_err(|_| "invalid file URL".to_string()),
+        "http" | "https" => Ok(LinkTarget::Web(resolved.into())),
+        scheme => Err(format!("unsupported link scheme: {scheme}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -67,6 +97,64 @@ mod tests {
             PathBuf::from(r"C:\documents\日本語\sample.md")
         } else {
             PathBuf::from("/documents/日本語/sample.md")
+        }
+    }
+
+    #[test]
+    fn local_links_resolve_from_the_displayed_document_and_strip_fragments() {
+        for (source, expected) in [
+            (
+                "notes/日本語%20memo.md",
+                document().parent().unwrap().join("notes/日本語 memo.md"),
+            ),
+            (
+                "../other.md#section",
+                document()
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .join("other.md"),
+            ),
+        ] {
+            assert_eq!(
+                resolve_link(&document(), source).unwrap(),
+                LinkTarget::File(expected)
+            );
+        }
+        let path = document().with_file_name("other.md");
+        let mut file_url = url::Url::from_file_path(&path).unwrap();
+        file_url.set_fragment(Some("section"));
+        let absolute_with_fragment = format!("{}#section", path.display());
+        for source in [
+            path.to_str().unwrap(),
+            &absolute_with_fragment,
+            file_url.as_str(),
+        ] {
+            assert_eq!(
+                resolve_link(&document(), source).unwrap(),
+                LinkTarget::File(path.clone())
+            );
+        }
+    }
+
+    #[test]
+    fn web_and_heading_links_do_not_become_local_files() {
+        let web = "https://example.com/page?q=value#section";
+        assert_eq!(
+            resolve_link(&document(), web).unwrap(),
+            LinkTarget::Web(web.into())
+        );
+        assert_eq!(
+            resolve_link(&document(), "#見出し").unwrap(),
+            LinkTarget::Heading
+        );
+        for source in [
+            "javascript:alert(1)",
+            "mailto:user@example.com",
+            "https://[",
+        ] {
+            assert!(resolve_link(&document(), source).is_err(), "{source}");
         }
     }
 

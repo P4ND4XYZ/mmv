@@ -1,7 +1,7 @@
-use std::{ops::Range, path::PathBuf};
+use std::{collections::BTreeMap, ops::Range, path::PathBuf};
 
 use crate::core::find_matches;
-pub use crate::core::{ImageLocation, resolve_image};
+pub use crate::core::{ImageLocation, LinkTarget, resolve_image, resolve_link};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Generation(u64);
@@ -23,12 +23,71 @@ pub struct Document {
     pub source: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiagramRequest {
+    pub generation: Generation,
+    pub path: PathBuf,
+    /// Full-document UTF-8 byte offset of the fenced code block.
+    pub start: usize,
+    pub source: String,
+}
+
+pub struct DiagramResult {
+    pub request: DiagramRequest,
+    pub png: Result<Vec<u8>, String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiagramStatus {
+    Pending,
+    Running,
+    Ready,
+    Failed,
+}
+
+pub struct Diagram {
+    pub source: String,
+    pub status: DiagramStatus,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Mode {
+    #[default]
+    Normal,
+    Search {
+        previous_match: Option<(Generation, Range<usize>)>,
+    },
+    Command,
+}
+
+impl Mode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Normal => "NORMAL",
+            Self::Search { .. } => "SEARCH",
+            Self::Command => "COMMAND",
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum SearchOutcome {
+    Found,
+    NotFound,
+    NoPreviousQuery,
+}
+
 #[derive(Default)]
 pub struct App {
     next_generation: u64,
     pending: Option<ReadRequest>,
     pub document: Option<Document>,
     pub error: Option<String>,
+    pub diagrams: BTreeMap<usize, Diagram>,
+    // Kept across document replacement to serialize external processes.
+    diagram_in_flight: Option<DiagramRequest>,
+    pub mode: Mode,
+    confirmed_query: String,
     query: String,
     rendered: Option<(Generation, String)>,
     pub matches: Vec<Range<usize>>,
@@ -62,6 +121,7 @@ impl App {
                     path: result.request.path,
                     source,
                 });
+                self.diagrams.clear();
                 self.rendered = None;
                 self.matches.clear();
                 self.current_match = None;
@@ -74,8 +134,124 @@ impl App {
         }
     }
 
+    pub fn discover_diagrams(&mut self, sources: BTreeMap<usize, String>) {
+        for (start, source) in sources {
+            self.diagrams.entry(start).or_insert(Diagram {
+                source,
+                status: DiagramStatus::Pending,
+            });
+        }
+    }
+
+    pub fn next_diagram(&mut self) -> Option<DiagramRequest> {
+        if self.diagram_in_flight.is_some() || self.is_loading() {
+            return None;
+        }
+        let document = self.document.as_ref()?;
+        let (&start, diagram) = self
+            .diagrams
+            .iter_mut()
+            .find(|(_, diagram)| diagram.status == DiagramStatus::Pending)?;
+        diagram.status = DiagramStatus::Running;
+        let request = DiagramRequest {
+            generation: document.generation,
+            path: document.path.clone(),
+            start,
+            source: diagram.source.clone(),
+        };
+        self.diagram_in_flight = Some(request.clone());
+        Some(request)
+    }
+
+    /// Releases the serial worker even for stale completions; only current results are accepted.
+    pub fn complete_diagram(&mut self, result: &DiagramResult) -> bool {
+        if self.diagram_in_flight.as_ref() != Some(&result.request) {
+            return false;
+        }
+        self.diagram_in_flight = None;
+        let Some(document) = &self.document else {
+            return false;
+        };
+        if document.generation != result.request.generation || document.path != result.request.path
+        {
+            return false;
+        }
+        let Some(diagram) = self.diagrams.get_mut(&result.request.start) else {
+            return false;
+        };
+        if diagram.source != result.request.source {
+            return false;
+        }
+        diagram.status = if result.png.is_ok() {
+            DiagramStatus::Ready
+        } else {
+            DiagramStatus::Failed
+        };
+        true
+    }
+
     pub fn is_loading(&self) -> bool {
         self.pending.is_some()
+    }
+
+    pub fn begin_search(&mut self) {
+        if self.mode != Mode::Normal {
+            return;
+        }
+        let previous_match = self
+            .current_match
+            .and_then(|ix| self.matches.get(ix))
+            .cloned()
+            .and_then(|range| self.document.as_ref().map(|doc| (doc.generation, range)));
+        self.mode = Mode::Search { previous_match };
+        self.set_query(String::new());
+    }
+
+    pub fn preview_search(&mut self, query: String) {
+        if matches!(self.mode, Mode::Search { .. }) {
+            self.set_query(query);
+        }
+    }
+
+    pub fn confirm_search(&mut self, query: String, from: usize) -> SearchOutcome {
+        if !query.is_empty() {
+            self.confirmed_query = query;
+        }
+        self.mode = Mode::Normal;
+        self.set_query(self.confirmed_query.clone());
+        if self.query.is_empty() {
+            return SearchOutcome::NoPreviousQuery;
+        }
+        if self.matches.is_empty() {
+            return SearchOutcome::NotFound;
+        }
+        self.current_match = Some(
+            self.matches
+                .iter()
+                .position(|range| range.start >= from)
+                .unwrap_or(0),
+        );
+        SearchOutcome::Found
+    }
+
+    pub fn begin_command(&mut self) {
+        if self.mode == Mode::Normal {
+            self.mode = Mode::Command;
+        }
+    }
+
+    pub fn cancel_input(&mut self) {
+        if let Mode::Search { previous_match } = std::mem::take(&mut self.mode) {
+            self.set_query(self.confirmed_query.clone());
+            if let Some((generation, range)) = previous_match
+                && self
+                    .document
+                    .as_ref()
+                    .is_some_and(|doc| doc.generation == generation)
+            {
+                self.current_match = self.matches.iter().position(|found| *found == range);
+            }
+        }
     }
 
     pub fn set_query(&mut self, query: String) {
@@ -167,6 +343,107 @@ mod tests {
         assert_eq!(app.document.as_ref().unwrap().source, "retained");
         assert_eq!(app.error.as_deref(), Some("unreadable"));
         assert!(!app.is_loading());
+    }
+
+    #[test]
+    fn diagrams_run_serially_and_failure_does_not_hide_the_document_or_retry() {
+        let mut app = App::default();
+        let read = app.open("sample.md".into());
+        app.complete(success(read, "retained body"));
+        app.discover_diagrams(BTreeMap::from([
+            (10, "flowchart TD\nA --> B".into()),
+            (80, "classDiagram\nA --> B".into()),
+        ]));
+        let first = app.next_diagram().unwrap();
+        assert_eq!(first.start, 10);
+        assert!(app.next_diagram().is_none());
+        assert!(app.complete_diagram(&DiagramResult {
+            request: first,
+            png: Err("syntax error".into()),
+        }));
+        assert_eq!(app.diagrams[&10].status, DiagramStatus::Failed);
+        assert_eq!(app.document.as_ref().unwrap().source, "retained body");
+        let second = app.next_diagram().unwrap();
+        assert_eq!(second.start, 80);
+        assert!(app.complete_diagram(&DiagramResult {
+            request: second,
+            png: Ok(vec![1]),
+        }));
+        app.discover_diagrams(BTreeMap::from([(10, "flowchart TD\nA --> B".into())]));
+        assert!(app.next_diagram().is_none());
+        assert_eq!(app.diagrams[&80].status, DiagramStatus::Ready);
+    }
+
+    #[test]
+    fn old_diagram_results_release_the_worker_without_touching_the_new_document() {
+        for png in [Ok(vec![1]), Err("late failure".into())] {
+            let mut app = App::default();
+            let first = app.open("sample.md".into());
+            app.complete(success(first, "old body"));
+            app.discover_diagrams(BTreeMap::from([(10, "old diagram".into())]));
+            let old = app.next_diagram().unwrap();
+            let reload = app.open("sample.md".into());
+            app.complete(success(reload, "new body"));
+            app.discover_diagrams(BTreeMap::from([(10, "new diagram".into())]));
+            assert!(app.next_diagram().is_none());
+            assert!(!app.complete_diagram(&DiagramResult { request: old, png }));
+            assert_eq!(app.diagrams[&10].status, DiagramStatus::Pending);
+            let current = app.next_diagram().unwrap();
+            assert_eq!(current.source, "new diagram");
+            let mut wrong = current.clone();
+            wrong.source = "wrong source".into();
+            assert!(!app.complete_diagram(&DiagramResult {
+                request: wrong,
+                png: Ok(vec![2]),
+            }));
+            assert!(app.next_diagram().is_none());
+            assert!(app.complete_diagram(&DiagramResult {
+                request: current,
+                png: Ok(vec![3]),
+            }));
+        }
+    }
+
+    #[test]
+    fn search_preview_cancel_and_empty_commit_keep_the_confirmed_query() {
+        let mut app = App::default();
+        let request = app.open("sample.md".into());
+        let generation = request.generation;
+        app.complete(success(request, "日本語 日本語"));
+        app.rendered(generation, "日本語 日本語");
+        app.begin_search();
+        assert_eq!(
+            app.confirm_search("日本語".into(), 10),
+            SearchOutcome::Found
+        );
+        assert_eq!(app.current_match, Some(1));
+        app.begin_search();
+        app.preview_search("unknown".into());
+        assert!(app.matches.is_empty());
+        app.cancel_input();
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.matches, vec![0..9, 10..19]);
+        assert_eq!(app.current_match, Some(1));
+        app.begin_search();
+        assert_eq!(app.confirm_search(String::new(), 20), SearchOutcome::Found);
+        assert_eq!(app.current_match, Some(0));
+    }
+
+    #[test]
+    fn cancel_does_not_restore_a_match_index_from_a_replaced_document() {
+        let mut app = App::default();
+        let first = app.open("a.md".into());
+        app.complete(success(first.clone(), "x x"));
+        app.rendered(first.generation, "x x");
+        app.begin_search();
+        app.confirm_search("x".into(), 2);
+        assert_eq!(app.current_match, Some(1));
+        app.begin_search();
+        let second = app.open("b.md".into());
+        app.complete(success(second.clone(), "x x"));
+        app.rendered(second.generation, "x x");
+        app.cancel_input();
+        assert_eq!(app.current_match, Some(0));
     }
 
     #[test]

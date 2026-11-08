@@ -1,3 +1,7 @@
+mod mermaid;
+
+pub use mermaid::generate_diagram;
+
 use crate::app::{ReadRequest, ReadResult};
 
 pub fn read_document(request: ReadRequest) -> ReadResult {
