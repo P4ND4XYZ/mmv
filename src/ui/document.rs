@@ -8,7 +8,11 @@ use std::{
     time::Instant,
 };
 
-use gpui_kit::component::text::{TextView, TextViewState};
+use crate::core::HeadingIds;
+use gpui_kit::{
+    base::text::editor_host::{BlockNode, parse_markdown},
+    component::text::{MarkdownExtensions, TextView, TextViewState},
+};
 use gpui_kit::{prelude::*, *};
 
 use super::{
@@ -23,9 +27,23 @@ pub(super) struct DocumentView {
     text_subscription: Option<Subscription>,
     pub discovered_diagrams: DiscoveredDiagrams,
     pub diagram_images: BTreeMap<usize, Arc<Image>>,
-    pub search_blocks: Option<(Generation, Vec<Option<std::ops::Range<usize>>>)>,
+    pub analysis: Option<DocumentAnalysis>,
+    layout_serial: u64,
+    heading_reveal: Option<(PositionRequest, u64)>,
     started: Instant,
     first_paint: Arc<AtomicBool>,
+}
+
+pub(super) struct DocumentAnalysis {
+    pub generation: Generation,
+    pub blocks: Vec<Option<std::ops::Range<usize>>>,
+    headings: BTreeMap<String, HeadingLocation>,
+}
+
+struct HeadingLocation {
+    block: usize,
+    range: std::ops::Range<usize>,
+    nested: bool,
 }
 
 impl DocumentView {
@@ -35,14 +53,17 @@ impl DocumentView {
             text_subscription: None,
             discovered_diagrams: DiscoveredDiagrams::default(),
             diagram_images: BTreeMap::new(),
-            search_blocks: None,
+            analysis: None,
+            layout_serial: 0,
+            heading_reveal: None,
             started,
             first_paint: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub fn replace(&mut self, generation: Generation, cx: &mut Context<Viewer>) {
-        self.search_blocks = None;
+        self.analysis = None;
+        self.heading_reveal = None;
         self.discovered_diagrams = DiscoveredDiagrams::default();
         for image in std::mem::take(&mut self.diagram_images).into_values() {
             image.remove_asset(cx);
@@ -86,6 +107,93 @@ impl DocumentView {
 }
 
 impl Viewer {
+    /// Share the same upstream block spans between search and heading links;
+    /// heading labels come from TextView's plain rendered-text projection.
+    pub(super) fn analyze_document(&mut self, cx: &gpui_kit::App) -> Result<(), String> {
+        let document = self.app.document().ok_or("本文を読み込み中です")?;
+        if self
+            .document
+            .analysis
+            .as_ref()
+            .is_some_and(|analysis| analysis.generation == document.generation)
+        {
+            return Ok(());
+        }
+        let snapshot = self.document.text.read(cx).rendered_text();
+        if snapshot.source() != document.source {
+            return Err("本文を解析中です".into());
+        }
+        let extensions = MarkdownExtensions::default().plugin(MermaidPlugin {
+            discovered: Default::default(),
+            images: Default::default(),
+        });
+        let blocks = parse_markdown(&document.source, extensions.into())
+            .map_err(|error| format!("文書の位置を取得できません: {error}"))?;
+        let mut ids = HeadingIds::default();
+        let mut headings = BTreeMap::new();
+        fn collect(
+            block: &BlockNode,
+            ix: usize,
+            nested: bool,
+            ids: &mut HeadingIds,
+            headings: &mut BTreeMap<String, HeadingLocation>,
+            projection: &impl Fn(&BlockNode) -> (String, std::ops::Range<usize>),
+        ) {
+            match block {
+                BlockNode::Heading { .. } => {
+                    let (label, range) = projection(block);
+                    headings.insert(
+                        ids.next(&label),
+                        HeadingLocation {
+                            block: ix,
+                            range,
+                            nested,
+                        },
+                    );
+                }
+                BlockNode::Root { children, .. }
+                | BlockNode::Blockquote { children, .. }
+                | BlockNode::List { children, .. }
+                | BlockNode::ListItem { children, .. } => {
+                    for child in children {
+                        collect(child, ix, true, ids, headings, projection);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (ix, block) in blocks.iter().enumerate() {
+            collect(block, ix, false, &mut ids, &mut headings, &|block| {
+                let range = block
+                    .span()
+                    .and_then(|span| snapshot.range_for_source(span.start..span.end))
+                    .unwrap_or(0..0);
+                (
+                    snapshot.as_str()[range.clone()]
+                        .trim_end_matches('\n')
+                        .to_owned(),
+                    range,
+                )
+            });
+        }
+        self.document.analysis = Some(DocumentAnalysis {
+            generation: document.generation,
+            blocks: blocks
+                .iter()
+                .map(|block| block.span().map(|span| span.start..span.end))
+                .collect(),
+            headings,
+        });
+        Ok(())
+    }
+
+    pub(super) fn settle_position(&mut self, cx: &mut Context<Self>) {
+        if let Some(request) = self.app.position_request().cloned() {
+            let text = self.document.text.clone();
+            self.apply_position_after_layout(&request, &text, cx);
+        }
+    }
+
     /// Until layout applies a position, the new TextView's offset is not a
     /// measured departure distance. Carry the existing position intent forward
     /// instead; after acknowledgement, use the live (possibly user-moved) offset.
@@ -112,12 +220,12 @@ impl Viewer {
         {
             return;
         }
-        let distance = match request.target {
-            PositionTarget::Top => 0.,
-            PositionTarget::Distance(distance) => distance,
-            // Heading resolution belongs to stage 4; do not acknowledge it yet.
-            PositionTarget::Heading(_) => return,
-        };
+        if matches!(request.target, PositionTarget::Heading(_))
+            && let Err(error) = self.analyze_document(cx)
+        {
+            self.display_error = Some(error);
+            return;
+        }
         let list = text.read(cx).list_state();
         let viewport = list.viewport_bounds().size;
         if viewport.height <= px(0.) || viewport.width <= px(0.) {
@@ -131,7 +239,52 @@ impl Viewer {
         {
             return;
         }
-        list.set_offset_from_scrollbar(point(px(0.), -px(distance.max(0.))));
+        if let Some((revealed, layout)) = &self.document.heading_reveal
+            && revealed == request
+        {
+            // TextView performs nested line reveals in its next layout. Do not
+            // save an enclosing block's temporary offset as a departure distance.
+            if *layout == self.document.layout_serial {
+                return;
+            }
+            self.document.heading_reveal = None;
+            self.app.acknowledge_position(request);
+            cx.notify();
+            return;
+        }
+        match &request.target {
+            PositionTarget::Top => list.set_offset_from_scrollbar(point(px(0.), px(0.))),
+            PositionTarget::Distance(distance) => {
+                list.set_offset_from_scrollbar(point(px(0.), -px(distance.max(0.))))
+            }
+            PositionTarget::Heading(id) => {
+                if let Some(heading) = self
+                    .document
+                    .analysis
+                    .as_ref()
+                    .and_then(|analysis| analysis.headings.get(id))
+                {
+                    list.scroll_to(ListOffset {
+                        item_ix: heading.block,
+                        offset_in_item: px(0.),
+                    });
+                    // Nested headings share their list row with a container.
+                    // Let TextView reveal the exact projected line within it.
+                    if heading.nested {
+                        let range = heading.range.clone();
+                        text.update(cx, |text, cx| text.reveal_range(range, cx))
+                            .expect("current heading range");
+                        self.document.heading_reveal =
+                            Some((request.clone(), self.document.layout_serial));
+                        cx.notify();
+                        return;
+                    }
+                } else {
+                    list.set_offset_from_scrollbar(point(px(0.), px(0.)));
+                    self.message = Some(format!("見出しが見つかりません: {id}"));
+                }
+            }
+        }
         self.app.acknowledge_position(request);
         text.update(cx, |_, cx| cx.notify());
         cx.notify();
@@ -241,6 +394,9 @@ impl Viewer {
                                 let text = text.clone();
                                 cx.defer(move |cx| {
                                     let _ = view.update(cx, |this, cx| {
+                                        if this.document.text == text {
+                                            this.document.layout_serial += 1;
+                                        }
                                         this.apply_position_after_layout(&request, &text, cx);
                                     });
                                 });

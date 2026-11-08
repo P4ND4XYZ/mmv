@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     ops::Range,
     path::{Path, PathBuf},
 };
@@ -41,31 +42,86 @@ pub fn resolve_image(document: &Path, source: &str) -> Result<ImageLocation, Str
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum LinkTarget {
-    File(PathBuf),
+    File {
+        path: PathBuf,
+        fragment: Option<String>,
+    },
     Web(String),
-    Heading,
+    Heading(String),
 }
 
-/// Local files are opened from the beginning; fragment navigation is not yet supported.
+/// Keep the decoded fragment separate from the filesystem path.
 pub fn resolve_link(document: &Path, source: &str) -> Result<LinkTarget, String> {
     if source.is_empty() || source.starts_with('#') {
-        return Ok(LinkTarget::Heading);
+        return decode_fragment(source.strip_prefix('#').unwrap_or(source))
+            .map(LinkTarget::Heading);
     }
     // A drive-letter path is not a URL scheme on Windows.
-    let path = source.split_once('#').map_or(source, |(path, _)| path);
+    let (path, fragment) = source
+        .split_once('#')
+        .map_or((source, None), |(path, id)| (path, Some(id)));
     if Path::new(path).is_absolute() {
-        return Ok(LinkTarget::File(path.into()));
+        return Ok(LinkTarget::File {
+            path: path.into(),
+            fragment: fragment.map(decode_fragment).transpose()?,
+        });
     }
     let base = url::Url::from_file_path(document)
         .map_err(|_| "document path must be absolute".to_string())?;
     let resolved = base.join(source).map_err(|error| error.to_string())?;
     match resolved.scheme() {
-        "file" => resolved
-            .to_file_path()
-            .map(LinkTarget::File)
-            .map_err(|_| "invalid file URL".to_string()),
+        "file" => Ok(LinkTarget::File {
+            path: resolved
+                .to_file_path()
+                .map_err(|_| "invalid file URL".to_string())?,
+            fragment: resolved.fragment().map(decode_fragment).transpose()?,
+        }),
         "http" | "https" => Ok(LinkTarget::Web(resolved.into())),
         scheme => Err(format!("unsupported link scheme: {scheme}")),
+    }
+}
+
+fn decode_fragment(fragment: &str) -> Result<String, String> {
+    let mut decoded = Vec::with_capacity(fragment.len());
+    let mut bytes = fragment.bytes();
+    while let Some(byte) = bytes.next() {
+        if byte == b'%' {
+            let high = bytes.next().and_then(|c| (c as char).to_digit(16));
+            let low = bytes.next().and_then(|c| (c as char).to_digit(16));
+            let (Some(high), Some(low)) = (high, low) else {
+                return Err("invalid fragment encoding".into());
+            };
+            decoded.push((high * 16 + low) as u8);
+        } else {
+            decoded.push(byte);
+        }
+    }
+    String::from_utf8(decoded).map_err(|_| "invalid UTF-8 fragment".into())
+}
+
+/// Input is upstream's plain heading text, not Markdown source. One allocator
+/// per document reserves every emitted ID, including numbered IDs.
+#[derive(Default)]
+pub struct HeadingIds(HashSet<String>);
+
+impl HeadingIds {
+    pub fn next(&mut self, text: &str) -> String {
+        let base: String = text.trim().to_lowercase().chars().filter_map(|c| {
+            if c == ' ' {
+                Some('-')
+            } else if c.is_alphanumeric() || matches!(c, '-' | '_' | '\u{0300}'..='\u{036f}' | '\u{1ab0}'..='\u{1aff}' | '\u{1dc0}'..='\u{1dff}' | '\u{3099}'..='\u{309a}' | '\u{fe20}'..='\u{fe2f}') {
+                Some(c)
+            } else {
+                None
+            }
+        }).collect();
+        let mut id = base.clone();
+        let mut suffix = 0;
+        while !self.0.insert(id.clone()) {
+            suffix += 1;
+            id = format!("{base}-{suffix}");
+        }
+        id
     }
 }
 
@@ -101,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn local_links_resolve_from_the_displayed_document_and_strip_fragments() {
+    fn local_links_resolve_from_the_displayed_document_and_keep_decoded_fragments() {
         for (source, expected) in [
             (
                 "notes/日本語%20memo.md",
@@ -119,7 +175,10 @@ mod tests {
         ] {
             assert_eq!(
                 resolve_link(&document(), source).unwrap(),
-                LinkTarget::File(expected)
+                LinkTarget::File {
+                    path: expected,
+                    fragment: source.split_once('#').map(|(_, id)| id.into())
+                }
             );
         }
         let path = document().with_file_name("other.md");
@@ -133,7 +192,10 @@ mod tests {
         ] {
             assert_eq!(
                 resolve_link(&document(), source).unwrap(),
-                LinkTarget::File(path.clone())
+                LinkTarget::File {
+                    path: path.clone(),
+                    fragment: source.contains('#').then(|| "section".into())
+                }
             );
         }
     }
@@ -147,7 +209,7 @@ mod tests {
         );
         assert_eq!(
             resolve_link(&document(), "#見出し").unwrap(),
-            LinkTarget::Heading
+            LinkTarget::Heading("見出し".into())
         );
         for source in [
             "javascript:alert(1)",
@@ -155,6 +217,51 @@ mod tests {
             "https://[",
         ] {
             assert!(resolve_link(&document(), source).is_err(), "{source}");
+        }
+    }
+
+    #[test]
+    fn fragments_decode_utf8_once_without_treating_plus_as_space() {
+        for (source, id) in [
+            ("#%E4%BD%BF%E3%81%84%E6%96%B9", "使い方"),
+            ("#使い方", "使い方"),
+            ("#a+b%2520", "a+b%20"),
+            ("#", ""),
+        ] {
+            assert_eq!(
+                resolve_link(&document(), source).unwrap(),
+                LinkTarget::Heading(id.into())
+            );
+            let source = format!("other.md{source}");
+            assert_eq!(
+                resolve_link(&document(), &source).unwrap(),
+                LinkTarget::File {
+                    path: document().with_file_name("other.md"),
+                    fragment: Some(id.into()),
+                }
+            );
+        }
+        for source in ["#%", "#%FF", "other.md#%GG"] {
+            assert!(resolve_link(&document(), source).is_err(), "{source}");
+        }
+    }
+
+    #[test]
+    fn heading_ids_are_document_wide_and_avoid_numbered_id_collisions() {
+        let mut ids = HeadingIds::default();
+        for (text, expected) in [
+            (" Getting Started ", "getting-started"),
+            ("使い方", "使い方"),
+            ("使い方-1", "使い方-1"),
+            ("使い方", "使い方-2"),
+            ("使い方-1", "使い方-1-1"),
+            ("使い方", "使い方-3"),
+            (" API\t &  CLI! 日本語。「」😀 ", "api---cli-日本語"),
+            ("Cafe\u{0301}", "cafe\u{0301}"),
+            ("!!!", ""),
+            ("?", "-1"),
+        ] {
+            assert_eq!(ids.next(text), expected, "{text:?}");
         }
     }
 

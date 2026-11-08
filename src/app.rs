@@ -181,6 +181,12 @@ impl App {
     /// Capture the departure distance immediately before replacing the displayed body.
     pub fn complete_at(&mut self, result: ReadResult, distance: f32) -> Option<ReadCompletion> {
         let previous_key = self.document().map(|document| document.key.clone());
+        // A reload may finish before the pending heading has a layout. Preserve
+        // that intent in the new generation rather than capturing the fresh
+        // TextView's zero offset. Once acknowledged, live distance wins again.
+        let pending_heading = self.position.as_ref().and_then(|request| {
+            matches!(request.target, PositionTarget::Heading(_)).then(|| request.target.clone())
+        });
         let completion = self.document.complete(result)?;
         if self
             .pending_operation
@@ -193,12 +199,16 @@ impl App {
                 let same_document = previous_key.as_ref() == Some(&document.key);
                 let path = document.path.clone();
                 let target = match operation {
-                    PendingOperation::Open if same_document => PositionTarget::Distance(distance),
+                    PendingOperation::Open if same_document => {
+                        pending_heading.unwrap_or(PositionTarget::Distance(distance))
+                    }
                     PendingOperation::Open => {
                         self.history.push(path, distance);
                         PositionTarget::Top
                     }
-                    PendingOperation::Reload => PositionTarget::Distance(distance),
+                    PendingOperation::Reload => {
+                        pending_heading.unwrap_or(PositionTarget::Distance(distance))
+                    }
                     PendingOperation::Heading(id) => {
                         self.history.push(path, distance);
                         PositionTarget::Heading(id)

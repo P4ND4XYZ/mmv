@@ -369,6 +369,73 @@ fn headings_distinguish_synchronous_current_document_and_loaded_target() {
 }
 
 #[test]
+fn reload_before_heading_layout_preserves_intent_until_acknowledged() {
+    for open_same_key in [false, true] {
+        let mut app = loaded();
+        app.operate(
+            DocumentOperation::Heading {
+                path: None,
+                id: "使い方".into(),
+            },
+            OperationOrigin::Link,
+            480.,
+            None,
+        );
+        let heading = app.position_request().unwrap().clone();
+        let history = app.history.entries.clone();
+        let request = read(
+            &mut app,
+            if open_same_key {
+                DocumentOperation::Open("./a.md".into())
+            } else {
+                DocumentOperation::Reload
+            },
+        );
+        finish(&mut app, request, "canonical-a", 0.);
+        assert_eq!(target(&app), PositionTarget::Heading("使い方".into()));
+        assert_ne!(
+            app.position_request().unwrap().generation,
+            heading.generation
+        );
+        assert!(!app.acknowledge_position(&heading));
+        assert_eq!(app.history.entries, history);
+        let heading = app.position_request().unwrap().clone();
+        app.acknowledge_position(&heading);
+        let reload = read(&mut app, DocumentOperation::Reload);
+        finish(&mut app, reload, "canonical-a", 640.);
+        assert_eq!(target(&app), PositionTarget::Distance(640.));
+    }
+}
+
+#[test]
+fn failed_and_stale_heading_reads_preserve_document_history_and_pending_position() {
+    let mut app = loaded();
+    let history = app.history.entries.clone();
+    let position = app.position_request().cloned();
+    let old = read(
+        &mut app,
+        DocumentOperation::Heading {
+            path: Some("old.md".into()),
+            id: "古い".into(),
+        },
+    );
+    let failed = read(
+        &mut app,
+        DocumentOperation::Heading {
+            path: Some("missing.md".into()),
+            id: "不明".into(),
+        },
+    );
+    fail(&mut app, failed);
+    assert!(!finish(&mut app, old, "old", 999.).adopted);
+    assert_eq!(app.history.entries, history);
+    assert_eq!(app.position_request(), position.as_ref());
+    assert_eq!(app.document().unwrap().path, PathBuf::from("a.md"));
+    assert_eq!(app.document().unwrap().source, "target edit target");
+    assert_eq!(app.error(), Some("missing"));
+}
+
+#[test]
 fn history_reads_saved_paths_restores_distances_and_truncates_only_on_new_success() {
     let mut app = loaded();
     assert_eq!(

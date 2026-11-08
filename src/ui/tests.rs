@@ -1,3 +1,4 @@
+mod headings;
 mod modes;
 mod operations;
 mod phase_one;

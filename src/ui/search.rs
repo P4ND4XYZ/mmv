@@ -1,11 +1,6 @@
-use gpui_kit::{
-    Context,
-    base::text::editor_host::parse_markdown,
-    component::text::{MarkdownExtensions, RangeHighlight},
-    rgb,
-};
+use gpui_kit::{Context, component::text::RangeHighlight, rgb};
 
-use super::{Viewer, mermaid::MermaidPlugin};
+use super::Viewer;
 
 impl Viewer {
     /// TextView exposes its first displayed block, not the character at the top
@@ -22,34 +17,10 @@ impl Viewer {
         if first == 0 {
             return Ok(0);
         }
-        if self
-            .document
-            .search_blocks
-            .as_ref()
-            .is_none_or(|(generation, _)| *generation != document.generation)
-        {
-            // Match TextView's extensions, but keep discovery isolated from the
-            // live diagram queue. Cache only spans, not another rendering tree.
-            let extensions = MarkdownExtensions::default().plugin(MermaidPlugin {
-                discovered: Default::default(),
-                images: Default::default(),
-            });
-            let blocks = parse_markdown(&document.source, extensions.into())
-                .map_err(|error| format!("検索開始位置を取得できません: {error}"))?;
-            self.document.search_blocks = Some((
-                document.generation,
-                blocks
-                    .iter()
-                    .map(|block| block.span().map(|span| span.start..span.end))
-                    .collect(),
-            ));
-        }
-        let (_, blocks) = self
-            .document
-            .search_blocks
-            .as_ref()
-            .expect("search block spans");
-        Ok(blocks
+        self.analyze_document(cx)?;
+        let analysis = self.document.analysis.as_ref().expect("document analysis");
+        Ok(analysis
+            .blocks
             .iter()
             .skip(first)
             .filter_map(|span| snapshot.range_for_source(span.clone()?))

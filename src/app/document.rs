@@ -43,13 +43,6 @@ pub enum DocumentOperation {
     Initial(PathBuf),
     Open(PathBuf),
     Reload,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Heading links are connected in stage 4; app transitions are tested now."
-        )
-    )]
     Heading {
         path: Option<PathBuf>,
         id: String,

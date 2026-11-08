@@ -282,7 +282,7 @@ fn delayed_layout_rejects_old_generation_entity_and_same_generation_serial(
     cx.update(|cx| {
         view.update(cx, |viewer, cx| {
             // A newer synchronous heading move has the same generation but a
-            // distinct serial. Stage 2 must neither apply nor consume it as Top.
+            // distinct serial. The old request must neither apply nor consume it.
             viewer.request_operation(
                 DocumentOperation::Heading {
                     path: None,
@@ -301,11 +301,13 @@ fn delayed_layout_rejects_old_generation_entity_and_same_generation_serial(
     });
     frame(cx, window);
     view.read_with(cx, |viewer, cx| {
-        assert_eq!(viewer.document.distance(cx), 240.);
-        assert!(matches!(
-            viewer.app.position_request().unwrap().target,
-            PositionTarget::Heading(_)
-        ));
+        // The current (unknown) heading, not the stale distance, is applied.
+        assert_eq!(viewer.document.distance(cx), 0.);
+        assert!(viewer.app.position_request().is_none());
+        assert_eq!(
+            viewer.message.as_deref(),
+            Some("見出しが見つかりません: two")
+        );
     });
 }
 
