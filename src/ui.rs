@@ -11,7 +11,8 @@ use gpui_kit::{prelude::*, *};
 
 use crate::app::{
     self, DiagramRequest, DiagramResult, DocumentOperation, ExternalRequestId, LinkTarget,
-    OperationOrigin, OperationResult, ReadCompletion, ReadRequest, ReadResult, resolve_link,
+    OperationOrigin, OperationResult, ReadCompletion, ReadRequest, ReadResult, WatchTarget,
+    resolve_link,
 };
 use document::DocumentView;
 use input::Prompt;
@@ -32,6 +33,7 @@ pub struct Viewer {
     display_error: Option<String>,
 }
 
+impl EventEmitter<WatchTarget> for Viewer {}
 impl EventEmitter<ReadRequest> for Viewer {}
 impl EventEmitter<ReadCompletion> for Viewer {}
 impl EventEmitter<DiagramRequest> for Viewer {}
@@ -106,7 +108,7 @@ impl Viewer {
         response_to: Option<ExternalRequestId>,
         cx: &mut Context<Self>,
     ) -> OperationResult {
-        let distance = self.document.distance(cx);
+        let distance = self.departure_distance(cx);
         let result = self.app.operate(operation, origin, distance, response_to);
         if let OperationResult::Pending(request) = &result {
             cx.emit(request.clone());
@@ -136,8 +138,16 @@ impl Viewer {
         cx.notify();
     }
 
+    pub fn watch_changed(&mut self, target: &WatchTarget, cx: &mut Context<Self>) {
+        if let Some(request) = self.app.watch_changed(target) {
+            cx.emit(request);
+            cx.notify();
+        }
+    }
+
     pub fn complete(&mut self, result: ReadResult, cx: &mut Context<Self>) {
-        let distance = self.document.distance(cx);
+        let previous_watch = self.app.watch_target().cloned();
+        let distance = self.departure_distance(cx);
         let Some(completion) = self.app.complete_at(result, distance) else {
             return;
         };
@@ -150,7 +160,15 @@ impl Viewer {
             self.display_error = None;
             self.accept_rendered_text(generation, cx);
         }
+        if self.app.watch_target() != previous_watch.as_ref()
+            && let Some(target) = self.app.watch_target()
+        {
+            cx.emit(target.clone());
+        }
         cx.emit(completion);
+        if let Some(request) = self.app.take_automatic_reload() {
+            cx.emit(request);
+        }
         self.start_next_diagram(cx);
         cx.notify();
     }

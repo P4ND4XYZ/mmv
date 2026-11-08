@@ -1,5 +1,93 @@
 use super::*;
 
+#[test]
+fn watcher_changes_only_on_adoption_and_rejects_a_b_a_delayed_notifications() {
+    let mut app = App::default();
+    assert!(app.watch_target().is_none());
+    let initial = read(&mut app, DocumentOperation::Initial("a.md".into()));
+    assert!(app.watch_target().is_none());
+    finish(&mut app, initial, "canonical-a", 0.);
+    let a = app.watch_target().unwrap().clone();
+    let stale = read(&mut app, DocumentOperation::Open("stale.md".into()));
+    let failed = read(&mut app, DocumentOperation::Open("missing.md".into()));
+    fail(&mut app, failed);
+    finish(&mut app, stale, "canonical-stale", 0.);
+    assert_eq!(app.watch_target(), Some(&a));
+    let reload = read(&mut app, DocumentOperation::Reload);
+    finish(&mut app, reload, "canonical-a", 450.);
+    assert_eq!(app.watch_target(), Some(&a));
+    let b = read(&mut app, DocumentOperation::Open("b.md".into()));
+    assert_eq!(app.watch_target(), Some(&a));
+    finish(&mut app, b, "canonical-b", 0.);
+    let b_target = app.watch_target().unwrap().clone();
+    assert!(app.watch_changed(&a).is_none());
+    let back = read(&mut app, DocumentOperation::Open("a.md".into()));
+    finish(&mut app, back, "canonical-a", 0.);
+    assert_ne!(app.watch_target(), Some(&a));
+    assert!(app.watch_changed(&a).is_none());
+    assert!(app.watch_changed(&b_target).is_none());
+    assert!(!app.is_loading());
+}
+
+#[test]
+fn automatic_notifications_defer_without_cancelling_switch_and_retry_after_failure() {
+    for succeeds in [false, true] {
+        let mut app = loaded();
+        let a = app.watch_target().unwrap().clone();
+        let b = read(&mut app, DocumentOperation::Open("b.md".into()));
+        assert!(app.watch_changed(&a).is_none());
+        assert!(app.watch_changed(&a).is_none());
+        if succeeds {
+            assert!(finish(&mut app, b, "canonical-b", 480.).adopted);
+            assert!(app.take_automatic_reload().is_none());
+        } else {
+            let history = app.history.entries.clone();
+            assert!(!fail(&mut app, b).adopted);
+            let trailing = app.take_automatic_reload().unwrap();
+            assert_eq!(trailing.path, PathBuf::from("a.md"));
+            assert_eq!(trailing.origin, OperationOrigin::Automatic);
+            finish(&mut app, trailing, "canonical-a", 480.);
+            assert_eq!(target(&app), PositionTarget::Distance(480.));
+            assert_eq!(app.history.entries, history);
+            assert!(app.take_automatic_reload().is_none());
+        }
+    }
+}
+
+#[test]
+fn saves_during_read_collapse_to_one_trailing_reload_even_after_failure() {
+    for succeeds in [false, true] {
+        let mut app = loaded();
+        app.begin_search();
+        app.preview_search("edit".into());
+        let a = app.watch_target().unwrap().clone();
+        let request = app.watch_changed(&a).unwrap();
+        assert_eq!(request.origin, OperationOrigin::Automatic);
+        assert_eq!(app.document().unwrap().source, "target edit target");
+        assert!(app.watch_changed(&a).is_none());
+        assert!(app.watch_changed(&a).is_none());
+        if succeeds {
+            finish(&mut app, request, "canonical-a", 480.);
+        } else {
+            let position = app.position_request().cloned();
+            let history = app.history.entries.clone();
+            fail(&mut app, request);
+            assert_eq!(app.position_request(), position.as_ref());
+            assert_eq!(app.history.entries, history);
+        }
+        let trailing = app.take_automatic_reload().unwrap();
+        assert!(app.take_automatic_reload().is_none());
+        finish(&mut app, trailing, "canonical-a", 640.);
+        assert!(app.take_automatic_reload().is_none());
+        assert_eq!(target(&app), PositionTarget::Distance(640.));
+        assert_eq!(app.watch_target(), Some(&a));
+        assert_eq!(app.mode, Mode::Search);
+        let generation = app.document().unwrap().generation;
+        app.rendered(generation, "edit edit old");
+        assert_eq!(app.matches(), &[0..4, 5..9]);
+    }
+}
+
 fn read(app: &mut App, operation: DocumentOperation) -> ReadRequest {
     pending(app.operate(operation, OperationOrigin::External, 240., None))
 }

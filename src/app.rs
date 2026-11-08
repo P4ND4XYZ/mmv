@@ -11,7 +11,7 @@ pub use crate::core::{ImageLocation, LinkTarget, resolve_image, resolve_link};
 pub use document::{
     Document, DocumentKey, DocumentOperation, ExternalRequestId, Generation, LoadedDocument,
     OperationError, OperationOrigin, OperationResult, PositionRequest, PositionTarget,
-    ReadCompletion, ReadRequest, ReadResult,
+    ReadCompletion, ReadRequest, ReadResult, WatchTarget,
 };
 #[cfg(test)]
 pub use mermaid::{Diagram, DiagramStatus};
@@ -50,6 +50,9 @@ pub struct App {
     pending_operation: Option<(document::ReadRequestId, PendingOperation)>,
     position: Option<PositionRequest>,
     next_position: u64,
+    watch_target: Option<WatchTarget>,
+    next_watch: u64,
+    deferred_reload: bool,
     pub mode: Mode,
 }
 
@@ -208,12 +211,52 @@ impl App {
                         PositionTarget::Distance(saved)
                     }
                 };
+                if self.watch_target.as_ref().map(|target| &target.key)
+                    != self.document().map(|document| &document.key)
+                {
+                    self.next_watch += 1;
+                    self.watch_target = Some(WatchTarget {
+                        serial: self.next_watch,
+                        key: self.document().expect("adopted document").key.clone(),
+                    });
+                    self.deferred_reload = false;
+                }
                 self.request_position(target);
                 self.mermaid.replace_document();
                 self.search.replace_document();
             }
         }
         Some(completion)
+    }
+
+    pub fn watch_target(&self) -> Option<&WatchTarget> {
+        self.watch_target.as_ref()
+    }
+
+    pub fn watch_changed(&mut self, target: &WatchTarget) -> Option<ReadRequest> {
+        if self.watch_target.as_ref() != Some(target) {
+            return None;
+        }
+        self.deferred_reload = true;
+        self.take_automatic_reload()
+    }
+
+    /// One trailing read covers all saves received while a read was pending.
+    /// A successful switch discards the old file's deferred work; failure keeps it.
+    pub fn take_automatic_reload(&mut self) -> Option<ReadRequest> {
+        if !self.deferred_reload || self.is_loading() {
+            return None;
+        }
+        self.deferred_reload = false;
+        match self.operate(
+            DocumentOperation::Reload,
+            OperationOrigin::Automatic,
+            0.,
+            None,
+        ) {
+            OperationResult::Pending(request) => Some(request),
+            OperationResult::Complete { .. } => None,
+        }
     }
 
     fn request_position(&mut self, target: PositionTarget) {

@@ -86,6 +86,17 @@ impl DocumentView {
 }
 
 impl Viewer {
+    /// Until layout applies a position, the new TextView's offset is not a
+    /// measured departure distance. Carry the existing position intent forward
+    /// instead; after acknowledgement, use the live (possibly user-moved) offset.
+    pub(super) fn departure_distance(&self, cx: &gpui_kit::App) -> f32 {
+        match self.app.position_request().map(|request| &request.target) {
+            Some(PositionTarget::Distance(distance)) => *distance,
+            Some(PositionTarget::Top) => 0.,
+            _ => self.document.distance(cx),
+        }
+    }
+
     pub(super) fn apply_position_after_layout(
         &mut self,
         request: &PositionRequest,

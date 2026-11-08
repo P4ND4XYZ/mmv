@@ -44,19 +44,7 @@ fn main() {
                 cx.new(|cx| ui::Viewer::new(path, started, window, cx))
             })
             .expect("failed to open evaluation window");
-            cx.subscribe(&view, |view, request: &app::ReadRequest, cx| {
-                let request = request.clone();
-                let result = cx
-                    .background_executor()
-                    .spawn(async move { infra::read_document(request) });
-                let view = view.downgrade();
-                cx.spawn(async move |cx| {
-                    let result = result.await;
-                    let _ = view.update(cx, |view, cx| view.complete(result, cx));
-                })
-                .detach();
-            })
-            .detach();
+            connect_document_reads(&view, cx);
             cx.subscribe(&view, |view, request: &app::DiagramRequest, cx| {
                 let request = request.clone();
                 let result = cx
@@ -70,10 +58,112 @@ fn main() {
                 .detach();
             })
             .detach();
+            connect_watch(&view, cx);
             // GPUI activates subscriptions at the end of the current update.
             cx.defer(move |cx| view.update(cx, |view, cx| view.open(cx)));
             cx.activate(true);
         });
+}
+
+fn connect_document_reads(view: &gpui_kit::Entity<ui::Viewer>, cx: &mut gpui_kit::App) {
+    cx.subscribe(view, |view, request: &app::ReadRequest, cx| {
+        let request = request.clone();
+        let result = cx
+            .background_executor()
+            .spawn(async move { infra::read_document(request) });
+        let view = view.downgrade();
+        cx.spawn(async move |cx| {
+            let result = result.await;
+            let _ = view.update(cx, |view, cx| view.complete(result, cx));
+        })
+        .detach();
+    })
+    .detach();
+}
+
+struct WatchConnection {
+    watch: Option<infra::FileWatch>,
+    delivery: Option<gpui_kit::Task<()>>,
+    joining: Option<gpui_kit::Task<()>>,
+}
+
+impl WatchConnection {
+    fn stop(&mut self, cx: &gpui_kit::App) {
+        self.delivery.take();
+        if let Some(watch) = self.watch.take() {
+            let worker = watch.stop();
+            self.joining = Some(cx.background_executor().spawn(async move {
+                let _ = worker.join();
+            }));
+        }
+    }
+}
+
+/// Connects only transport and lifecycle; app decides which notifications matter.
+fn connect_watch(
+    view: &gpui_kit::Entity<ui::Viewer>,
+    cx: &mut gpui_kit::App,
+) -> std::rc::Rc<std::cell::RefCell<WatchConnection>> {
+    use std::{cell::RefCell, rc::Rc, time::Duration};
+    let (watch, notices) = infra::FileWatch::new();
+    let connection = Rc::new(RefCell::new(WatchConnection {
+        watch: Some(watch),
+        delivery: None,
+        joining: None,
+    }));
+    let subscription_connection = connection.clone();
+    cx.subscribe(view, move |_, target: &app::WatchTarget, _| {
+        if let Some(watch) = subscription_connection.borrow().watch.as_ref() {
+            watch.set_target(target.clone());
+        }
+    })
+    .detach();
+    let weak = view.downgrade();
+    let executor = cx.background_executor().clone();
+    let delivery = cx.spawn(async move |cx| {
+        loop {
+            for notice in notices.try_iter() {
+                match notice {
+                    // Registration closes the read-to-watch gap. Treat readiness
+                    // like a save: the shared app path also defers behind a switch.
+                    infra::WatchNotice::Changed(target)
+                    | infra::WatchNotice::Ready(target, Ok(())) => {
+                        if weak
+                            .update(cx, |view, cx| view.watch_changed(&target, cx))
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                    infra::WatchNotice::Ready(target, Err(error)) => {
+                        eprintln!("Watch {}: {error}", target.key.0.display());
+                    }
+                }
+            }
+            executor.timer(Duration::from_millis(20)).await;
+        }
+    });
+    connection.borrow_mut().delivery = Some(delivery);
+    let release_connection = connection.clone();
+    view.update(cx, |_, cx| {
+        cx.on_release(move |_, cx| release_connection.borrow_mut().stop(cx))
+            .detach();
+    });
+    let quit_connection = connection.clone();
+    cx.on_app_quit(move |cx| {
+        let task = {
+            let mut connection = quit_connection.borrow_mut();
+            connection.stop(cx);
+            connection.joining.take()
+        };
+        async move {
+            if let Some(task) = task {
+                task.await;
+            }
+        }
+    })
+    .detach();
+    connection
 }
 
 #[cfg(test)]

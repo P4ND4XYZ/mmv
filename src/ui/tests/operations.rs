@@ -419,6 +419,276 @@ fn reload_passes_the_live_pixel_distance_to_the_app_contract(cx: &mut TestAppCon
 }
 
 #[gpui_kit::test]
+fn consecutive_automatic_completions_before_layout_keep_the_departure_distance(
+    cx: &mut TestAppContext,
+) {
+    let (window, view) = super::open(cx, fixture());
+    frame(cx, window);
+    scroll(cx, &view, 480.);
+    let requests = Rc::new(RefCell::new(Vec::<ReadRequest>::new()));
+    let captured = requests.clone();
+    let _subscription = cx.update(|cx| {
+        cx.subscribe(&view, move |_, request: &ReadRequest, _| {
+            captured.borrow_mut().push(request.clone())
+        })
+    });
+    cx.update(|cx| {
+        view.update(cx, |viewer, cx| {
+            let target = viewer.app.watch_target().unwrap().clone();
+            viewer.watch_changed(&target, cx);
+            viewer.watch_changed(&target, cx);
+        })
+    });
+    let first = requests.borrow_mut().pop().unwrap();
+    // No frame is allowed between the two adopted completions.
+    cx.update(|cx| {
+        view.update(cx, |viewer, cx| {
+            viewer.complete(super::success(first, fixture()), cx)
+        })
+    });
+    let trailing = requests.borrow_mut().pop().unwrap();
+    cx.update(|cx| {
+        view.update(cx, |viewer, cx| {
+            assert_eq!(viewer.document.distance(cx), 0.);
+            viewer.complete(super::success(trailing, fixture()), cx);
+            assert_eq!(
+                viewer.app.position_request().unwrap().target,
+                PositionTarget::Distance(480.)
+            );
+        })
+    });
+    frame(cx, window);
+    view.read_with(cx, |viewer, cx| {
+        assert_eq!(viewer.document.distance(cx), 480.)
+    });
+    // Once laid out, actual user movement, rather than the previous request, wins.
+    scroll(cx, &view, 640.);
+    replace(cx, &view, fixture(), false);
+    frame(cx, window);
+    view.read_with(cx, |viewer, cx| {
+        assert_eq!(viewer.document.distance(cx), 640.)
+    });
+}
+
+#[gpui_kit::test]
+fn production_watch_connection_catches_up_a_save_before_registration(cx: &mut TestAppContext) {
+    use std::{
+        sync::mpsc,
+        time::{Duration, Instant},
+    };
+    let path = std::env::temp_dir().join(format!("mmv-watch-catch-up-{}.md", std::process::id()));
+    std::fs::write(&path, "old body").unwrap();
+    let (window, view) = super::open(cx, "previous body".into());
+    frame(cx, window);
+    let stale_result = cx.update(|cx| {
+        view.update(cx, |viewer, cx| {
+            let OperationResult::Pending(request) = viewer.request_document(path.clone(), None, cx)
+            else {
+                panic!("read required")
+            };
+            crate::infra::read_document(request)
+        })
+    });
+    // This save predates watcher registration and produces no watched OS event.
+    std::fs::write(&path, "new body saved before registration").unwrap();
+    let connection = cx.update(|cx| crate::connect_watch(&view, cx));
+    cx.update(|cx| crate::connect_document_reads(&view, cx));
+    let (done, completed) = mpsc::channel();
+    let _completion = cx.update(|cx| {
+        cx.subscribe(
+            &view,
+            move |_, completion: &crate::app::ReadCompletion, _| {
+                done.send(completion.clone()).unwrap();
+            },
+        )
+    });
+    cx.update(|cx| view.update(cx, |viewer, cx| viewer.complete(stale_result, cx)));
+    assert!(completed.try_recv().unwrap().adopted);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let caught_up = loop {
+        cx.background_executor
+            .advance_clock(Duration::from_millis(20));
+        cx.run_until_parked();
+        if let Ok(completion) = completed.recv_timeout(Duration::from_millis(10)) {
+            break completion.adopted;
+        }
+        if Instant::now() >= deadline {
+            break false;
+        }
+    };
+    view.read_with(cx, |viewer, _| {
+        assert_eq!(
+            viewer.app.document().unwrap().source,
+            "new body saved before registration"
+        )
+    });
+    assert!(caught_up);
+    frame(cx, window);
+    let stable_until = Instant::now() + Duration::from_millis(150);
+    while Instant::now() < stable_until {
+        cx.background_executor
+            .advance_clock(Duration::from_millis(20));
+        cx.run_until_parked();
+        assert!(matches!(
+            completed.recv_timeout(Duration::from_millis(10)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+    }
+    // Closing the actual window and releasing its last Entity invokes the
+    // production lifecycle callback, not a test-only stop method.
+    cx.update_window(window, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.update(|_| drop(view));
+    cx.run_until_parked();
+    let join = {
+        let mut connection = connection.borrow_mut();
+        assert!(connection.watch.is_none());
+        assert!(connection.delivery.is_none());
+        connection
+            .joining
+            .take()
+            .expect("release must start worker join")
+    };
+    let (joined, worker_stopped) = mpsc::channel();
+    cx.update(|cx| {
+        cx.spawn(async move |_| {
+            join.await;
+            joined.send(()).unwrap();
+        })
+        .detach()
+    });
+    cx.run_until_parked();
+    worker_stopped.recv_timeout(Duration::from_secs(5)).unwrap();
+    std::fs::remove_file(path).unwrap();
+}
+
+#[gpui_kit::test]
+fn real_save_uses_reload_distance_and_preserves_search_command_input(cx: &mut TestAppContext) {
+    use std::time::Duration;
+    let dir = std::env::temp_dir().join(format!("mmv-ui-watch-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("document.md");
+    std::fs::write(&path, fixture()).unwrap();
+    let (window, view) = super::open(cx, fixture());
+    cx.update(|cx| {
+        view.update(cx, |viewer, cx| {
+            let OperationResult::Pending(request) = viewer.request_document(path.clone(), None, cx)
+            else {
+                panic!("read required")
+            };
+            viewer.complete(crate::infra::read_document(request), cx);
+        })
+    });
+    frame(cx, window);
+    let target = view.read_with(cx, |viewer, _| viewer.app.watch_target().unwrap().clone());
+    let (watch, notices) = crate::infra::FileWatch::new();
+    watch.set_target(target.clone());
+    match notices.recv_timeout(Duration::from_secs(5)).unwrap() {
+        crate::infra::WatchNotice::Ready(actual, result) => {
+            assert_eq!(actual, target);
+            result.unwrap();
+        }
+        _ => panic!("expected readiness"),
+    }
+    let requests = Rc::new(RefCell::new(Vec::<ReadRequest>::new()));
+    let captured = requests.clone();
+    let _subscription = cx.update(|cx| {
+        cx.subscribe(&view, move |_, request: &ReadRequest, _| {
+            captured.borrow_mut().push(request.clone());
+        })
+    });
+    for (key, mode) in [("/", Mode::Search), (":", Mode::Command)] {
+        cx.update_window(window, |_, window, cx| {
+            window.press(key, cx);
+            window.input("edit", cx);
+        })
+        .unwrap();
+        frame(cx, window);
+        let input = view.read_with(cx, |viewer, _| viewer.input.state.clone());
+        scroll(cx, &view, 480.);
+        std::fs::write(
+            &path,
+            "new edit target\n\n".to_owned() + &"Paragraph.\n\n".repeat(200),
+        )
+        .unwrap();
+        let crate::infra::WatchNotice::Changed(actual) =
+            notices.recv_timeout(Duration::from_secs(5)).unwrap()
+        else {
+            panic!("expected change")
+        };
+        cx.update(|cx| view.update(cx, |viewer, cx| viewer.watch_changed(&actual, cx)));
+        let request = requests.borrow_mut().pop().unwrap();
+        assert_eq!(request.origin, OperationOrigin::Automatic);
+        // Reading is completed explicitly so the replacement-time distance is deterministic.
+        let result = crate::infra::read_document(request);
+        scroll(cx, &view, 640.);
+        cx.update(|cx| view.update(cx, |viewer, cx| viewer.complete(result, cx)));
+        frame(cx, window);
+        view.read_with(cx, |viewer, cx| {
+            assert_eq!(viewer.app.mode, mode);
+            assert_eq!(viewer.input.state, input);
+            assert_eq!(viewer.input.state.read(cx).value().as_ref(), "edit");
+            assert_eq!(viewer.document.distance(cx), 640.);
+            assert_eq!(viewer.app.watch_target(), Some(&target));
+            if mode == Mode::Search {
+                assert_eq!(viewer.app.matches().len(), 1);
+                assert_eq!(viewer.app.matches()[0], 4..8);
+            }
+        });
+        cx.update_window(window, |_, window, cx| window.input("x", cx))
+            .unwrap();
+        frame(cx, window);
+        view.read_with(cx, |viewer, cx| {
+            assert_eq!(viewer.input.state.read(cx).value().as_ref(), "editx")
+        });
+        cx.update_window(window, |_, window, cx| window.press("escape", cx))
+            .unwrap();
+        frame(cx, window);
+    }
+    // F5 shares the same replacement-time distance policy as the save above.
+    scroll(cx, &view, 640.);
+    cx.update_window(window, |_, window, cx| window.press("f5", cx))
+        .unwrap();
+    let request = requests.borrow_mut().pop().unwrap();
+    assert_eq!(request.origin, OperationOrigin::Keyboard);
+    cx.update(|cx| {
+        view.update(cx, |viewer, cx| {
+            viewer.complete(crate::infra::read_document(request), cx)
+        })
+    });
+    frame(cx, window);
+    view.read_with(cx, |viewer, cx| {
+        assert_eq!(viewer.document.distance(cx), 640.)
+    });
+    // A short saved document clamps automatic restoration to its actual end.
+    std::fs::write(&path, "Tiny").unwrap();
+    let crate::infra::WatchNotice::Changed(actual) =
+        notices.recv_timeout(Duration::from_secs(5)).unwrap()
+    else {
+        panic!("expected change")
+    };
+    cx.update(|cx| view.update(cx, |viewer, cx| viewer.watch_changed(&actual, cx)));
+    let request = requests.borrow_mut().pop().unwrap();
+    cx.update(|cx| {
+        view.update(cx, |viewer, cx| {
+            viewer.complete(crate::infra::read_document(request), cx)
+        })
+    });
+    frame(cx, window);
+    view.read_with(cx, |viewer, cx| {
+        assert_eq!(viewer.document.distance(cx), 0.)
+    });
+    let worker = watch.stop();
+    let (done, stopped) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        worker.join().unwrap();
+        done.send(()).unwrap();
+    });
+    stopped.recv_timeout(Duration::from_secs(5)).unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[gpui_kit::test]
 fn external_replacement_keeps_search_and_command_input_entity_text_and_focus(
     cx: &mut TestAppContext,
 ) {

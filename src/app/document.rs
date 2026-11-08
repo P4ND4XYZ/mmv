@@ -14,6 +14,13 @@ pub struct ExternalRequestId(pub String);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DocumentKey(pub PathBuf);
 
+/// An adopted-file subscription, stable across reloads, unique across A → B → A.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WatchTarget {
+    pub serial: u64,
+    pub key: DocumentKey,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReadRequest {
     pub id: ReadRequestId,
@@ -28,10 +35,6 @@ pub enum OperationOrigin {
     Keyboard,
     Link,
     External,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "File watching is connected in stage 3.")
-    )]
     Automatic,
 }
 

@@ -4479,6 +4479,7 @@ dependencies = [
  "clap",
  "gpui-kit",
  "gpui-pre-reqwest-client",
+ "notify",
  "url",
 ]
 
