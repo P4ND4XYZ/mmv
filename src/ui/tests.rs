@@ -295,6 +295,9 @@ fn mermaid_parsing_hides_sources_and_keeps_search_working_during_generation(
                 cx,
             );
             assert!(viewer.document.diagram_images.is_empty());
+            assert!(viewer.message.is_none());
+            assert!(viewer.display_error.is_none());
+            assert_eq!(viewer.input.state.read(cx).value().as_ref(), "検証本文");
             assert_eq!(viewer.app.matches().len(), 1);
             assert_eq!(
                 viewer
@@ -314,6 +317,17 @@ fn mermaid_parsing_hides_sources_and_keeps_search_working_during_generation(
                     .count(),
                 1
             );
+            let next = running_diagram(viewer);
+            viewer.complete_diagram(
+                DiagramResult {
+                    request: next,
+                    png: Ok(vec![137, 80, 78, 71]),
+                },
+                cx,
+            );
+            assert_eq!(viewer.document.diagram_images.len(), 1);
+            assert!(viewer.message.is_none());
+            assert!(viewer.display_error.is_none());
         });
     })
     .unwrap();

@@ -87,9 +87,11 @@ fn run_gui() -> std::io::Result<()> {
             connect_document_reads(&view, cx);
             cx.subscribe(&view, |view, request: &app::DiagramRequest, cx| {
                 let request = request.clone();
-                let result = cx
-                    .background_executor()
-                    .spawn(async move { infra::generate_diagram(request) });
+                let result = cx.background_executor().spawn(async move {
+                    let result = infra::generate_diagram(request);
+                    infra::log_diagram_failure(&result);
+                    result
+                });
                 let view = view.downgrade();
                 cx.spawn(async move |cx| {
                     let result = result.await;

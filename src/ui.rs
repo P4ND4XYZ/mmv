@@ -322,23 +322,13 @@ impl Viewer {
     }
 
     pub fn complete_diagram(&mut self, result: DiagramResult, cx: &mut Context<Self>) {
-        if self.app.complete_diagram(&result) {
-            match result.png {
-                Ok(png) => {
-                    self.document.diagram_images.insert(
-                        result.request.start,
-                        Arc::new(Image::from_bytes(ImageFormat::Png, png)),
-                    );
-                }
-                Err(error) => {
-                    eprintln!(
-                        "Mermaid {} byte {}: {error}",
-                        result.request.path.display(),
-                        result.request.start
-                    );
-                    self.message = Some(format!("Mermaidの生成に失敗しました: {error}"));
-                }
-            }
+        if self.app.complete_diagram(&result)
+            && let Ok(png) = result.png
+        {
+            self.document.diagram_images.insert(
+                result.request.start,
+                Arc::new(Image::from_bytes(ImageFormat::Png, png)),
+            );
         }
         self.start_next_diagram(cx);
         cx.notify();

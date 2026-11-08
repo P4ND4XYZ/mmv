@@ -1,4 +1,5 @@
 mod document;
+mod logging;
 mod mermaid;
 mod watch;
 
@@ -35,5 +36,6 @@ pub use {
 };
 
 pub use document::read_document;
+pub use logging::log_diagram_failure;
 pub use mermaid::generate_diagram;
 pub use watch::{FileWatch, WatchNotice};
