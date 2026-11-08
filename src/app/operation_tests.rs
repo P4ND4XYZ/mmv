@@ -275,6 +275,10 @@ fn external_history_navigation_preserves_search_and_command_modes() {
         finish(&mut app, back, "canonical-a", 600.);
         assert_eq!(app.mode, mode);
         assert_eq!(target(&app), PositionTarget::Distance(480.));
+        assert_eq!(
+            app.position_request().unwrap().pending_movements,
+            PendingMovementPolicy::Replace
+        );
         let position = app.position_request().cloned();
         app.rendered(app.document().unwrap().generation, "edit edit");
         assert_eq!(app.position_request(), position.as_ref());
@@ -285,6 +289,10 @@ fn external_history_navigation_preserves_search_and_command_modes() {
         finish(&mut app, forward, "canonical-b", 500.);
         assert_eq!(app.mode, mode);
         assert_eq!(target(&app), PositionTarget::Distance(600.));
+        assert_eq!(
+            app.position_request().unwrap().pending_movements,
+            PendingMovementPolicy::Replace
+        );
     }
 }
 
@@ -295,24 +303,37 @@ fn open_classifies_by_resolved_key_and_reload_uses_replacement_time_distance() {
     assert_eq!(app.history.current, Some(0));
     assert_eq!(app.history.entries[0].path, PathBuf::from("a.md"));
     let old = app.position_request().unwrap().clone();
+    assert_eq!(old.pending_movements, PendingMovementPolicy::Replace);
 
     // Different spelling but equal infra identity is a reload, not a navigation.
     let request = read(&mut app, DocumentOperation::Open("./A.md".into()));
     assert_eq!(app.position_request(), Some(&old));
     finish(&mut app, request, "canonical-a", 480.);
     assert_eq!(target(&app), PositionTarget::Distance(480.));
+    assert_eq!(
+        app.position_request().unwrap().pending_movements,
+        PendingMovementPolicy::Carry
+    );
     assert_eq!(app.history.entries.len(), 1);
     assert!(!app.acknowledge_position(&old));
 
     let request = read(&mut app, DocumentOperation::Reload);
     finish(&mut app, request, "canonical-a", 720.);
     assert_eq!(target(&app), PositionTarget::Distance(720.));
+    assert_eq!(
+        app.position_request().unwrap().pending_movements,
+        PendingMovementPolicy::Carry
+    );
     assert_eq!(app.history.entries.len(), 1);
 
     // Equal requested spelling is not sufficient to identify the resolved file.
     let request = read(&mut app, DocumentOperation::Open("./A.md".into()));
     finish(&mut app, request, "canonical-b", 960.);
     assert_eq!(target(&app), PositionTarget::Top);
+    assert_eq!(
+        app.position_request().unwrap().pending_movements,
+        PendingMovementPolicy::Replace
+    );
     assert_eq!(app.history.current, Some(1));
     assert_eq!(app.history.entries[0].distance, 960.);
 }
@@ -342,6 +363,10 @@ fn headings_distinguish_synchronous_current_document_and_loaded_target() {
     assert_eq!(app.history.entries.len(), 2);
     assert_eq!(app.history.entries[0].distance, 120.);
     let first_heading = app.position_request().unwrap().clone();
+    assert_eq!(
+        first_heading.pending_movements,
+        PendingMovementPolicy::Replace
+    );
 
     app.operate(
         DocumentOperation::Heading {
@@ -363,6 +388,10 @@ fn headings_distinguish_synchronous_current_document_and_loaded_target() {
     assert_eq!(app.history.entries.len(), 3);
     finish(&mut app, request, "canonical-b", 360.);
     assert_eq!(target(&app), PositionTarget::Heading("elsewhere".into()));
+    assert_eq!(
+        app.position_request().unwrap().pending_movements,
+        PendingMovementPolicy::Replace
+    );
     assert_ne!(app.document().unwrap().generation, generation);
     assert_eq!(app.history.entries.len(), 4);
     assert_eq!(app.history.entries[2].distance, 360.);
@@ -393,6 +422,10 @@ fn reload_before_heading_layout_preserves_intent_until_acknowledged() {
         );
         finish(&mut app, request, "canonical-a", 0.);
         assert_eq!(target(&app), PositionTarget::Heading("使い方".into()));
+        assert_eq!(
+            app.position_request().unwrap().pending_movements,
+            PendingMovementPolicy::Carry
+        );
         assert_ne!(
             app.position_request().unwrap().generation,
             heading.generation

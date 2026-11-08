@@ -1,6 +1,7 @@
 extern crate gpui_kit as gpui;
 
 mod app;
+mod cli;
 mod core;
 mod infra;
 mod ui;

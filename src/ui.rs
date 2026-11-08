@@ -10,11 +10,11 @@ use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::{prelude::*, *};
 
 use crate::app::{
-    self, DiagramRequest, DiagramResult, DocumentKey, DocumentOperation, ExternalRequestId,
-    LinkTarget, OperationOrigin, OperationResult, ReadCompletion, ReadRequest, ReadResult,
-    WatchTarget, resolve_link,
+    self, DiagramRequest, DiagramResult, DocumentKey, DocumentOperation, ExternalOperation,
+    ExternalRequestId, LinkTarget, OperationError, OperationOrigin, OperationResult,
+    PendingMovementPolicy, ReadCompletion, ReadRequest, ReadResult, WatchTarget, resolve_link,
 };
-use document::DocumentView;
+use document::{DocumentView, Movement};
 use input::Prompt;
 pub use input::bind_keys;
 #[cfg(all(test, feature = "ui-tests"))]
@@ -106,6 +106,51 @@ impl Viewer {
         )
     }
 
+    /// IPC receives Complete synchronously, or waits for the existing ReadCompletion
+    /// event carrying the same external ID. This adapter never changes input focus.
+    #[cfg_attr(
+        not(all(test, feature = "ui-tests")),
+        expect(
+            dead_code,
+            reason = "Public external operations are connected by main after Windows IPC implementation."
+        )
+    )]
+    pub fn request_external(
+        &mut self,
+        operation: ExternalOperation,
+        response_to: ExternalRequestId,
+        cx: &mut Context<Self>,
+    ) -> OperationResult {
+        let operation = match operation {
+            ExternalOperation::Open(path) => DocumentOperation::Open(path),
+            ExternalOperation::Back => DocumentOperation::Back,
+            ExternalOperation::Forward => DocumentOperation::Forward,
+            movement => {
+                let outcome = if self.app.document().is_none() {
+                    Err(OperationError::DocumentUnavailable)
+                } else {
+                    let movement = match movement {
+                        ExternalOperation::Scroll(direction) => Movement::Scroll(direction),
+                        ExternalOperation::Top => Movement::Edge(false),
+                        ExternalOperation::Bottom => Movement::Edge(true),
+                        _ => unreachable!("document operations dispatched separately"),
+                    };
+                    self.next_operation_order += 1;
+                    self.latest_navigation_order = self.next_operation_order;
+                    self.deferred_links.clear();
+                    self.queue_movement(movement, self.next_operation_order, cx);
+                    Ok(())
+                };
+                cx.notify();
+                return OperationResult::Complete {
+                    response_to: Some(response_to),
+                    outcome,
+                };
+            }
+        };
+        self.request_operation(operation, OperationOrigin::External, Some(response_to), cx)
+    }
+
     pub(super) fn reload(&mut self, cx: &mut Context<Self>) {
         self.request_operation(
             DocumentOperation::Reload,
@@ -146,8 +191,17 @@ impl Viewer {
         // accepted operations supersede older clicks at acceptance, not adoption.
         let supersedes_links = !matches!(operation, DocumentOperation::Reload);
         self.settle_position(cx);
+        let previous_position = self.app.position_request().map(|request| request.serial);
         let distance = self.departure_distance(cx);
         let result = self.app.operate(operation, origin, distance, response_to);
+        // A synchronous position can replace earlier movement without a read.
+        // Pending/failed reads leave the app's position intent unchanged.
+        if self.app.position_request().is_some_and(|request| {
+            Some(request.serial) != previous_position
+                && request.pending_movements == PendingMovementPolicy::Replace
+        }) {
+            self.document.supersede_movements(order);
+        }
         if supersedes_links
             && matches!(
                 &result,
@@ -255,9 +309,14 @@ impl Viewer {
         if completion.adopted {
             let document = self.app.document().expect("accepted document");
             let generation = document.generation;
+            let pending_movements = self
+                .app
+                .position_request()
+                .expect("adoption produces a position request")
+                .pending_movements;
             self.path = document.path.clone();
             self.message = None;
-            self.document.replace(generation, cx);
+            self.document.replace(generation, pending_movements, cx);
             self.display_error = None;
             self.accept_rendered_text(generation, cx);
         }

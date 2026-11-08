@@ -73,10 +73,20 @@ pub enum PositionTarget {
     Heading(String),
 }
 
+/// Whether a new position continues or supersedes UI movement intent that has
+/// been accepted but not yet applied. The app decides this with document/history
+/// semantics; UI owns the actual movement and layout waiting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PendingMovementPolicy {
+    Carry,
+    Replace,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PositionRequest {
     pub generation: Generation,
     pub target: PositionTarget,
+    pub pending_movements: PendingMovementPolicy,
     // Distinguishes successive synchronous movements within the same generation.
     pub serial: u64,
 }

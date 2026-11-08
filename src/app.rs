@@ -3,15 +3,13 @@ mod history;
 mod mermaid;
 mod search;
 
-#[cfg(test)]
-use std::path::PathBuf;
-use std::{collections::BTreeMap, ops::Range};
+use std::{collections::BTreeMap, ops::Range, path::PathBuf};
 
 pub use crate::core::{ImageLocation, LinkTarget, resolve_image, resolve_link};
 pub use document::{
     Document, DocumentKey, DocumentOperation, ExternalRequestId, Generation, LoadedDocument,
-    OperationError, OperationOrigin, OperationResult, PositionRequest, PositionTarget,
-    ReadCompletion, ReadRequest, ReadResult, WatchTarget,
+    OperationError, OperationOrigin, OperationResult, PendingMovementPolicy, PositionRequest,
+    PositionTarget, ReadCompletion, ReadRequest, ReadResult, WatchTarget,
 };
 #[cfg(test)]
 pub use mermaid::{Diagram, DiagramStatus};
@@ -22,6 +20,27 @@ use document::DocumentState;
 use history::History;
 use mermaid::MermaidState;
 use search::SearchState;
+
+/// Public operations shared by CLI parsing and UI delivery; no GPUI or I/O types.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExternalOperation {
+    Open(PathBuf),
+    Scroll(ScrollDirection),
+    Top,
+    Bottom,
+    Back,
+    Forward,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScrollDirection {
+    Down,
+    Up,
+    HalfDown,
+    HalfUp,
+    PageDown,
+    PageUp,
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Mode {
@@ -143,7 +162,7 @@ impl App {
                 self.document.supersede();
                 self.pending_operation = None;
                 self.history.push(path, distance);
-                self.request_position(PositionTarget::Heading(id));
+                self.request_position(PositionTarget::Heading(id), PendingMovementPolicy::Replace);
                 return complete(Ok(()));
             }
             DocumentOperation::Heading {
@@ -198,27 +217,32 @@ impl App {
                 let document = self.document().expect("adopted document");
                 let same_document = previous_key.as_ref() == Some(&document.key);
                 let path = document.path.clone();
-                let target = match operation {
-                    PendingOperation::Open if same_document => {
-                        pending_heading.unwrap_or(PositionTarget::Distance(distance))
-                    }
+                let (target, pending_movements) = match operation {
+                    PendingOperation::Open if same_document => (
+                        pending_heading.unwrap_or(PositionTarget::Distance(distance)),
+                        PendingMovementPolicy::Carry,
+                    ),
                     PendingOperation::Open => {
                         self.history.push(path, distance);
-                        PositionTarget::Top
+                        (PositionTarget::Top, PendingMovementPolicy::Replace)
                     }
-                    PendingOperation::Reload => {
-                        pending_heading.unwrap_or(PositionTarget::Distance(distance))
-                    }
+                    PendingOperation::Reload => (
+                        pending_heading.unwrap_or(PositionTarget::Distance(distance)),
+                        PendingMovementPolicy::Carry,
+                    ),
                     PendingOperation::Heading(id) => {
                         self.history.push(path, distance);
-                        PositionTarget::Heading(id)
+                        (PositionTarget::Heading(id), PendingMovementPolicy::Replace)
                     }
                     PendingOperation::History {
                         index,
                         distance: saved,
                     } => {
                         self.history.travel(index, distance);
-                        PositionTarget::Distance(saved)
+                        (
+                            PositionTarget::Distance(saved),
+                            PendingMovementPolicy::Replace,
+                        )
                     }
                 };
                 if self.watch_target.as_ref().map(|target| &target.key)
@@ -231,7 +255,7 @@ impl App {
                     });
                     self.deferred_reload = false;
                 }
-                self.request_position(target);
+                self.request_position(target, pending_movements);
                 self.mermaid.replace_document();
                 self.search.replace_document();
             }
@@ -269,7 +293,11 @@ impl App {
         }
     }
 
-    fn request_position(&mut self, target: PositionTarget) {
+    fn request_position(
+        &mut self,
+        target: PositionTarget,
+        pending_movements: PendingMovementPolicy,
+    ) {
         self.next_position += 1;
         self.position = Some(PositionRequest {
             generation: self
@@ -277,6 +305,7 @@ impl App {
                 .expect("position requires document")
                 .generation,
             target,
+            pending_movements,
             serial: self.next_position,
         });
     }

@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     path::PathBuf,
     sync::{
         Arc,
@@ -20,7 +20,21 @@ use super::{
     mermaid::{DiscoveredDiagrams, MermaidPlugin},
     status::FOOTER_LINE_HEIGHT,
 };
-use crate::app::{Generation, ImageLocation, Mode, PositionRequest, PositionTarget, resolve_image};
+use crate::app::{
+    Generation, ImageLocation, Mode, PendingMovementPolicy, PositionRequest, PositionTarget,
+    ScrollDirection, resolve_image,
+};
+
+pub(super) enum Movement {
+    Scroll(ScrollDirection),
+    Edge(bool),
+}
+
+struct MovementIntent {
+    generation: Generation,
+    order: u64,
+    movement: Movement,
+}
 
 pub(super) struct DocumentView {
     pub text: Entity<TextViewState>,
@@ -30,6 +44,7 @@ pub(super) struct DocumentView {
     pub analysis: Option<DocumentAnalysis>,
     layout_serial: u64,
     heading_reveal: Option<(PositionRequest, u64)>,
+    movements: VecDeque<MovementIntent>,
     started: Instant,
     first_paint: Arc<AtomicBool>,
 }
@@ -56,14 +71,28 @@ impl DocumentView {
             analysis: None,
             layout_serial: 0,
             heading_reveal: None,
+            movements: VecDeque::new(),
             started,
             first_paint: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    pub fn replace(&mut self, generation: Generation, cx: &mut Context<Viewer>) {
+    pub fn replace(
+        &mut self,
+        generation: Generation,
+        pending_movements: PendingMovementPolicy,
+        cx: &mut Context<Viewer>,
+    ) {
         self.analysis = None;
         self.heading_reveal = None;
+        match pending_movements {
+            PendingMovementPolicy::Carry => {
+                for intent in &mut self.movements {
+                    intent.generation = generation;
+                }
+            }
+            PendingMovementPolicy::Replace => self.movements.clear(),
+        }
         self.discovered_diagrams = DiscoveredDiagrams::default();
         for image in std::mem::take(&mut self.diagram_images).into_values() {
             image.remove_asset(cx);
@@ -74,6 +103,19 @@ impl DocumentView {
         self.text_subscription = Some(cx.observe(&self.text, move |this, _, cx| {
             this.accept_rendered_text(generation, cx);
         }));
+    }
+
+    pub fn supersede_movements(&mut self, order: u64) {
+        self.movements.retain(|intent| intent.order > order);
+    }
+
+    fn layout_ready(&self, cx: &gpui_kit::App) -> bool {
+        let list = self.text.read(cx).list_state();
+        let viewport = list.viewport_bounds().size;
+        viewport.height > px(0.)
+            && viewport.width > px(0.)
+            && (list.is_scrolled_to_end().is_some()
+                || (0..list.item_count()).all(|ix| list.bounds_for_item(ix).is_some()))
     }
 
     pub fn distance(&self, cx: &gpui_kit::App) -> f32 {
@@ -187,10 +229,67 @@ impl Viewer {
         Ok(())
     }
 
+    pub(super) fn queue_movement(
+        &mut self,
+        movement: Movement,
+        order: u64,
+        cx: &mut Context<Self>,
+    ) {
+        let generation = self
+            .app
+            .document()
+            .expect("movement requires a document")
+            .generation;
+        self.document.movements.push_back(MovementIntent {
+            generation,
+            order,
+            movement,
+        });
+        self.settle_position(cx);
+        self.apply_movements_after_layout(cx);
+    }
+
     pub(super) fn settle_position(&mut self, cx: &mut Context<Self>) {
         if let Some(request) = self.app.position_request().cloned() {
             let text = self.document.text.clone();
             self.apply_position_after_layout(&request, &text, cx);
+        }
+        // Do not consume movement while preparing a new document operation.
+        // Its app-produced position policy may still replace that intent.
+    }
+
+    /// Accepted movement is a UI position intent, not a read. Keep it behind
+    /// Top/Distance/Heading until that generation's layout can consume it once.
+    fn apply_movements_after_layout(&mut self, cx: &mut Context<Self>) {
+        let Some(document) = self.app.document() else {
+            return;
+        };
+        let generation = document.generation;
+        self.document
+            .movements
+            .retain(|intent| intent.generation == generation);
+        if self.document.movements.is_empty()
+            || self.app.position_request().is_some()
+            || self.document.text.read(cx).rendered_text().source() != document.source
+            || !self.document.layout_ready(cx)
+        {
+            return;
+        }
+        while let Some(intent) = self.document.movements.pop_front() {
+            match intent.movement {
+                Movement::Scroll(direction) => {
+                    let (lines, pages) = match direction {
+                        ScrollDirection::Down => (1., 0.),
+                        ScrollDirection::Up => (-1., 0.),
+                        ScrollDirection::HalfDown => (0., 0.5),
+                        ScrollDirection::HalfUp => (0., -0.5),
+                        ScrollDirection::PageDown => (0., 1.),
+                        ScrollDirection::PageUp => (0., -1.),
+                    };
+                    self.document.scroll(lines, pages, cx);
+                }
+                Movement::Edge(end) => self.document.scroll_edge(end, cx),
+            }
         }
     }
 
@@ -226,19 +325,12 @@ impl Viewer {
             self.display_error = Some(error);
             return;
         }
-        let list = text.read(cx).list_state();
-        let viewport = list.viewport_bounds().size;
-        if viewport.height <= px(0.) || viewport.width <= px(0.) {
-            return;
-        }
         // None also means fully measured content that fits in the viewport.
-        // For that case, require measured bounds for every block. An empty
-        // document needs only the positive viewport established by this layout.
-        if list.is_scrolled_to_end().is_none()
-            && !(0..list.item_count()).all(|ix| list.bounds_for_item(ix).is_some())
-        {
+        // An empty document needs only a positive viewport from this layout.
+        if !self.document.layout_ready(cx) {
             return;
         }
+        let list = text.read(cx).list_state();
         if let Some((revealed, layout)) = &self.document.heading_reveal
             && revealed == request
         {
@@ -389,18 +481,21 @@ impl Viewer {
                             // This sibling paints after TextView's measure_all layout.
                             // Defer mutation out of paint, retaining the exact request
                             // and Entity: source equality alone cannot identify a generation.
-                            if let Some(request) = position.clone() {
-                                let view = layout_view.clone();
-                                let text = text.clone();
-                                cx.defer(move |cx| {
-                                    let _ = view.update(cx, |this, cx| {
-                                        if this.document.text == text {
-                                            this.document.layout_serial += 1;
-                                        }
+                            let view = layout_view.clone();
+                            let text = text.clone();
+                            let position = position.clone();
+                            cx.defer(move |cx| {
+                                let _ = view.update(cx, |this, cx| {
+                                    if this.document.text != text {
+                                        return;
+                                    }
+                                    this.document.layout_serial += 1;
+                                    if let Some(request) = position {
                                         this.apply_position_after_layout(&request, &text, cx);
-                                    });
+                                    }
+                                    this.apply_movements_after_layout(cx);
                                 });
-                            }
+                            });
                             if !first_paint.swap(true, Ordering::Relaxed) {
                                 eprintln!(
                                     "first_content_paint_from_main_ms={:.3}",
