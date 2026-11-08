@@ -1,4 +1,5 @@
 mod modes;
+mod phase_one;
 
 use std::{cell::RefCell, path::PathBuf, rc::Rc, time::Instant};
 
