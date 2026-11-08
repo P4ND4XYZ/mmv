@@ -136,8 +136,47 @@ fn move_if_exists(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
+static LOGGER: OnceLock<Mutex<Logger>> = OnceLock::new();
+
+pub fn log_config_failure(error: &super::config::ConfigError) {
+    let _guard = LOGGER
+        .get_or_init(|| Mutex::new(Logger::default()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let directory = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .map(|path| path.join("my-markdown-viewer").join("logs"));
+    record_config_failure(error, directory.as_deref(), &mut io::stderr().lock());
+}
+
+fn record_config_failure(
+    error: &super::config::ConfigError,
+    directory: Option<&Path>,
+    stderr: &mut impl Write,
+) {
+    let entry = format!(
+        "unix_seconds={} config={} reason={}\n",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        error
+            .path
+            .as_ref()
+            .map(|path| field(&path.to_string_lossy()))
+            .unwrap_or_else(|| "[unavailable]".into()),
+        field(&error.cause)
+    );
+    let outcome = directory
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "LOCALAPPDATA is unavailable"))
+        .and_then(|dir| append(dir, entry.as_bytes()));
+    if let Err(error) = outcome {
+        let _ = writeln!(stderr, "Config log write failed: {error}; {entry}");
+    }
+}
+
 pub fn log_diagram_failure(result: &DiagramResult) {
-    static LOGGER: OnceLock<Mutex<Logger>> = OnceLock::new();
     let directory = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .map(|path| path.join("my-markdown-viewer").join("logs"));
@@ -179,6 +218,23 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn config_error_uses_shared_log_and_stderr_fallback() {
+        let dir = TempDir::new();
+        let error = crate::infra::config::ConfigError {
+            path: Some(PathBuf::from("日本語/init.lua")),
+            cause: "invalid color".into(),
+        };
+        let mut stderr = Vec::new();
+        record_config_failure(&error, Some(&dir.0), &mut stderr);
+        let log = fs::read_to_string(dir.0.join("viewer.log")).unwrap();
+        assert!(log.contains("日本語/init.lua") && log.contains("invalid color"));
+        assert!(stderr.is_empty());
+        record_config_failure(&error, None, &mut stderr);
+        let output = String::from_utf8(stderr).unwrap();
+        assert!(output.contains("日本語/init.lua") && output.contains("invalid color"));
     }
 
     #[test]

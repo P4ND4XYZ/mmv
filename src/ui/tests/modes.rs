@@ -201,6 +201,70 @@ fn command_escape_and_unknown_command_do_not_quit_but_q_enter_closes_the_window(
 }
 
 #[gpui_kit::test]
+fn nohlsearch_commands_preserve_search_and_scroll_and_navigation_restores_highlights(
+    cx: &mut TestAppContext,
+) {
+    for (command, direction) in [("noh", "n"), ("nohlsearch", "shift-n")] {
+        let (window, view) = super::open(cx, "target target\n\n".repeat(60));
+        cx.run_until_parked();
+        // Clearing before any search is harmless.
+        press(cx, window, ":");
+        input(cx, window, command);
+        press(cx, window, "enter");
+        view.read_with(cx, |viewer, _| {
+            assert_eq!(viewer.app.mode, Mode::Normal);
+            assert!(viewer.message.is_none());
+        });
+        press(cx, window, "/");
+        input(cx, window, "target");
+        press(cx, window, "enter");
+        press(cx, window, "n");
+        let top = view.read_with(cx, |viewer, cx| {
+            viewer
+                .document
+                .text
+                .read(cx)
+                .list_state()
+                .logical_scroll_top()
+        });
+        press(cx, window, ":");
+        input(cx, window, command);
+        press(cx, window, "enter");
+        view.read_with(cx, |viewer, cx| {
+            assert_eq!(viewer.app.mode, Mode::Normal);
+            assert!(!viewer.app.highlights_visible());
+            assert_eq!(viewer.app.matches().len(), 120);
+            assert_eq!(viewer.app.current_match(), Some(1));
+            let after = viewer
+                .document
+                .text
+                .read(cx)
+                .list_state()
+                .logical_scroll_top();
+            assert_eq!(after.item_ix, top.item_ix);
+            assert_eq!(after.offset_in_item, top.offset_in_item);
+            assert!(viewer.display_error.is_none());
+        });
+        press(cx, window, "/");
+        input(cx, window, "target");
+        view.read_with(cx, |viewer, _| assert!(viewer.app.highlights_visible()));
+        press(cx, window, "escape");
+        view.read_with(cx, |viewer, _| {
+            assert!(!viewer.app.highlights_visible());
+            assert_eq!(viewer.app.current_match(), Some(1));
+        });
+        press(cx, window, direction);
+        view.read_with(cx, |viewer, _| {
+            assert!(viewer.app.highlights_visible());
+            assert_eq!(
+                viewer.app.current_match(),
+                Some(if direction == "n" { 2 } else { 0 })
+            );
+        });
+    }
+}
+
+#[gpui_kit::test]
 fn empty_command_backspace_returns_to_normal_and_restores_body_keys(cx: &mut TestAppContext) {
     let (window, view) = super::open(cx, "本文".into());
     cx.run_until_parked();

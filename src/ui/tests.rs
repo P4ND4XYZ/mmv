@@ -1,6 +1,8 @@
+mod config;
 mod external;
 mod headings;
 mod history;
+mod layout;
 mod modes;
 mod operations;
 mod phase_one;

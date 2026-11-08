@@ -11,7 +11,7 @@ use std::{
 use crate::core::HeadingIds;
 use gpui_kit::{
     base::text::editor_host::{BlockNode, parse_markdown},
-    component::text::{MarkdownExtensions, TextView, TextViewState},
+    component::text::{MarkdownExtensions, TextView, TextViewState, TextViewStyle},
 };
 use gpui_kit::{prelude::*, *};
 
@@ -405,7 +405,12 @@ impl Viewer {
         }
     }
 
-    pub(super) fn render_document(&mut self, path: PathBuf, cx: &mut Context<Self>) -> Div {
+    pub(super) fn render_document(
+        &mut self,
+        path: PathBuf,
+        window_width: Pixels,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let ready = self
             .app
             .document()
@@ -435,6 +440,23 @@ impl Viewer {
         let first_paint = self.document.first_paint.clone();
         let started = self.document.started;
         let weak = cx.entity().downgrade();
+        // Bound the conversion by the actual viewport before converting f64 to f32.
+        let max_width = self
+            .config
+            .max_width
+            .min(f64::from(f32::from(window_width))) as f32;
+        let centered = self.config.position == crate::config::Position::Center;
+        let mut table_style = StyleRefinement::default();
+        table_style.overflow.x = Some(Overflow::Scroll);
+        let mut code_style = StyleRefinement::default();
+        // The vertical-scroll path supplies a tracked viewport and leaves the
+        // upstream language label outside it. No max height is imposed.
+        // Flex gives the unwrapped text its intrinsic width for horizontal scroll.
+        code_style.overflow.x = Some(Overflow::Scroll);
+        code_style.overflow.y = Some(Overflow::Scroll);
+        code_style.display = Some(Display::Flex);
+        code_style.flex_direction = Some(FlexDirection::Row);
+        code_style.text.white_space = Some(WhiteSpace::Nowrap);
 
         input::bind_body_actions(div(), cx)
             .debug_selector(|| "document-body".to_string())
@@ -447,16 +469,24 @@ impl Viewer {
             .flex_1()
             .min_h_0()
             .relative()
+            .flex()
+            .px_4()
+            .py_3()
+            .when(centered, |body| body.justify_center())
             .child(
                 TextView::new(&self.document.text)
+                    .style(
+                        TextViewStyle::default()
+                            .table(table_style)
+                            .code_block(code_style),
+                    )
                     .plugin(MermaidPlugin {
                         discovered: self.document.discovered_diagrams.clone(),
                         images: self.document.diagram_images.clone(),
                     })
                     .scrollable(true)
                     .size_full()
-                    .px_4()
-                    .py_3()
+                    .max_w(px(max_width))
                     .image_source(move |uri| match resolve_image(&path, uri.as_ref()) {
                         Ok(ImageLocation::File(path)) => path.into(),
                         Ok(ImageLocation::Url(url)) => ImageSource::from(SharedUri::from(url)),

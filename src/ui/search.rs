@@ -41,6 +41,7 @@ impl Viewer {
             .app
             .matches()
             .iter()
+            .filter(|_| self.app.highlights_visible())
             .enumerate()
             .map(|(ix, range)| {
                 RangeHighlight::new(

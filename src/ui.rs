@@ -31,6 +31,12 @@ pub struct Viewer {
     body_focus: FocusHandle,
     message: Option<String>,
     display_error: Option<String>,
+    #[expect(
+        dead_code,
+        reason = "Consumed by the display and theme implementation stages."
+    )]
+    config: crate::config::Config,
+    config_notice: bool,
     // Links wait for an unresolved heading's layout so history records a
     // measured departure distance, not the new TextView's temporary zero.
     deferred_links: std::collections::VecDeque<DeferredLink>,
@@ -52,9 +58,21 @@ impl EventEmitter<ReadCompletion> for Viewer {}
 impl EventEmitter<DiagramRequest> for Viewer {}
 
 impl Viewer {
+    #[cfg(all(test, feature = "ui-tests"))]
     pub fn new(
         path: PathBuf,
         started: Instant,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::with_config(path, started, Default::default(), false, window, cx)
+    }
+
+    pub fn with_config(
+        path: PathBuf,
+        started: Instant,
+        config: crate::config::Config,
+        config_notice: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -70,6 +88,8 @@ impl Viewer {
             body_focus,
             message: None,
             display_error: None,
+            config,
+            config_notice,
             deferred_links: Default::default(),
             next_operation_order: 0,
             latest_navigation_order: 0,
@@ -339,6 +359,25 @@ impl Viewer {
             cx.emit(request);
         }
     }
+
+    fn status_text(&self) -> String {
+        self.app
+            .error()
+            .or(self.display_error.as_deref())
+            .map(str::to_owned)
+            .or_else(|| self.message.clone())
+            .or_else(|| {
+                self.config_notice
+                    .then(|| "設定を読み込めませんでした".into())
+            })
+            .unwrap_or_else(|| {
+                if self.app.is_loading() {
+                    "読み込み中…".into()
+                } else {
+                    String::new()
+                }
+            })
+    }
 }
 
 impl Render for Viewer {
@@ -360,21 +399,9 @@ impl Render for Viewer {
             .document()
             .map(|doc| doc.path.clone())
             .unwrap_or_else(|| self.path.clone());
-        let status = self
-            .app
-            .error()
-            .or(self.display_error.as_deref())
-            .map(str::to_owned)
-            .or_else(|| self.message.clone())
-            .unwrap_or_else(|| {
-                if self.app.is_loading() {
-                    "読み込み中…".into()
-                } else {
-                    String::new()
-                }
-            });
+        let status = self.status_text();
 
-        let body = self.render_document(path.clone(), cx);
+        let body = self.render_document(path.clone(), window.viewport_size().width, cx);
         let status_line = status::render_status_line(&self.app.mode, &path, cx);
         let command_line =
             status::render_command_line(&self.app.mode, &self.input.state, status, cx);

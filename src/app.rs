@@ -103,6 +103,14 @@ impl App {
         self.search.current_match
     }
 
+    pub fn highlights_visible(&self) -> bool {
+        !self.search.highlights_hidden
+    }
+
+    pub fn clear_search_highlights(&mut self) {
+        self.search.highlights_hidden = true;
+    }
+
     #[cfg(test)]
     pub fn diagrams(&self) -> &BTreeMap<usize, Diagram> {
         &self.mermaid.diagrams
@@ -563,6 +571,54 @@ mod tests {
         app.begin_search();
         assert_eq!(app.confirm_search("target".into(), 0), SearchOutcome::Found);
         app
+    }
+
+    #[test]
+    fn hidden_highlights_keep_selection_and_restore_on_navigation_or_cancel() {
+        for forward in [true, false] {
+            let mut app = with_confirmed_search();
+            app.step_match(true);
+            app.clear_search_highlights();
+            assert!(!app.highlights_visible());
+            assert_eq!(app.matches(), vec![0..6, 7..13]);
+            assert_eq!(app.current_match(), Some(1));
+            app.begin_search();
+            app.preview_search("target".into());
+            assert!(app.highlights_visible());
+            app.cancel_input();
+            assert!(!app.highlights_visible());
+            assert_eq!(app.current_match(), Some(1));
+            app.step_match(forward);
+            assert!(app.highlights_visible());
+            assert_eq!(app.current_match(), Some(0));
+        }
+    }
+
+    #[test]
+    fn hidden_highlights_survive_replacement_and_search_cancel_after_replacement() {
+        for path in ["sample.md", "other.md"] {
+            let mut app = with_confirmed_search();
+            app.step_match(true);
+            app.clear_search_highlights();
+            let request = app.open(path.into());
+            app.complete(success(request, "target edit edit"));
+            let generation = app.document().unwrap().generation;
+            app.rendered(generation, "target edit edit");
+            assert!(!app.highlights_visible());
+            assert_eq!(app.matches(), &[0..6]);
+            app.begin_search();
+            app.preview_search("edit".into());
+            let request = app.open(path.into());
+            app.complete(success(request, "edit target edit"));
+            let generation = app.document().unwrap().generation;
+            app.rendered(generation, "edit target edit");
+            assert!(app.highlights_visible());
+            assert_eq!(app.matches(), &[0..4, 12..16]);
+            app.cancel_input();
+            assert!(!app.highlights_visible());
+            assert_eq!(app.matches(), &[5..11]);
+            assert_eq!(app.current_match(), Some(0));
+        }
     }
 
     #[test]

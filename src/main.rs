@@ -2,6 +2,7 @@ extern crate gpui_kit as gpui;
 
 mod app;
 mod cli;
+mod config;
 mod core;
 mod infra;
 mod ui;
@@ -58,6 +59,12 @@ fn run_gui() -> std::io::Result<()> {
         return Ok(());
     };
     let server = infra::PipeServer::bind(&namespace)?;
+    let loaded = infra::load_config();
+    if let Some(error) = &loaded.error {
+        infra::log_config_failure(error);
+    }
+    let config_notice = loaded.error.is_some();
+    let config = loaded.config;
     let started = Instant::now();
     gpui_kit::application()
         .with_assets(Assets)
@@ -84,7 +91,16 @@ fn run_gui() -> std::io::Result<()> {
                 |window, cx| {
                     window.set_window_title("Markdown Viewer");
                     // No Initial read: the first external Open uses the shared app path.
-                    cx.new(|cx| ui::Viewer::new(PathBuf::new(), started, window, cx))
+                    cx.new(|cx| {
+                        ui::Viewer::with_config(
+                            PathBuf::new(),
+                            started,
+                            config,
+                            config_notice,
+                            window,
+                            cx,
+                        )
+                    })
                 },
             )
             .expect("failed to open viewer window");

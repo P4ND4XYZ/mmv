@@ -190,11 +190,18 @@ impl Viewer {
             }
             Mode::Command => {
                 self.app.cancel_input();
-                if input == "q" {
-                    window.remove_window();
-                    return;
+                match input.as_str() {
+                    "q" => {
+                        window.remove_window();
+                        return;
+                    }
+                    "noh" | "nohlsearch" => {
+                        self.app.clear_search_highlights();
+                        self.apply_search(false, cx);
+                        self.message = None;
+                    }
+                    _ => self.message = Some(format!("未対応のコマンド: :{input}")),
                 }
-                self.message = Some(format!("未対応のコマンド: :{input}"));
             }
             Mode::Normal => return,
         }

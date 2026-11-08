@@ -16,6 +16,8 @@ pub(super) struct SearchState {
     query: String,
     rendered: Option<(Generation, String)>,
     previous_match: Option<(Generation, Range<usize>)>,
+    pub highlights_hidden: bool,
+    previous_highlights_hidden: bool,
     pub matches: Vec<Range<usize>>,
     pub current_match: Option<usize>,
 }
@@ -34,6 +36,8 @@ impl SearchState {
                 .cloned(),
         );
         self.previous_match = previous_match;
+        self.previous_highlights_hidden = self.highlights_hidden;
+        self.highlights_hidden = false;
         self.set_query(String::new());
     }
 
@@ -62,6 +66,7 @@ impl SearchState {
     }
 
     pub fn cancel_input(&mut self, generation: Option<Generation>) {
+        self.highlights_hidden = self.previous_highlights_hidden;
         self.set_query(self.confirmed_query.clone());
         if let Some((previous_generation, range)) = self.previous_match.take()
             && generation == Some(previous_generation)
@@ -106,6 +111,7 @@ impl SearchState {
         let Some(current) = self.current_match else {
             return;
         };
+        self.highlights_hidden = false;
         let count = self.matches.len();
         self.current_match = Some(if forward {
             (current + 1) % count
