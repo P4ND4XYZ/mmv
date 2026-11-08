@@ -1,6 +1,363 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::RefCell,
+    io::Write as _,
+    path::PathBuf,
+    rc::Rc,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
-use gpui_kit::{AppContext as _, TestAppContext, point, px, test::TestWindowExt as _};
+struct LocalImage(PathBuf);
+
+impl LocalImage {
+    fn new() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let (path, mut file) = loop {
+            let path = std::env::temp_dir().join(format!(
+                "mmv-position-{}-{}.png",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(file) => break (path, file),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create test PNG: {error}"),
+            }
+        };
+        let image = Self(path);
+        // A 40x180 transparent PNG. Its intrinsic height is much larger than
+        // the unloaded/failed image placeholder; no explicit Markdown size is used.
+        file.write_all(&[
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 40, 0, 0, 0,
+            180, 8, 6, 0, 0, 0, 230, 90, 110, 85, 0, 0, 0, 1, 115, 82, 71, 66, 0, 174, 206, 28,
+            233, 0, 0, 0, 4, 103, 65, 77, 65, 0, 0, 177, 143, 11, 252, 97, 5, 0, 0, 0, 9, 112, 72,
+            89, 115, 0, 0, 14, 195, 0, 0, 14, 195, 1, 199, 111, 168, 100, 0, 0, 0, 51, 73, 68, 65,
+            84, 120, 94, 237, 193, 49, 1, 0, 0, 0, 194, 160, 245, 79, 109, 9, 79, 160, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 254, 6, 113,
+            52, 0, 1, 144, 71, 219, 236, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+        ])
+        .expect("write test PNG");
+        image
+    }
+}
+
+impl Drop for LocalImage {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+use gpui_kit::{
+    AnyWindowHandle, AppContext as _, Entity, TestAppContext, point, px, test::TestWindowExt as _,
+};
+
+use super::Viewer;
+
+fn frame(cx: &mut TestAppContext, window: AnyWindowHandle) {
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    cx.run_until_parked();
+}
+
+fn scroll(cx: &mut TestAppContext, view: &Entity<Viewer>, distance: f32) {
+    cx.update(|cx| {
+        view.update(cx, |viewer, cx| {
+            viewer.document.text.update(cx, |text, cx| {
+                text.list_state()
+                    .set_offset_from_scrollbar(point(px(0.), px(-distance)));
+                cx.notify();
+            });
+        });
+    });
+}
+
+fn replace(cx: &mut TestAppContext, view: &Entity<Viewer>, source: String, other: bool) {
+    cx.update(|cx| {
+        view.update(cx, |viewer, cx| {
+            let operation = if other {
+                DocumentOperation::Open(viewer.path.with_file_name("other.md"))
+            } else {
+                DocumentOperation::Reload
+            };
+            let OperationResult::Pending(request) =
+                viewer.request_operation(operation, OperationOrigin::External, None, cx)
+            else {
+                panic!("read required");
+            };
+            viewer.complete(super::success(request, source), cx);
+            let position = viewer.app.position_request().unwrap().clone();
+            let text = viewer.document.text.clone();
+            // A fresh TextView has no viewport yet, including for empty source.
+            viewer.apply_position_after_layout(&position, &text, cx);
+            assert_eq!(viewer.app.position_request(), Some(&position));
+        });
+    });
+}
+
+fn fixture() -> String {
+    "# Start\n\n".to_owned()
+        + &"A long wrapped paragraph with 日本語 text. ".repeat(200)
+        + "\n\n| Column | Value |\n| --- | --- |\n"
+        + &"| table cell | wrapped table contents 日本語 |\n".repeat(30)
+        + "\n"
+        + &"Offscreen target paragraph.\n\n".repeat(100)
+}
+
+#[gpui_kit::test]
+fn production_distance_restoration_measures_rich_content_and_clamps(cx: &mut TestAppContext) {
+    let image = LocalImage::new();
+    let source = fixture().replacen(
+        "Offscreen target paragraph.",
+        &format!(
+            "![local PNG]({})\n\nOffscreen target paragraph.",
+            url::Url::from_file_path(&image.0).unwrap()
+        ),
+        1,
+    );
+    let (window, view) = super::open(cx, source.clone());
+    frame(cx, window);
+    view.read_with(cx, |viewer, cx| {
+        let list = viewer.document.text.read(cx).list_state();
+        assert!(list.item_count() > 100);
+        assert!(list.bounds_for_item(1).unwrap().size.height > px(360.));
+        assert!(list.bounds_for_item(2).unwrap().size.height > px(360.));
+    });
+    cx.update(|cx| {
+        view.update(cx, |viewer, cx| {
+            viewer.document.text.update(cx, |text, cx| {
+                text.list_state().scroll_to(gpui_kit::ListOffset {
+                    item_ix: 3,
+                    offset_in_item: px(0.),
+                });
+                cx.notify();
+            });
+        });
+    });
+    frame(cx, window);
+    frame(cx, window);
+    view.read_with(cx, |viewer, cx| {
+        let list = viewer.document.text.read(cx).list_state();
+        // Intrinsic image height plus TextView's 12px paragraph spacing.
+        // The unloaded image block is only 12px high.
+        assert_eq!(list.bounds_for_item(3).unwrap().size.height, px(192.));
+    });
+    scroll(cx, &view, 2500.);
+    frame(cx, window);
+    // Keep the decoded local image in the replacement too, with different
+    // preceding block boundaries; a logical block index cannot restore pixels.
+    let replacement = source.replacen(
+        &"A long wrapped paragraph with 日本語 text. ".repeat(200),
+        &"Replacement paragraph.\n\n".repeat(100),
+        1,
+    );
+    replace(cx, &view, replacement, false);
+    frame(cx, window);
+    view.read_with(cx, |viewer, cx| {
+        assert_eq!(viewer.document.distance(cx), 2500.);
+        assert!(viewer.app.position_request().is_none());
+    });
+    replace(cx, &view, "Short paragraph.\n\n".repeat(20), false);
+    frame(cx, window);
+    view.read_with(cx, |viewer, cx| {
+        let list = viewer.document.text.read(cx).list_state();
+        let max = list.max_offset_for_scrollbar().y;
+        assert!(max > px(0.) && max < px(2500.));
+        assert_eq!(viewer.document.distance(cx), f32::from(max));
+        assert_eq!(list.is_scrolled_to_end(), Some(true));
+        assert!(viewer.app.position_request().is_none());
+    });
+    replace(cx, &view, "Tiny".into(), false);
+    frame(cx, window);
+    view.read_with(cx, |viewer, cx| {
+        assert_eq!(viewer.document.distance(cx), 0.)
+    });
+}
+
+#[gpui_kit::test]
+fn short_and_empty_documents_consume_initial_and_reload_positions(cx: &mut TestAppContext) {
+    for source in ["Tiny", ""] {
+        let (window, view) = super::open(cx, source.into());
+        frame(cx, window);
+        view.read_with(cx, |viewer, cx| {
+            assert_eq!(viewer.document.distance(cx), 0.);
+            assert!(
+                viewer.app.position_request().is_none(),
+                "initial {source:?}"
+            );
+        });
+        frame(cx, window);
+        view.read_with(cx, |viewer, _| {
+            assert!(viewer.app.position_request().is_none())
+        });
+
+        replace(cx, &view, "Long paragraph.\n\n".repeat(100), false);
+        frame(cx, window);
+        scroll(cx, &view, 480.);
+        view.read_with(cx, |viewer, cx| {
+            assert_eq!(viewer.document.distance(cx), 480.)
+        });
+        replace(cx, &view, source.into(), false);
+        frame(cx, window);
+        view.read_with(cx, |viewer, cx| {
+            assert_eq!(viewer.document.distance(cx), 0.);
+            assert!(viewer.app.position_request().is_none(), "reload {source:?}");
+        });
+        frame(cx, window);
+        view.read_with(cx, |viewer, cx| {
+            assert_eq!(viewer.document.distance(cx), 0.);
+            assert!(viewer.app.position_request().is_none());
+        });
+    }
+}
+
+#[gpui_kit::test]
+fn failed_reload_keeps_distance_and_new_document_opens_at_top(cx: &mut TestAppContext) {
+    let (window, view) = super::open(cx, fixture());
+    frame(cx, window);
+    scroll(cx, &view, 480.);
+    cx.update(|cx| {
+        view.update(cx, |viewer, cx| {
+            let text = viewer.document.text.clone();
+            let OperationResult::Pending(request) = viewer.request_operation(
+                DocumentOperation::Reload,
+                OperationOrigin::External,
+                None,
+                cx,
+            ) else {
+                panic!("read required")
+            };
+            viewer.complete(
+                crate::app::ReadResult {
+                    request,
+                    content: Err("missing".into()),
+                },
+                cx,
+            );
+            assert_eq!(viewer.document.text, text);
+            assert!(viewer.app.position_request().is_none());
+        });
+    });
+    frame(cx, window);
+    view.read_with(cx, |viewer, cx| {
+        assert_eq!(viewer.document.distance(cx), 480.)
+    });
+    replace(cx, &view, fixture(), true);
+    frame(cx, window);
+    view.read_with(cx, |viewer, cx| {
+        assert_eq!(viewer.document.distance(cx), 0.);
+        assert!(viewer.app.position_request().is_none());
+    });
+}
+
+#[gpui_kit::test]
+fn delayed_layout_rejects_old_generation_entity_and_same_generation_serial(
+    cx: &mut TestAppContext,
+) {
+    let source = "Paragraph.\n\n".repeat(200);
+    let (window, view) = super::open(cx, source.clone());
+    frame(cx, window);
+    scroll(cx, &view, 480.);
+    let (stale, text) = cx.update(|cx| {
+        view.update(cx, |viewer, cx| {
+            let request = viewer.app.open(viewer.path.clone());
+            viewer.complete(super::success(request, source.clone()), cx);
+            let old_request = viewer.app.position_request().unwrap().clone();
+            let old_text = viewer.document.text.clone();
+            // Switch before parsing/layout. Identical source cannot identify a generation.
+            let request = viewer.app.open(viewer.path.with_file_name("other.md"));
+            viewer.complete(super::success(request, source), cx);
+            let current = viewer.app.position_request().unwrap().clone();
+            assert_ne!(old_request.generation, current.generation);
+            viewer.apply_position_after_layout(&old_request, &old_text, cx);
+            assert_eq!(viewer.app.position_request(), Some(&current));
+            (current, viewer.document.text.clone())
+        })
+    });
+    frame(cx, window);
+    scroll(cx, &view, 240.);
+    cx.update(|cx| {
+        view.update(cx, |viewer, cx| {
+            // A newer synchronous heading move has the same generation but a
+            // distinct serial. Stage 2 must neither apply nor consume it as Top.
+            viewer.request_operation(
+                DocumentOperation::Heading {
+                    path: None,
+                    id: "two".into(),
+                },
+                OperationOrigin::External,
+                None,
+                cx,
+            );
+            let current = viewer.app.position_request().unwrap().clone();
+            assert_eq!(stale.generation, current.generation);
+            assert_ne!(stale.serial, current.serial);
+            viewer.apply_position_after_layout(&stale, &text, cx);
+            assert_eq!(viewer.app.position_request(), Some(&current));
+        });
+    });
+    frame(cx, window);
+    view.read_with(cx, |viewer, cx| {
+        assert_eq!(viewer.document.distance(cx), 240.);
+        assert!(matches!(
+            viewer.app.position_request().unwrap().target,
+            PositionTarget::Heading(_)
+        ));
+    });
+}
+
+#[gpui_kit::test]
+fn applied_restore_does_not_repeat_after_user_scroll_or_diagram_completion(
+    cx: &mut TestAppContext,
+) {
+    let source = "Paragraph.\n\n".repeat(100) + "```mermaid\ngraph TD\nA --> B\n```\n\n";
+    let (window, view) = super::open(cx, source.clone());
+    frame(cx, window);
+    let old_diagram = view.read_with(cx, |viewer, _| super::running_diagram(viewer));
+    scroll(cx, &view, 480.);
+    replace(cx, &view, source, false);
+    frame(cx, window);
+    view.read_with(cx, |viewer, cx| {
+        assert_eq!(viewer.document.distance(cx), 480.);
+        assert!(viewer.app.position_request().is_none());
+    });
+    scroll(cx, &view, 720.);
+    cx.update(|cx| {
+        view.update(cx, |viewer, cx| {
+            // Release the old generation's worker, then complete the adopted diagram.
+            viewer.complete_diagram(
+                crate::app::DiagramResult {
+                    request: old_diagram,
+                    png: Err("superseded".into()),
+                },
+                cx,
+            );
+            let request = super::running_diagram(viewer);
+            let png = vec![
+                137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 20, 0, 0, 0,
+                10, 8, 6, 0, 0, 0, 180, 85, 126, 230, 0, 0, 0, 1, 115, 82, 71, 66, 0, 174, 206, 28,
+                233, 0, 0, 0, 4, 103, 65, 77, 65, 0, 0, 177, 143, 11, 252, 97, 5, 0, 0, 0, 9, 112,
+                72, 89, 115, 0, 0, 14, 195, 0, 0, 14, 195, 1, 199, 111, 168, 100, 0, 0, 0, 16, 73,
+                68, 65, 84, 56, 79, 99, 96, 24, 5, 163, 96, 20, 16, 6, 0, 3, 42, 0, 1, 148, 87, 35,
+                248, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+            ];
+            viewer.complete_diagram(
+                crate::app::DiagramResult {
+                    request,
+                    png: Ok(png),
+                },
+                cx,
+            );
+        });
+    });
+    frame(cx, window);
+    view.read_with(cx, |viewer, cx| {
+        assert_eq!(viewer.document.distance(cx), 720.)
+    });
+}
 
 use crate::app::{
     DocumentOperation, ExternalRequestId, Mode, OperationError, OperationOrigin, OperationResult,
@@ -54,14 +411,18 @@ fn reload_passes_the_live_pixel_distance_to_the_app_contract(cx: &mut TestAppCon
         window.render_frame(cx);
     })
     .unwrap();
-    // Applying the request after layout is deliberately a stage-2 concern.
+    frame(cx, window);
+    view.read_with(cx, |viewer, cx| {
+        assert_eq!(viewer.document.distance(cx), 480.);
+        assert!(viewer.app.position_request().is_none());
+    });
 }
 
 #[gpui_kit::test]
 fn external_replacement_keeps_search_and_command_input_entity_text_and_focus(
     cx: &mut TestAppContext,
 ) {
-    let (window, view) = super::open(cx, "old target".into());
+    let (window, view) = super::open(cx, fixture());
     cx.run_until_parked();
     let requests = Rc::new(RefCell::new(Vec::<ReadRequest>::new()));
     let captured = requests.clone();
@@ -78,6 +439,7 @@ fn external_replacement_keeps_search_and_command_input_entity_text_and_focus(
         .unwrap();
         cx.run_until_parked();
         let input = view.read_with(cx, |viewer, _| viewer.input.state.clone());
+        scroll(cx, &view, 480.);
         cx.update(|cx| {
             view.update(cx, |viewer, cx| {
                 let result = viewer.request_document(
@@ -95,11 +457,51 @@ fn external_replacement_keeps_search_and_command_input_entity_text_and_focus(
         assert_eq!(request.origin, OperationOrigin::External);
         cx.update(|cx| {
             view.update(cx, |viewer, cx| {
-                viewer.complete(super::success(request, "new edit target".into()), cx);
+                viewer.complete(
+                    super::success(
+                        request,
+                        "new edit target\n\n".to_owned() + &"Paragraph.\n\n".repeat(200),
+                    ),
+                    cx,
+                );
             })
         });
         cx.run_until_parked();
         view.read_with(cx, |viewer, cx| {
+            assert_eq!(viewer.app.mode, mode);
+            assert_eq!(viewer.input.state, input);
+            assert_eq!(viewer.input.state.read(cx).value().as_ref(), "edit");
+            assert_eq!(viewer.document.distance(cx), 480.);
+            assert!(viewer.app.position_request().is_none());
+            if mode == Mode::Search {
+                assert_eq!(viewer.app.matches().len(), 1);
+                assert_eq!(viewer.app.matches()[0], 4..8);
+            }
+        });
+        cx.update(|cx| {
+            view.update(cx, |viewer, cx| {
+                let path = viewer.path.with_file_name(if mode == Mode::Search {
+                    "search-switch.md"
+                } else {
+                    "command-switch.md"
+                });
+                let OperationResult::Pending(request) = viewer.request_document(path, None, cx)
+                else {
+                    panic!("read required");
+                };
+                viewer.complete(
+                    super::success(
+                        request,
+                        "new edit target\n\n".to_owned() + &"Paragraph.\n\n".repeat(200),
+                    ),
+                    cx,
+                );
+            });
+        });
+        assert_eq!(requests.borrow_mut().drain(..).count(), 1);
+        frame(cx, window);
+        view.read_with(cx, |viewer, cx| {
+            assert_eq!(viewer.document.distance(cx), 0.);
             assert_eq!(viewer.app.mode, mode);
             assert_eq!(viewer.input.state, input);
             assert_eq!(viewer.input.state.read(cx).value().as_ref(), "edit");

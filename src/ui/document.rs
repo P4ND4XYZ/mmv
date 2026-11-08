@@ -16,7 +16,7 @@ use super::{
     mermaid::{DiscoveredDiagrams, MermaidPlugin},
     status::FOOTER_LINE_HEIGHT,
 };
-use crate::app::{Generation, ImageLocation, Mode, resolve_image};
+use crate::app::{Generation, ImageLocation, Mode, PositionRequest, PositionTarget, resolve_image};
 
 pub(super) struct DocumentView {
     pub text: Entity<TextViewState>,
@@ -55,7 +55,7 @@ impl DocumentView {
         }));
     }
 
-    pub fn distance(&self, cx: &Context<Viewer>) -> f32 {
+    pub fn distance(&self, cx: &gpui_kit::App) -> f32 {
         -f32::from(
             self.text
                 .read(cx)
@@ -86,6 +86,46 @@ impl DocumentView {
 }
 
 impl Viewer {
+    pub(super) fn apply_position_after_layout(
+        &mut self,
+        request: &PositionRequest,
+        text: &Entity<TextViewState>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.app.position_request() != Some(request)
+            || self.document.text != *text
+            || !self.app.document().is_some_and(|doc| {
+                doc.generation == request.generation
+                    && text.read(cx).rendered_text().source() == doc.source
+            })
+        {
+            return;
+        }
+        let distance = match request.target {
+            PositionTarget::Top => 0.,
+            PositionTarget::Distance(distance) => distance,
+            // Heading resolution belongs to stage 4; do not acknowledge it yet.
+            PositionTarget::Heading(_) => return,
+        };
+        let list = text.read(cx).list_state();
+        let viewport = list.viewport_bounds().size;
+        if viewport.height <= px(0.) || viewport.width <= px(0.) {
+            return;
+        }
+        // None also means fully measured content that fits in the viewport.
+        // For that case, require measured bounds for every block. An empty
+        // document needs only the positive viewport established by this layout.
+        if list.is_scrolled_to_end().is_none()
+            && !(0..list.item_count()).all(|ix| list.bounds_for_item(ix).is_some())
+        {
+            return;
+        }
+        list.set_offset_from_scrollbar(point(px(0.), -px(distance.max(0.))));
+        self.app.acknowledge_position(request);
+        text.update(cx, |_, cx| cx.notify());
+        cx.notify();
+    }
+
     pub(super) fn accept_rendered_text(&mut self, generation: Generation, cx: &mut Context<Self>) {
         let snapshot = self.document.text.read(cx).rendered_text();
         let Some(document) = self.app.document() else {
@@ -133,6 +173,9 @@ impl Viewer {
                 });
             });
         }
+        let position = self.app.position_request().cloned();
+        let text = self.document.text.clone();
+        let layout_view = cx.entity().downgrade();
         let first_paint = self.document.first_paint.clone();
         let started = self.document.started;
         let weak = cx.entity().downgrade();
@@ -178,7 +221,19 @@ impl Viewer {
                 body.child(
                     canvas(
                         |_, _, _| (),
-                        move |_, _, _, _| {
+                        move |_, _, _, cx| {
+                            // This sibling paints after TextView's measure_all layout.
+                            // Defer mutation out of paint, retaining the exact request
+                            // and Entity: source equality alone cannot identify a generation.
+                            if let Some(request) = position.clone() {
+                                let view = layout_view.clone();
+                                let text = text.clone();
+                                cx.defer(move |cx| {
+                                    let _ = view.update(cx, |this, cx| {
+                                        this.apply_position_after_layout(&request, &text, cx);
+                                    });
+                                });
+                            }
                             if !first_paint.swap(true, Ordering::Relaxed) {
                                 eprintln!(
                                     "first_content_paint_from_main_ms={:.3}",

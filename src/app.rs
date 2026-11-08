@@ -228,25 +228,11 @@ impl App {
         });
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Layout-ready position application is connected in stages 2/4."
-        )
-    )]
     pub fn position_request(&self) -> Option<&PositionRequest> {
         self.position.as_ref()
     }
 
     /// A delayed consumer must not remove a newer generation or synchronous move.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Layout-ready acknowledgement is connected in stages 2/4."
-        )
-    )]
     pub fn acknowledge_position(&mut self, request: &PositionRequest) -> bool {
         if self.position.as_ref() != Some(request) {
             return false;
