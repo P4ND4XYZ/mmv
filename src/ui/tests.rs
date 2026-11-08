@@ -470,10 +470,7 @@ fn background_parse_discovers_offscreen_diagrams(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 #[ignore = "requires Node.js, mermaid-cli and its browser; run explicitly"]
 fn real_mermaid_fixture_generates_and_decodes_in_gpui(cx: &mut TestAppContext) {
-    let (window, view) = open(
-        cx,
-        include_str!("../../docs/design/prototypes/gpui-evaluation/fixtures/mermaid.md").into(),
-    );
+    let (window, view) = open(cx, include_str!("../../tests/fixtures/mermaid.md").into());
     cx.update_window(window, |_, window, cx| window.render_frame(cx))
         .unwrap();
     cx.run_until_parked();

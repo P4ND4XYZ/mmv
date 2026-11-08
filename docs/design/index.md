@@ -2,7 +2,7 @@
 
 ## 対象と前提
 
-Windows向けの読み取り専用ビューアーを、既存の[GPUIプロトタイプ](prototypes/gpui-evaluation/index.md)から段階的に作成します。1つのcrateと現在の責務分担を維持し、Markdownの独自解析器・描画器への置き換えは行いません。
+Windows向けの読み取り専用ビューアーを、GPUIとgpui-componentを用いて構成します。1つのcrateと現在の責務分担を維持し、Markdownの独自解析器・描画器への置き換えは行いません。
 
 初期版には、自動更新、スクロール距離の維持、見出し移動、履歴、正式CLI、単一起動、Named Pipeによる外部操作、Mermaidの非同期生成とエラーログを含めます。Mermaidの永続キャッシュは後続版へ分離します。
 
@@ -15,7 +15,30 @@ Windows向けの読み取り専用ビューアーを、既存の[GPUIプロト�
 - [画面と操作モード](../requirements/features/viewer-ui.md)、[スクロール](../requirements/features/navigation.md)
 - [リンクと履歴](../requirements/features/links-history.md)、[外部操作](../requirements/features/external-control.md)
 - [Markdown描画](../requirements/features/markdown-rendering.md)、[Mermaid図](../requirements/features/mermaid.md)、[エラーログ](../requirements/features/logging.md)
-- [技術方針](../research/technology-assessment.md)
+
+## 技術方針
+
+### 描画基盤と依存関係
+
+- GPUI Kitをアプリケーション側の入口とし、`gpui-kit`経由でGPUI・gpui-component・gpui-baseを利用します。
+- Markdownには`TextView`を使います。本体はgpui-baseにあり、gpui-component側で互換APIとテーマを連携します。
+- GPUI Kitに対応するGPUIのスナップショットを揃え、互換性のある依存関係を固定して扱います。
+- Windowsでの開発にはMSVC版Rust、Visual StudioのC++開発ツール、Windows SDKが必要です。
+
+GPUIおよびGPUI KitのソフトウェアのライセンスはApache-2.0です。配布に必要な依存ライセンスの確認全体を完了したものではありません。
+
+### Mermaidの生成
+
+mermaid-cliをバックグラウンドで実行し、PNGを生成してMarkdown表示に組み込みます。生成完了を待たずに本文を表示します。事前インストール、失敗時の非表示、一時生成物の整理は[Mermaid図の要件](../requirements/features/mermaid.md)、ログ保存とローテーションは[エラーログの要件](../requirements/features/logging.md)に従います。
+
+### 後続版のMermaidキャッシュ
+
+以下は後続版の永続キャッシュに用いる方針であり、初期版では実装しません。
+
+- 図の画像ファイルとは別に、同じキャッシュキーに対応するJSONファイルへ最終利用日時などのメタデータを保存します。
+- 表示に使った際はJSON側の日時を更新し、画像本体を変更する必要はありません。
+- OSのファイルアクセス日時は、更新が無効・遅延している場合があるため、削除順の判定には使いません。
+- 利用とみなすタイミング、容量上限、削除順と期間の閾値を設けない方針は[Mermaid図の要件](../requirements/features/mermaid.md#最終利用日時)に従います。
 
 ## 構成と責務
 
@@ -29,7 +52,7 @@ Windows向けの読み取り専用ビューアーを、既存の[GPUIプロト�
 
 既存と同様に、`app`は`core`へ依存し、`ui`と`infra`は`app`の契約を使用します。起動・接続部分が各層を組み合わせます。必要な機能の追加に合わせてモジュールを分割し、先行してcrate全体を再構成しません。
 
-内部の分割方針と状態の所有者は[モジュール構成と責務境界](components/module-boundaries.md)、文書操作の契約は[文書操作と閲覧状態](components/document-operations.md)、起動と通信は[CLI・単一起動・外部操作](components/external-control.md)を参照してください。
+内部の分割方針と状態の所有者は[モジュール構成と責務境界](components/module-boundaries.md)、文書操作の契約は[文書操作と閲覧状態](components/document-operations.md)、起動と通信は[CLI・単一起動・外部操作](components/external-control.md)、リンク選択の技術選定とAPI制約は[共通の選択パネルとファジーマッチ](components/selection-panel.md)を参照してください。
 
 ## 主要な処理・データの流れ
 
@@ -47,7 +70,7 @@ Windows向けの読み取り専用ビューアーを、既存の[GPUIプロト�
 - 文書と履歴の変更は読み込み成功時に確定する。失敗では元の本文・位置・履歴を残す。
 - キーボードのNormal専用制約は入力の入口で判定する。共通のスクロール・履歴処理自体をNormal限定にせず、外部CLIからは入力中も実行できるようにする。
 - 外部CLI操作と自動更新では入力モードと入力文字列を維持する。検索・コマンドの確定、取消、入力欄へのフォーカス変更を文書更新に伴って実行しない。
-- Mermaidの生成形式はプロトタイプのPNGを流用する。初期版では永続キャッシュ、キャッシュキー、容量整理、利用日時のJSON管理を追加しない。一時生成物の削除とログは対象に含める。
+- Mermaidの永続キャッシュは初期版に追加せず、一時生成物の削除とログは対象に含める。後続版のキャッシュ方針は[技術方針](#後続版のmermaidキャッシュ)に従う。
 
 ## プロトタイプからの変更点
 
@@ -83,4 +106,11 @@ Windows向けの読み取り専用ビューアーを、既存の[GPUIプロト�
 
 各段階で必要な単体・結合テストを追加します。`core`は値の計算、`app`は状態と完了順、`infra`は実ファイル・Pipe・プロセス、`ui`はGPUIのレイアウトと入力を確認します。Windows実機でのIME・フォーカス・画像の表示確認は、自動テストとは分けます。ケースの選定、既存テストの扱い、実行コマンドは[テスト設計](testing.md)を参照してください。
 
-永続キャッシュはこの順序の初期版には含めません。Vimium風リンク選択、内容基準の位置復元、画面上端の文字位置からの厳密な検索も追加しません。Release起動時間の計測は必須にしません。
+## 参照資料
+
+- [GPUI README](https://github.com/zed-industries/zed/blob/main/crates/gpui/README.md)
+- [GPUI Kit README](https://github.com/longbridge/gpui-kit)
+- [GPUI Kit Installation](https://gpui-kit.com/docs/installation)
+- [GPUI Component TextView](https://gpui-kit.com/component/text-view/)
+- [GPUI Base TextView](https://gpui-kit.com/base/text-view)
+- [mermaid-cli](https://github.com/mermaid-js/mermaid-cli)
