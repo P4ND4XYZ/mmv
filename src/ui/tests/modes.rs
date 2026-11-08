@@ -59,9 +59,14 @@ fn footer_rows_and_mode_width_stay_fixed_across_modes_and_long_filenames(cx: &mu
             let path = viewer
                 .path
                 .with_file_name(format!("{}.md", "長いファイル名".repeat(40)));
-            viewer.path = path.clone();
-            viewer.app.document.as_mut().unwrap().path = path;
-            cx.notify();
+            let request = viewer.app.open(path);
+            viewer.complete(
+                crate::app::ReadResult {
+                    request,
+                    content: Ok("本文".into()),
+                },
+                cx,
+            );
         })
     });
     cx.run_until_parked();
@@ -80,28 +85,38 @@ fn cancelling_a_preview_restores_the_confirmed_match_without_scrolling(cx: &mut 
     press(cx, window, "enter");
     press(cx, window, "n");
     let top = view.read_with(cx, |viewer, cx| {
-        viewer.text.read(cx).list_state().logical_scroll_top()
+        viewer
+            .document
+            .text
+            .read(cx)
+            .list_state()
+            .logical_scroll_top()
     });
     press(cx, window, "/");
     input(cx, window, "unknown");
     view.read_with(cx, |viewer, cx| {
-        assert!(matches!(viewer.app.mode, Mode::Search { .. }));
-        assert!(viewer.app.matches.is_empty());
-        let preview_top = viewer.text.read(cx).list_state().logical_scroll_top();
+        assert!(matches!(viewer.app.mode, Mode::Search));
+        assert!(viewer.app.matches().is_empty());
+        let preview_top = viewer
+            .document
+            .text
+            .read(cx)
+            .list_state()
+            .logical_scroll_top();
         assert_eq!(preview_top.item_ix, top.item_ix);
         assert_eq!(preview_top.offset_in_item, top.offset_in_item);
     });
     press(cx, window, "escape");
     view.read_with(cx, |viewer, _| {
         assert_eq!(viewer.app.mode, Mode::Normal);
-        assert_eq!(viewer.app.matches.len(), 120);
-        assert_eq!(viewer.app.current_match, Some(1));
+        assert_eq!(viewer.app.matches().len(), 120);
+        assert_eq!(viewer.app.current_match(), Some(1));
     });
     press(cx, window, "/");
     press(cx, window, "enter");
     view.read_with(cx, |viewer, _| {
         assert_eq!(viewer.app.mode, Mode::Normal);
-        assert_eq!(viewer.app.matches.len(), 120);
+        assert_eq!(viewer.app.matches().len(), 120);
     });
 }
 
@@ -115,10 +130,15 @@ fn enter_starts_at_the_displayed_block_and_empty_repeat_wraps(cx: &mut TestAppCo
     cx.run_until_parked();
     cx.update(|cx| {
         view.update(cx, |viewer, cx| {
-            viewer.text.read(cx).list_state().scroll_to(ListOffset {
-                item_ix: 20,
-                offset_in_item: px(0.),
-            });
+            viewer
+                .document
+                .text
+                .read(cx)
+                .list_state()
+                .scroll_to(ListOffset {
+                    item_ix: 20,
+                    offset_in_item: px(0.),
+                });
             cx.notify();
         })
     });
@@ -127,15 +147,15 @@ fn enter_starts_at_the_displayed_block_and_empty_repeat_wraps(cx: &mut TestAppCo
     input(cx, window, "target");
     press(cx, window, "enter");
     view.read_with(cx, |viewer, _| {
-        assert_eq!(viewer.app.matches.len(), 2);
-        assert_eq!(viewer.app.current_match, Some(1));
-        assert_eq!(viewer.app.diagrams.len(), 1);
+        assert_eq!(viewer.app.matches().len(), 2);
+        assert_eq!(viewer.app.current_match(), Some(1));
+        assert_eq!(viewer.app.diagrams().len(), 1);
     });
     press(cx, window, "shift-g");
     press(cx, window, "/");
     press(cx, window, "enter");
     view.read_with(cx, |viewer, _| {
-        assert_eq!(viewer.app.current_match, Some(0))
+        assert_eq!(viewer.app.current_match(), Some(0))
     });
 }
 
@@ -154,7 +174,7 @@ fn missing_and_unmatched_queries_report_in_the_normal_input_line(cx: &mut TestAp
     press(cx, window, "enter");
     view.read_with(cx, |viewer, _| {
         assert_eq!(viewer.app.mode, Mode::Normal);
-        assert!(viewer.app.matches.is_empty());
+        assert!(viewer.app.matches().is_empty());
         assert_eq!(
             viewer.message.as_deref(),
             Some("一致する文字列がありません")
@@ -195,7 +215,7 @@ fn empty_command_backspace_returns_to_normal_and_restores_body_keys(cx: &mut Tes
     view.read_with(cx, |viewer, _| assert_eq!(viewer.app.mode, Mode::Normal));
     press(cx, window, "/");
     view.read_with(cx, |viewer, _| {
-        assert!(matches!(viewer.app.mode, Mode::Search { .. }))
+        assert!(matches!(viewer.app.mode, Mode::Search))
     });
 }
 
@@ -211,7 +231,7 @@ fn backspace_keeps_editing_when_deleting_text_and_leaves_empty_search_unchanged(
         press(cx, window, "backspace");
         view.read_with(cx, |viewer, cx| {
             assert_eq!(viewer.app.mode.label(), label);
-            assert!(viewer.find.read(cx).value().is_empty());
+            assert!(viewer.input.state.read(cx).value().is_empty());
         });
         press(cx, window, "backspace");
         let expected = if key == ":" { "NORMAL" } else { "SEARCH" };
@@ -228,7 +248,7 @@ fn ime_marked_text_does_not_submit_search_or_command(cx: &mut TestAppContext) {
         cx.run_until_parked();
         press(cx, window, key);
         cx.update_window(window, |_, window, cx| {
-            view.read(cx).find.clone().update(cx, |input, cx| {
+            view.read(cx).input.state.clone().update(cx, |input, cx| {
                 let end = text.encode_utf16().count();
                 input.replace_and_mark_text_in_range(None, text, Some(end..end), window, cx);
             });
@@ -238,7 +258,7 @@ fn ime_marked_text_does_not_submit_search_or_command(cx: &mut TestAppContext) {
         press(cx, window, "enter");
         view.read_with(cx, |viewer, _| assert_ne!(viewer.app.mode, Mode::Normal));
         cx.update_window(window, |_, window, cx| {
-            view.read(cx).find.clone().update(cx, |input, cx| {
+            view.read(cx).input.state.clone().update(cx, |input, cx| {
                 input.replace_text_in_range(None, text, window, cx);
             });
         })
@@ -248,7 +268,7 @@ fn ime_marked_text_does_not_submit_search_or_command(cx: &mut TestAppContext) {
         if key == "/" {
             view.read_with(cx, |viewer, _| {
                 assert_eq!(viewer.app.mode, Mode::Normal);
-                assert_eq!(viewer.app.matches.len(), 1);
+                assert_eq!(viewer.app.matches().len(), 1);
             });
         } else {
             assert!(cx.update(|cx| !cx.windows().contains(&window)));
@@ -262,14 +282,24 @@ fn normal_scroll_keys_do_not_run_while_editing_a_search_or_command(cx: &mut Test
     cx.run_until_parked();
     press(cx, window, "j");
     let down = view.read_with(cx, |viewer, cx| {
-        viewer.text.read(cx).list_state().logical_scroll_top()
+        viewer
+            .document
+            .text
+            .read(cx)
+            .list_state()
+            .logical_scroll_top()
     });
     assert!(down.item_ix > 0 || down.offset_in_item > px(0.));
     press(cx, window, "k");
     for (down, up) in [("ctrl-d", "ctrl-u"), ("ctrl-f", "ctrl-b")] {
         press(cx, window, down);
         let top = view.read_with(cx, |viewer, cx| {
-            viewer.text.read(cx).list_state().logical_scroll_top()
+            viewer
+                .document
+                .text
+                .read(cx)
+                .list_state()
+                .logical_scroll_top()
         });
         assert!(top.item_ix > 0 || top.offset_in_item > px(0.));
         press(cx, window, up);
@@ -277,6 +307,7 @@ fn normal_scroll_keys_do_not_run_while_editing_a_search_or_command(cx: &mut Test
     press(cx, window, "shift-g");
     assert!(
         view.read_with(cx, |viewer, cx| viewer
+            .document
             .text
             .read(cx)
             .list_state()
@@ -290,8 +321,13 @@ fn normal_scroll_keys_do_not_run_while_editing_a_search_or_command(cx: &mut Test
         press(cx, window, key);
         input(cx, window, "jnN");
         view.read_with(cx, |viewer, cx| {
-            assert_eq!(viewer.find.read(cx).value().as_ref(), "jnN");
-            let top = viewer.text.read(cx).list_state().logical_scroll_top();
+            assert_eq!(viewer.input.state.read(cx).value().as_ref(), "jnN");
+            let top = viewer
+                .document
+                .text
+                .read(cx)
+                .list_state()
+                .logical_scroll_top();
             assert_eq!(top.item_ix, 0);
             assert_eq!(top.offset_in_item, px(0.));
         });

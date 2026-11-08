@@ -98,9 +98,10 @@ fn clicking_local_links_replaces_the_document_and_reload_uses_the_new_path(
     cx.run_until_parked();
     view.read_with(cx, |viewer, cx| {
         assert_eq!(viewer.path, target);
-        assert_eq!(viewer.app.document.as_ref().unwrap().path, target);
+        assert_eq!(viewer.app.document().unwrap().path, target);
         assert!(
             viewer
+                .document
                 .text
                 .read(cx)
                 .rendered_text()
@@ -153,10 +154,11 @@ fn failed_local_link_load_keeps_the_document_and_reload_target(cx: &mut TestAppC
     cx.run_until_parked();
     view.read_with(cx, |viewer, cx| {
         assert_eq!(viewer.path, original);
-        assert_eq!(viewer.app.document.as_ref().unwrap().path, original);
-        assert_eq!(viewer.app.error.as_deref(), Some("file not found"));
+        assert_eq!(viewer.app.document().unwrap().path, original);
+        assert_eq!(viewer.app.error(), Some("file not found"));
         assert!(
             viewer
+                .document
                 .text
                 .read(cx)
                 .rendered_text()
@@ -170,10 +172,10 @@ fn failed_local_link_load_keeps_the_document_and_reload_target(cx: &mut TestAppC
 }
 
 fn running_diagram(viewer: &Viewer) -> DiagramRequest {
-    let document = viewer.app.document.as_ref().unwrap();
+    let document = viewer.app.document().unwrap();
     let (&start, diagram) = viewer
         .app
-        .diagrams
+        .diagrams()
         .iter()
         .find(|(_, diagram)| diagram.status == DiagramStatus::Running)
         .unwrap();
@@ -195,18 +197,18 @@ fn mermaid_parsing_hides_sources_and_keeps_search_working_during_generation(
     cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
         let viewer = view.read(cx);
-        let rendered = viewer.text.read(cx).rendered_text();
+        let rendered = viewer.document.text.read(cx).rendered_text();
         assert!(rendered.as_str().contains("検証本文"));
         assert!(rendered.as_str().contains("normal_code"));
         assert!(!rendered.as_str().contains("秘密の図ラベル"));
-        assert_eq!(viewer.app.diagrams.len(), 2);
+        assert_eq!(viewer.app.diagrams().len(), 2);
         assert_eq!(
             running_diagram(viewer).start,
             source.find("```mermaid").unwrap()
         );
         let sources = viewer
             .app
-            .diagrams
+            .diagrams()
             .values()
             .map(|diagram| &diagram.source)
             .collect::<Vec<_>>();
@@ -218,7 +220,7 @@ fn mermaid_parsing_hides_sources_and_keeps_search_working_during_generation(
     cx.run_until_parked();
     cx.update_window(window, |_, _, cx| {
         view.update(cx, |viewer, cx| {
-            assert_eq!(viewer.app.matches.len(), 1);
+            assert_eq!(viewer.app.matches().len(), 1);
             viewer.complete_diagram(
                 DiagramResult {
                     request: running_diagram(viewer),
@@ -226,12 +228,12 @@ fn mermaid_parsing_hides_sources_and_keeps_search_working_during_generation(
                 },
                 cx,
             );
-            assert!(viewer.diagram_images.is_empty());
-            assert_eq!(viewer.app.matches.len(), 1);
+            assert!(viewer.document.diagram_images.is_empty());
+            assert_eq!(viewer.app.matches().len(), 1);
             assert_eq!(
                 viewer
                     .app
-                    .diagrams
+                    .diagrams()
                     .values()
                     .filter(|diagram| diagram.status == DiagramStatus::Failed)
                     .count(),
@@ -240,7 +242,7 @@ fn mermaid_parsing_hides_sources_and_keeps_search_working_during_generation(
             assert_eq!(
                 viewer
                     .app
-                    .diagrams
+                    .diagrams()
                     .values()
                     .filter(|diagram| diagram.status == DiagramStatus::Running)
                     .count(),
@@ -260,13 +262,14 @@ fn background_parse_discovers_offscreen_diagrams(cx: &mut TestAppContext) {
         .unwrap();
     cx.run_until_parked();
     view.read_with(cx, |viewer, cx| {
-        assert_eq!(viewer.app.diagrams.len(), 1);
+        assert_eq!(viewer.app.diagrams().len(), 1);
         assert_eq!(
             running_diagram(viewer).source,
             "flowchart TD\nA[画面外の図] --> B"
         );
         assert!(
             !viewer
+                .document
                 .text
                 .read(cx)
                 .rendered_text()
@@ -294,7 +297,7 @@ fn real_mermaid_fixture_generates_and_decodes_in_gpui(cx: &mut TestAppContext) {
         cx.run_until_parked();
     }
     cx.update(|cx| {
-        let images = view.read(cx).diagram_images.clone();
+        let images = view.read(cx).document.diagram_images.clone();
         assert_eq!(images.len(), 3);
         for image in images.into_values() {
             let decoded = image
@@ -306,7 +309,7 @@ fn real_mermaid_fixture_generates_and_decodes_in_gpui(cx: &mut TestAppContext) {
         assert!(
             view.read(cx)
                 .app
-                .diagrams
+                .diagrams()
                 .values()
                 .all(|diagram| diagram.status == DiagramStatus::Ready)
         );
@@ -340,7 +343,7 @@ fn late_diagram_display_has_real_layout_and_preserves_search_ranges(cx: &mut Tes
     })
     .unwrap();
     cx.run_until_parked();
-    let ranges = view.read_with(cx, |viewer, _| viewer.app.matches.clone());
+    let ranges = view.read_with(cx, |viewer, _| viewer.app.matches().to_vec());
     cx.update(|cx| {
         view.update(cx, |viewer, cx| {
             viewer.complete_diagram(
@@ -362,8 +365,8 @@ fn late_diagram_display_has_real_layout_and_preserves_search_ranges(cx: &mut Tes
     assert_eq!(bounds.size.width, px(10.));
     assert_eq!(bounds.size.height, px(5.));
     view.read_with(cx, |viewer, _| {
-        assert_eq!(viewer.app.matches, ranges);
-        assert_eq!(viewer.diagram_images.len(), 1);
+        assert_eq!(viewer.app.matches(), ranges);
+        assert_eq!(viewer.document.diagram_images.len(), 1);
         assert!(viewer.display_error.is_none());
     });
 }
@@ -379,18 +382,21 @@ fn search_input_and_navigation_use_rendered_japanese_text(cx: &mut TestAppContex
         window.render_frame(cx);
         window.press("/", cx);
         window.input("日本語", cx);
-        assert_eq!(view.read(cx).find.read(cx).value().as_ref(), "日本語");
+        assert_eq!(
+            view.read(cx).input.state.read(cx).value().as_ref(),
+            "日本語"
+        );
     })
     .unwrap();
     // InputEvent notifications are delivered when the app update finishes.
     cx.run_until_parked();
     cx.update_window(window, |_, window, cx| {
         let viewer = view.read(cx);
-        let rendered = viewer.text.read(cx).rendered_text();
+        let rendered = viewer.document.text.read(cx).rendered_text();
         assert!(!rendered.as_str().contains("**"));
         assert!(!rendered.as_str().contains("https://"));
-        assert_eq!(viewer.app.matches.len(), 2);
-        for range in &viewer.app.matches {
+        assert_eq!(viewer.app.matches().len(), 2);
+        for range in viewer.app.matches() {
             assert_eq!(&rendered.as_str()[range.clone()], "日本語");
         }
         assert!(viewer.display_error.is_none());
@@ -399,8 +405,11 @@ fn search_input_and_navigation_use_rendered_japanese_text(cx: &mut TestAppContex
     })
     .unwrap();
     cx.update_window(window, |_, window, cx| {
-        assert_eq!(view.read(cx).find.read(cx).value().as_ref(), "日本語n");
-        assert!(view.read(cx).app.matches.is_empty());
+        assert_eq!(
+            view.read(cx).input.state.read(cx).value().as_ref(),
+            "日本語n"
+        );
+        assert!(view.read(cx).app.matches().is_empty());
         window.press("backspace", cx);
     })
     .unwrap();
@@ -410,9 +419,9 @@ fn search_input_and_navigation_use_rendered_japanese_text(cx: &mut TestAppContex
     .unwrap();
     cx.update_window(window, |_, window, cx| {
         window.press("n", cx);
-        assert_eq!(view.read(cx).app.current_match, Some(1));
+        assert_eq!(view.read(cx).app.current_match(), Some(1));
         window.press("shift-n", cx);
-        assert_eq!(view.read(cx).app.current_match, Some(0));
+        assert_eq!(view.read(cx).app.current_match(), Some(0));
         assert!(view.read(cx).display_error.is_none());
     })
     .unwrap();
@@ -440,10 +449,11 @@ fn revealing_an_offscreen_match_scrolls_the_real_text_view(cx: &mut TestAppConte
     cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
         let viewer = view.read(cx);
-        assert_eq!(viewer.app.matches.len(), 1);
+        assert_eq!(viewer.app.matches().len(), 1);
         assert!(viewer.display_error.is_none());
         assert!(
             viewer
+                .document
                 .text
                 .read(cx)
                 .list_state()

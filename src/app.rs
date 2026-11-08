@@ -1,62 +1,25 @@
+mod document;
+mod mermaid;
+mod search;
+
 use std::{collections::BTreeMap, ops::Range, path::PathBuf};
 
-use crate::core::find_matches;
 pub use crate::core::{ImageLocation, LinkTarget, resolve_image, resolve_link};
+pub use document::{Document, Generation, ReadRequest, ReadResult};
+#[cfg(test)]
+pub use mermaid::{Diagram, DiagramStatus};
+pub use mermaid::{DiagramRequest, DiagramResult};
+pub use search::SearchOutcome;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Generation(u64);
-
-#[derive(Clone, Debug)]
-pub struct ReadRequest {
-    pub generation: Generation,
-    pub path: PathBuf,
-}
-
-pub struct ReadResult {
-    pub request: ReadRequest,
-    pub content: Result<String, String>,
-}
-
-pub struct Document {
-    pub generation: Generation,
-    pub path: PathBuf,
-    pub source: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DiagramRequest {
-    pub generation: Generation,
-    pub path: PathBuf,
-    /// Full-document UTF-8 byte offset of the fenced code block.
-    pub start: usize,
-    pub source: String,
-}
-
-pub struct DiagramResult {
-    pub request: DiagramRequest,
-    pub png: Result<Vec<u8>, String>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DiagramStatus {
-    Pending,
-    Running,
-    Ready,
-    Failed,
-}
-
-pub struct Diagram {
-    pub source: String,
-    pub status: DiagramStatus,
-}
+use document::DocumentState;
+use mermaid::MermaidState;
+use search::SearchState;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Mode {
     #[default]
     Normal,
-    Search {
-        previous_match: Option<(Generation, Range<usize>)>,
-    },
+    Search,
     Command,
 }
 
@@ -64,174 +27,96 @@ impl Mode {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Normal => "NORMAL",
-            Self::Search { .. } => "SEARCH",
+            Self::Search => "SEARCH",
             Self::Command => "COMMAND",
         }
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum SearchOutcome {
-    Found,
-    NotFound,
-    NoPreviousQuery,
-}
-
 #[derive(Default)]
 pub struct App {
-    next_generation: u64,
-    pending: Option<ReadRequest>,
-    pub document: Option<Document>,
-    pub error: Option<String>,
-    pub diagrams: BTreeMap<usize, Diagram>,
-    // Kept across document replacement to serialize external processes.
-    diagram_in_flight: Option<DiagramRequest>,
+    document: DocumentState,
+    search: SearchState,
+    mermaid: MermaidState,
     pub mode: Mode,
-    confirmed_query: String,
-    query: String,
-    rendered: Option<(Generation, String)>,
-    pub matches: Vec<Range<usize>>,
-    pub current_match: Option<usize>,
 }
 
 impl App {
+    pub fn document(&self) -> Option<&Document> {
+        self.document.current.as_ref()
+    }
+
+    pub fn error(&self) -> Option<&str> {
+        self.document.error.as_deref()
+    }
+
+    pub fn clear_error(&mut self) {
+        self.document.clear_error();
+    }
+
+    pub fn matches(&self) -> &[Range<usize>] {
+        &self.search.matches
+    }
+
+    pub fn current_match(&self) -> Option<usize> {
+        self.search.current_match
+    }
+
+    #[cfg(test)]
+    pub fn diagrams(&self) -> &BTreeMap<usize, Diagram> {
+        &self.mermaid.diagrams
+    }
+
     pub fn open(&mut self, path: PathBuf) -> ReadRequest {
-        self.next_generation += 1;
-        let request = ReadRequest {
-            generation: Generation(self.next_generation),
-            path,
-        };
-        self.pending = Some(request.clone());
-        self.error = None;
-        request
+        self.document.open(path)
     }
 
     /// Returns true only when the current request successfully replaces the document.
     pub fn complete(&mut self, result: ReadResult) -> bool {
-        if self.pending.as_ref().is_none_or(|pending| {
-            pending.generation != result.request.generation || pending.path != result.request.path
-        }) {
+        if !self.document.complete(result) {
             return false;
         }
-        self.pending = None;
-        match result.content {
-            Ok(source) => {
-                self.document = Some(Document {
-                    generation: result.request.generation,
-                    path: result.request.path,
-                    source,
-                });
-                self.diagrams.clear();
-                self.rendered = None;
-                self.matches.clear();
-                self.current_match = None;
-                true
-            }
-            Err(error) => {
-                self.error = Some(error);
-                false
-            }
-        }
-    }
-
-    pub fn discover_diagrams(&mut self, sources: BTreeMap<usize, String>) {
-        for (start, source) in sources {
-            self.diagrams.entry(start).or_insert(Diagram {
-                source,
-                status: DiagramStatus::Pending,
-            });
-        }
-    }
-
-    pub fn next_diagram(&mut self) -> Option<DiagramRequest> {
-        if self.diagram_in_flight.is_some() || self.is_loading() {
-            return None;
-        }
-        let document = self.document.as_ref()?;
-        let (&start, diagram) = self
-            .diagrams
-            .iter_mut()
-            .find(|(_, diagram)| diagram.status == DiagramStatus::Pending)?;
-        diagram.status = DiagramStatus::Running;
-        let request = DiagramRequest {
-            generation: document.generation,
-            path: document.path.clone(),
-            start,
-            source: diagram.source.clone(),
-        };
-        self.diagram_in_flight = Some(request.clone());
-        Some(request)
-    }
-
-    /// Releases the serial worker even for stale completions; only current results are accepted.
-    pub fn complete_diagram(&mut self, result: &DiagramResult) -> bool {
-        if self.diagram_in_flight.as_ref() != Some(&result.request) {
-            return false;
-        }
-        self.diagram_in_flight = None;
-        let Some(document) = &self.document else {
-            return false;
-        };
-        if document.generation != result.request.generation || document.path != result.request.path
-        {
-            return false;
-        }
-        let Some(diagram) = self.diagrams.get_mut(&result.request.start) else {
-            return false;
-        };
-        if diagram.source != result.request.source {
-            return false;
-        }
-        diagram.status = if result.png.is_ok() {
-            DiagramStatus::Ready
-        } else {
-            DiagramStatus::Failed
-        };
+        self.mermaid.replace_document();
+        self.search.replace_document();
         true
     }
 
     pub fn is_loading(&self) -> bool {
-        self.pending.is_some()
+        self.document.is_loading()
+    }
+
+    pub fn discover_diagrams(&mut self, sources: BTreeMap<usize, String>) {
+        self.mermaid.discover_diagrams(sources);
+    }
+
+    pub fn next_diagram(&mut self) -> Option<DiagramRequest> {
+        self.mermaid
+            .next_diagram(self.document.current.as_ref(), self.is_loading())
+    }
+
+    pub fn complete_diagram(&mut self, result: &DiagramResult) -> bool {
+        self.mermaid
+            .complete_diagram(result, self.document.current.as_ref())
     }
 
     pub fn begin_search(&mut self) {
         if self.mode != Mode::Normal {
             return;
         }
-        let previous_match = self
-            .current_match
-            .and_then(|ix| self.matches.get(ix))
-            .cloned()
-            .and_then(|range| self.document.as_ref().map(|doc| (doc.generation, range)));
-        self.mode = Mode::Search { previous_match };
-        self.set_query(String::new());
+        self.search
+            .begin_search(self.document().map(|doc| doc.generation));
+        self.mode = Mode::Search;
     }
 
     pub fn preview_search(&mut self, query: String) {
-        if matches!(self.mode, Mode::Search { .. }) {
-            self.set_query(query);
+        if matches!(self.mode, Mode::Search) {
+            self.search.preview_search(query);
         }
     }
 
     pub fn confirm_search(&mut self, query: String, from: usize) -> SearchOutcome {
-        if !query.is_empty() {
-            self.confirmed_query = query;
-        }
         self.mode = Mode::Normal;
-        self.set_query(self.confirmed_query.clone());
-        if self.query.is_empty() {
-            return SearchOutcome::NoPreviousQuery;
-        }
-        if self.matches.is_empty() {
-            return SearchOutcome::NotFound;
-        }
-        self.current_match = Some(
-            self.matches
-                .iter()
-                .position(|range| range.start >= from)
-                .unwrap_or(0),
-        );
-        SearchOutcome::Found
+        self.search.confirm_search(query, from)
     }
 
     pub fn begin_command(&mut self) {
@@ -241,65 +126,29 @@ impl App {
     }
 
     pub fn cancel_input(&mut self) {
-        if let Mode::Search { previous_match } = std::mem::take(&mut self.mode) {
-            self.set_query(self.confirmed_query.clone());
-            if let Some((generation, range)) = previous_match
-                && self
-                    .document
-                    .as_ref()
-                    .is_some_and(|doc| doc.generation == generation)
-            {
-                self.current_match = self.matches.iter().position(|found| *found == range);
-            }
+        if let Mode::Search = std::mem::take(&mut self.mode) {
+            self.search
+                .cancel_input(self.document().map(|doc| doc.generation));
         }
     }
 
+    #[cfg(test)]
     pub fn set_query(&mut self, query: String) {
-        self.query = query;
-        self.search();
+        self.search.set_query(query);
     }
 
     pub fn rendered(&mut self, generation: Generation, text: &str) -> bool {
         if self
-            .document
-            .as_ref()
+            .document()
             .is_none_or(|doc| doc.generation != generation)
-            || self
-                .rendered
-                .as_ref()
-                .is_some_and(|(id, old)| *id == generation && old == text)
         {
             return false;
         }
-        self.rendered = Some((generation, text.to_owned()));
-        self.search();
-        true
+        self.search.rendered(generation, text)
     }
 
-    fn search(&mut self) {
-        self.matches = self
-            .rendered
-            .as_ref()
-            .map(|(_, text)| find_matches(text, &self.query))
-            .unwrap_or_default();
-        self.current_match = if self.matches.is_empty() {
-            None
-        } else {
-            Some(0)
-        };
-    }
-
-    /// Prototype condition: stepping wraps at either end.
     pub fn step_match(&mut self, forward: bool) {
-        let Some(current) = self.current_match else {
-            return;
-        };
-        let count = self.matches.len();
-        self.current_match = Some(if forward {
-            (current + 1) % count
-        } else {
-            (current + count - 1) % count
-        });
+        self.search.step_match(forward);
     }
 }
 
@@ -326,8 +175,138 @@ mod tests {
             request: first,
             content: Err("late failure".into())
         }));
-        assert_eq!(app.document.as_ref().unwrap().source, "new");
-        assert!(app.error.is_none());
+        assert_eq!(app.document().unwrap().source, "new");
+        assert!(app.error().is_none());
+
+        let first = app.open("first.md".into());
+        let latest = app.open("latest.md".into());
+        assert!(!app.complete(ReadResult {
+            request: latest,
+            content: Err("latest failure".into()),
+        }));
+        assert!(!app.complete(success(first, "late success")));
+        assert_eq!(app.document().unwrap().path, PathBuf::from("latest.md"));
+        assert_eq!(app.document().unwrap().source, "new");
+        assert_eq!(app.error(), Some("latest failure"));
+        assert!(!app.is_loading());
+    }
+
+    fn with_confirmed_search() -> App {
+        let mut app = App::default();
+        let request = app.open("sample.md".into());
+        let generation = request.generation;
+        app.complete(success(request, "target target"));
+        app.rendered(generation, "target target");
+        app.begin_search();
+        assert_eq!(app.confirm_search("target".into(), 0), SearchOutcome::Found);
+        app
+    }
+
+    #[test]
+    fn opening_another_file_keeps_the_document_and_search_until_completion() {
+        let mut app = with_confirmed_search();
+        app.step_match(true);
+        app.open("other.md".into());
+        let document = app.document().unwrap();
+        assert_eq!(document.path, PathBuf::from("sample.md"));
+        assert_eq!(document.source, "target target");
+        assert_eq!(app.matches(), vec![0..6, 7..13]);
+        assert_eq!(app.current_match(), Some(1));
+        assert!(app.is_loading());
+    }
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)] // Expected match ranges, not indices.
+    fn replacement_recomputes_the_confirmed_search_in_normal_and_command_modes() {
+        for path in ["sample.md", "other.md"] {
+            for mode in [Mode::Normal, Mode::Command] {
+                let mut app = with_confirmed_search();
+                if mode == Mode::Command {
+                    app.begin_command();
+                }
+                let request = app.open(path.into());
+                let generation = request.generation;
+                assert!(app.complete(success(request, "prefix target")));
+                assert!(app.rendered(generation, "prefix target"));
+                assert_eq!(app.mode, mode);
+                assert_eq!(app.matches(), vec![7..13]);
+                assert_eq!(app.current_match(), Some(0));
+            }
+        }
+    }
+
+    #[test]
+    fn replacement_uses_the_search_preview_instead_of_the_confirmed_query() {
+        let mut app = with_confirmed_search();
+        app.begin_search();
+        app.preview_search("edit".into());
+        let mode = app.mode.clone();
+        let request = app.open("sample.md".into());
+        let generation = request.generation;
+        assert!(app.complete(success(request, "edit edit target")));
+        assert!(app.rendered(generation, "edit edit target"));
+        assert_eq!(app.mode, mode);
+        assert_eq!(app.matches(), vec![0..4, 5..9]);
+    }
+
+    #[test]
+    fn replacement_keeps_an_empty_search_preview_empty() {
+        let mut app = with_confirmed_search();
+        app.begin_search();
+        let mode = app.mode.clone();
+        let request = app.open("sample.md".into());
+        let generation = request.generation;
+        assert!(app.complete(success(request, "prefix target")));
+        assert!(app.rendered(generation, "prefix target"));
+        assert_eq!(app.mode, mode);
+        assert!(app.matches().is_empty());
+        assert_eq!(app.current_match(), None);
+        // Empty confirmation still reuses the confirmed query after replacement.
+        assert_eq!(app.confirm_search(String::new(), 0), SearchOutcome::Found);
+    }
+
+    #[test]
+    fn read_failure_keeps_the_input_mode_document_and_search() {
+        for search in [false, true] {
+            let mut app = with_confirmed_search();
+            if search {
+                app.begin_search();
+                app.preview_search("get".into());
+            } else {
+                app.begin_command();
+            }
+            app.step_match(true);
+            let mode = app.mode.clone();
+            let matches = app.matches().to_vec();
+            let request = app.open("missing.md".into());
+            assert!(!app.complete(ReadResult {
+                request,
+                content: Err("unreadable".into()),
+            }));
+            assert_eq!(app.mode, mode);
+            assert_eq!(app.document().unwrap().path, PathBuf::from("sample.md"));
+            assert_eq!(app.document().unwrap().source, "target target");
+            assert_eq!(app.matches(), matches);
+            assert_eq!(app.current_match(), Some(1));
+            assert_eq!(app.error(), Some("unreadable"));
+            assert!(!app.is_loading());
+            if search {
+                // Recompute on a new snapshot to observe preservation of the preview query.
+                let generation = app.document().unwrap().generation;
+                app.rendered(generation, "get get target");
+                assert_eq!(app.matches(), vec![0..3, 4..7, 11..14]);
+            }
+        }
+    }
+
+    #[test]
+    fn repeated_rendered_snapshot_keeps_the_selected_match() {
+        let mut app = with_confirmed_search();
+        app.step_match(true);
+        let generation = app.document().unwrap().generation;
+        assert!(!app.rendered(generation, "target target"));
+        assert_eq!(app.matches(), vec![0..6, 7..13]);
+        assert_eq!(app.current_match(), Some(1));
     }
 
     #[test]
@@ -340,8 +319,8 @@ mod tests {
             request: reload,
             content: Err("unreadable".into())
         }));
-        assert_eq!(app.document.as_ref().unwrap().source, "retained");
-        assert_eq!(app.error.as_deref(), Some("unreadable"));
+        assert_eq!(app.document().unwrap().source, "retained");
+        assert_eq!(app.error(), Some("unreadable"));
         assert!(!app.is_loading());
     }
 
@@ -361,8 +340,8 @@ mod tests {
             request: first,
             png: Err("syntax error".into()),
         }));
-        assert_eq!(app.diagrams[&10].status, DiagramStatus::Failed);
-        assert_eq!(app.document.as_ref().unwrap().source, "retained body");
+        assert_eq!(app.diagrams()[&10].status, DiagramStatus::Failed);
+        assert_eq!(app.document().unwrap().source, "retained body");
         let second = app.next_diagram().unwrap();
         assert_eq!(second.start, 80);
         assert!(app.complete_diagram(&DiagramResult {
@@ -371,7 +350,7 @@ mod tests {
         }));
         app.discover_diagrams(BTreeMap::from([(10, "flowchart TD\nA --> B".into())]));
         assert!(app.next_diagram().is_none());
-        assert_eq!(app.diagrams[&80].status, DiagramStatus::Ready);
+        assert_eq!(app.diagrams()[&80].status, DiagramStatus::Ready);
     }
 
     #[test]
@@ -387,7 +366,7 @@ mod tests {
             app.discover_diagrams(BTreeMap::from([(10, "new diagram".into())]));
             assert!(app.next_diagram().is_none());
             assert!(!app.complete_diagram(&DiagramResult { request: old, png }));
-            assert_eq!(app.diagrams[&10].status, DiagramStatus::Pending);
+            assert_eq!(app.diagrams()[&10].status, DiagramStatus::Pending);
             let current = app.next_diagram().unwrap();
             assert_eq!(current.source, "new diagram");
             let mut wrong = current.clone();
@@ -416,17 +395,17 @@ mod tests {
             app.confirm_search("日本語".into(), 10),
             SearchOutcome::Found
         );
-        assert_eq!(app.current_match, Some(1));
+        assert_eq!(app.current_match(), Some(1));
         app.begin_search();
         app.preview_search("unknown".into());
-        assert!(app.matches.is_empty());
+        assert!(app.matches().is_empty());
         app.cancel_input();
         assert_eq!(app.mode, Mode::Normal);
-        assert_eq!(app.matches, vec![0..9, 10..19]);
-        assert_eq!(app.current_match, Some(1));
+        assert_eq!(app.matches(), vec![0..9, 10..19]);
+        assert_eq!(app.current_match(), Some(1));
         app.begin_search();
         assert_eq!(app.confirm_search(String::new(), 20), SearchOutcome::Found);
-        assert_eq!(app.current_match, Some(0));
+        assert_eq!(app.current_match(), Some(0));
     }
 
     #[test]
@@ -437,13 +416,13 @@ mod tests {
         app.rendered(first.generation, "x x");
         app.begin_search();
         app.confirm_search("x".into(), 2);
-        assert_eq!(app.current_match, Some(1));
+        assert_eq!(app.current_match(), Some(1));
         app.begin_search();
         let second = app.open("b.md".into());
         app.complete(success(second.clone(), "x x"));
         app.rendered(second.generation, "x x");
         app.cancel_input();
-        assert_eq!(app.current_match, Some(0));
+        assert_eq!(app.current_match(), Some(0));
     }
 
     #[test]
@@ -453,20 +432,20 @@ mod tests {
         app.complete(success(first.clone(), "日本語 日本語"));
         app.set_query("日本語".into());
         assert!(app.rendered(first.generation, "日本語 日本語"));
-        assert_eq!(app.matches, vec![0..9, 10..19]);
+        assert_eq!(app.matches(), vec![0..9, 10..19]);
         app.step_match(true);
-        assert_eq!(app.current_match, Some(1));
+        assert_eq!(app.current_match(), Some(1));
         app.step_match(true);
-        assert_eq!(app.current_match, Some(0));
+        assert_eq!(app.current_match(), Some(0));
         app.step_match(false);
-        assert_eq!(app.current_match, Some(1));
+        assert_eq!(app.current_match(), Some(1));
         let second = app.open("b.md".into());
         app.complete(success(second.clone(), "other"));
         assert!(!app.rendered(first.generation, "日本語"));
-        assert!(app.matches.is_empty());
-        assert_eq!(app.current_match, None);
+        assert!(app.matches().is_empty());
+        assert_eq!(app.current_match(), None);
         assert!(app.rendered(second.generation, "other"));
         app.step_match(false);
-        assert_eq!(app.current_match, None);
+        assert_eq!(app.current_match(), None);
     }
 }
