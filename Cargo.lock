@@ -4481,6 +4481,7 @@ dependencies = [
  "gpui-pre-reqwest-client",
  "notify",
  "url",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
