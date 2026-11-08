@@ -19,6 +19,87 @@ pub struct ReadRequest {
     pub id: ReadRequestId,
     pub path: PathBuf,
     pub response_to: Option<ExternalRequestId>,
+    pub origin: OperationOrigin,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OperationOrigin {
+    Initial,
+    Keyboard,
+    Link,
+    External,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "File watching is connected in stage 3.")
+    )]
+    Automatic,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DocumentOperation {
+    Initial(PathBuf),
+    Open(PathBuf),
+    Reload,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Heading links are connected in stage 4; app transitions are tested now."
+        )
+    )]
+    Heading {
+        path: Option<PathBuf>,
+        id: String,
+    },
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "History keys and external commands are connected in stages 4/5."
+        )
+    )]
+    Back,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "History keys and external commands are connected in stages 4/5."
+        )
+    )]
+    Forward,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OperationError {
+    DocumentUnavailable,
+    NoPreviousEntry,
+    NoNextEntry,
+}
+
+/// Pending reads complete through ReadCompletion; synchronous outcomes carry only
+/// the caller's external ID, never a fabricated read ID or document generation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OperationResult {
+    Pending(ReadRequest),
+    Complete {
+        response_to: Option<ExternalRequestId>,
+        outcome: Result<(), OperationError>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PositionTarget {
+    Top,
+    Distance(f32),
+    Heading(String),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PositionRequest {
+    pub generation: Generation,
+    pub target: PositionTarget,
+    // Distinguishes successive synchronous movements within the same generation.
+    pub serial: u64,
 }
 
 pub struct LoadedDocument {
@@ -43,13 +124,6 @@ pub struct ReadCompletion {
 pub struct Document {
     pub generation: Generation,
     pub path: PathBuf,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Identity is delivered in stage A; operation classification uses it in stage B."
-        )
-    )]
     pub key: DocumentKey,
     pub source: String,
 }
@@ -65,12 +139,18 @@ pub(super) struct DocumentState {
 }
 
 impl DocumentState {
-    pub fn open(&mut self, path: PathBuf, response_to: Option<ExternalRequestId>) -> ReadRequest {
+    pub fn open(
+        &mut self,
+        path: PathBuf,
+        response_to: Option<ExternalRequestId>,
+        origin: OperationOrigin,
+    ) -> ReadRequest {
         self.next_request += 1;
         let request = ReadRequest {
             id: ReadRequestId(self.next_request),
             path,
             response_to,
+            origin,
         };
         self.outstanding.insert(request.id, request.clone());
         self.pending = Some(request.id);
@@ -109,6 +189,12 @@ impl DocumentState {
             }
         }
         Some(completion)
+    }
+
+    /// A newer synchronous navigation supersedes display adoption, not read responses.
+    pub fn supersede(&mut self) {
+        self.pending = None;
+        self.error = None;
     }
 
     pub fn is_loading(&self) -> bool {

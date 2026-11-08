@@ -82,7 +82,7 @@ impl Prompt {
 pub(super) fn bind_root_actions(root: Div, cx: &mut Context<Viewer>) -> Div {
     root.on_action(cx.listener(|this, _: &Reload, _, cx| {
         if this.app.mode == Mode::Normal {
-            this.open(cx);
+            this.reload(cx);
         }
     }))
     .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {

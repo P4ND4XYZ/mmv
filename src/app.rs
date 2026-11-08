@@ -1,13 +1,17 @@
 mod document;
+mod history;
 mod mermaid;
 mod search;
 
-use std::{collections::BTreeMap, ops::Range, path::PathBuf};
+#[cfg(test)]
+use std::path::PathBuf;
+use std::{collections::BTreeMap, ops::Range};
 
 pub use crate::core::{ImageLocation, LinkTarget, resolve_image, resolve_link};
 pub use document::{
-    Document, DocumentKey, ExternalRequestId, Generation, LoadedDocument, ReadCompletion,
-    ReadRequest, ReadResult,
+    Document, DocumentKey, DocumentOperation, ExternalRequestId, Generation, LoadedDocument,
+    OperationError, OperationOrigin, OperationResult, PositionRequest, PositionTarget,
+    ReadCompletion, ReadRequest, ReadResult,
 };
 #[cfg(test)]
 pub use mermaid::{Diagram, DiagramStatus};
@@ -15,6 +19,7 @@ pub use mermaid::{DiagramRequest, DiagramResult};
 pub use search::SearchOutcome;
 
 use document::DocumentState;
+use history::History;
 use mermaid::MermaidState;
 use search::SearchState;
 
@@ -41,7 +46,18 @@ pub struct App {
     document: DocumentState,
     search: SearchState,
     mermaid: MermaidState,
+    history: History,
+    pending_operation: Option<(document::ReadRequestId, PendingOperation)>,
+    position: Option<PositionRequest>,
+    next_position: u64,
     pub mode: Mode,
+}
+
+enum PendingOperation {
+    Open,
+    Reload,
+    Heading(String),
+    History { index: usize, distance: f32 },
 }
 
 impl App {
@@ -70,25 +86,173 @@ impl App {
         &self.mermaid.diagrams
     }
 
+    #[cfg(test)]
     pub fn open(&mut self, path: PathBuf) -> ReadRequest {
         self.open_request(path, None)
     }
 
+    #[cfg(test)]
     pub fn open_request(
         &mut self,
         path: PathBuf,
         response_to: Option<ExternalRequestId>,
     ) -> ReadRequest {
-        self.document.open(path, response_to)
+        match self.operate(
+            DocumentOperation::Open(path),
+            OperationOrigin::External,
+            0.,
+            response_to,
+        ) {
+            OperationResult::Pending(request) => request,
+            OperationResult::Complete { .. } => panic!("open always reads"),
+        }
     }
 
+    /// `distance` is supplied by UI, never inferred from source or layout in app.
+    /// Pending reads and synchronous success/failure remain distinct at the boundary.
+    /// Input mode and input ownership are deliberately untouched.
+    pub fn operate(
+        &mut self,
+        operation: DocumentOperation,
+        origin: OperationOrigin,
+        distance: f32,
+        response_to: Option<ExternalRequestId>,
+    ) -> OperationResult {
+        let complete = |outcome| OperationResult::Complete {
+            response_to: response_to.clone(),
+            outcome,
+        };
+        let (path, pending) = match operation {
+            DocumentOperation::Initial(path) | DocumentOperation::Open(path) => {
+                (path, PendingOperation::Open)
+            }
+            DocumentOperation::Reload => {
+                let Some(document) = self.document() else {
+                    return complete(Err(OperationError::DocumentUnavailable));
+                };
+                (document.path.clone(), PendingOperation::Reload)
+            }
+            DocumentOperation::Heading { path: None, id } => {
+                let Some(document) = self.document() else {
+                    return complete(Err(OperationError::DocumentUnavailable));
+                };
+                let path = document.path.clone();
+                self.document.supersede();
+                self.pending_operation = None;
+                self.history.push(path, distance);
+                self.request_position(PositionTarget::Heading(id));
+                return complete(Ok(()));
+            }
+            DocumentOperation::Heading {
+                path: Some(path),
+                id,
+            } => (path, PendingOperation::Heading(id)),
+            DocumentOperation::Back | DocumentOperation::Forward => {
+                let forward = matches!(operation, DocumentOperation::Forward);
+                let Some((index, entry)) = self.history.target(forward) else {
+                    return complete(Err(if forward {
+                        OperationError::NoNextEntry
+                    } else {
+                        OperationError::NoPreviousEntry
+                    }));
+                };
+                (
+                    entry.path,
+                    PendingOperation::History {
+                        index,
+                        distance: entry.distance,
+                    },
+                )
+            }
+        };
+        let request = self.document.open(path, response_to, origin);
+        self.pending_operation = Some((request.id, pending));
+        OperationResult::Pending(request)
+    }
+
+    #[cfg(test)]
     pub fn complete(&mut self, result: ReadResult) -> Option<ReadCompletion> {
+        self.complete_at(result, 0.)
+    }
+
+    /// Capture the departure distance immediately before replacing the displayed body.
+    pub fn complete_at(&mut self, result: ReadResult, distance: f32) -> Option<ReadCompletion> {
+        let previous_key = self.document().map(|document| document.key.clone());
         let completion = self.document.complete(result)?;
-        if completion.adopted {
-            self.mermaid.replace_document();
-            self.search.replace_document();
+        if self
+            .pending_operation
+            .as_ref()
+            .is_some_and(|(id, _)| *id == completion.request_id)
+        {
+            let (_, operation) = self.pending_operation.take().expect("matching operation");
+            if completion.adopted {
+                let document = self.document().expect("adopted document");
+                let same_document = previous_key.as_ref() == Some(&document.key);
+                let path = document.path.clone();
+                let target = match operation {
+                    PendingOperation::Open if same_document => PositionTarget::Distance(distance),
+                    PendingOperation::Open => {
+                        self.history.push(path, distance);
+                        PositionTarget::Top
+                    }
+                    PendingOperation::Reload => PositionTarget::Distance(distance),
+                    PendingOperation::Heading(id) => {
+                        self.history.push(path, distance);
+                        PositionTarget::Heading(id)
+                    }
+                    PendingOperation::History {
+                        index,
+                        distance: saved,
+                    } => {
+                        self.history.travel(index, distance);
+                        PositionTarget::Distance(saved)
+                    }
+                };
+                self.request_position(target);
+                self.mermaid.replace_document();
+                self.search.replace_document();
+            }
         }
         Some(completion)
+    }
+
+    fn request_position(&mut self, target: PositionTarget) {
+        self.next_position += 1;
+        self.position = Some(PositionRequest {
+            generation: self
+                .document()
+                .expect("position requires document")
+                .generation,
+            target,
+            serial: self.next_position,
+        });
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Layout-ready position application is connected in stages 2/4."
+        )
+    )]
+    pub fn position_request(&self) -> Option<&PositionRequest> {
+        self.position.as_ref()
+    }
+
+    /// A delayed consumer must not remove a newer generation or synchronous move.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Layout-ready acknowledgement is connected in stages 2/4."
+        )
+    )]
+    pub fn acknowledge_position(&mut self, request: &PositionRequest) -> bool {
+        if self.position.as_ref() != Some(request) {
+            return false;
+        }
+        self.position = None;
+        true
     }
 
     pub fn is_loading(&self) -> bool {
@@ -161,6 +325,9 @@ impl App {
         self.search.step_match(forward);
     }
 }
+
+#[cfg(test)]
+mod operation_tests;
 
 #[cfg(test)]
 mod tests {

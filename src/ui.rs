@@ -10,8 +10,8 @@ use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::{prelude::*, *};
 
 use crate::app::{
-    self, DiagramRequest, DiagramResult, ExternalRequestId, LinkTarget, ReadCompletion,
-    ReadRequest, ReadResult, resolve_link,
+    self, DiagramRequest, DiagramResult, DocumentOperation, ExternalRequestId, LinkTarget,
+    OperationOrigin, OperationResult, ReadCompletion, ReadRequest, ReadResult, resolve_link,
 };
 use document::DocumentView;
 use input::Prompt;
@@ -59,20 +59,60 @@ impl Viewer {
     }
 
     pub fn open(&mut self, cx: &mut Context<Self>) {
-        let request = self.app.open(self.path.clone());
-        cx.emit(request);
-        cx.notify();
+        self.request_operation(
+            DocumentOperation::Initial(self.path.clone()),
+            OperationOrigin::Initial,
+            None,
+            cx,
+        );
     }
 
+    #[cfg_attr(
+        not(all(test, feature = "ui-tests")),
+        expect(
+            dead_code,
+            reason = "External request adapter is exercised by UI tests; IPC is connected in stage 5."
+        )
+    )]
     pub fn request_document(
         &mut self,
         path: PathBuf,
         response_to: Option<ExternalRequestId>,
         cx: &mut Context<Self>,
-    ) {
-        let request = self.app.open_request(path, response_to);
-        cx.emit(request);
+    ) -> OperationResult {
+        self.request_operation(
+            DocumentOperation::Open(path),
+            OperationOrigin::External,
+            response_to,
+            cx,
+        )
+    }
+
+    pub(super) fn reload(&mut self, cx: &mut Context<Self>) {
+        self.request_operation(
+            DocumentOperation::Reload,
+            OperationOrigin::Keyboard,
+            None,
+            cx,
+        );
+    }
+
+    /// Connection boundaries can respond immediately to Complete, or await the
+    /// emitted read's ReadCompletion when Pending is returned.
+    pub fn request_operation(
+        &mut self,
+        operation: DocumentOperation,
+        origin: OperationOrigin,
+        response_to: Option<ExternalRequestId>,
+        cx: &mut Context<Self>,
+    ) -> OperationResult {
+        let distance = self.document.distance(cx);
+        let result = self.app.operate(operation, origin, distance, response_to);
+        if let OperationResult::Pending(request) = &result {
+            cx.emit(request.clone());
+        }
         cx.notify();
+        result
     }
 
     fn open_link(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -82,7 +122,12 @@ impl Viewer {
             Ok(LinkTarget::File(path)) => {
                 self.cancel_input(window, cx);
                 self.body_focus.focus(window, cx);
-                self.request_document(path, None, cx);
+                self.request_operation(
+                    DocumentOperation::Open(path),
+                    OperationOrigin::Link,
+                    None,
+                    cx,
+                );
             }
             Ok(LinkTarget::Web(url)) => cx.open_url(&url),
             Ok(LinkTarget::Heading) => self.message = Some("見出しへの移動は未対応です".into()),
@@ -92,7 +137,8 @@ impl Viewer {
     }
 
     pub fn complete(&mut self, result: ReadResult, cx: &mut Context<Self>) {
-        let Some(completion) = self.app.complete(result) else {
+        let distance = self.document.distance(cx);
+        let Some(completion) = self.app.complete_at(result, distance) else {
             return;
         };
         if completion.adopted {

@@ -55,6 +55,16 @@ impl DocumentView {
         }));
     }
 
+    pub fn distance(&self, cx: &Context<Viewer>) -> f32 {
+        -f32::from(
+            self.text
+                .read(cx)
+                .list_state()
+                .scroll_px_offset_for_scrollbar()
+                .y,
+        )
+    }
+
     pub fn scroll(&mut self, lines: f32, pages: f32, cx: &mut Context<Viewer>) {
         let list = self.text.read(cx).list_state();
         list.scroll_by(px(FOOTER_LINE_HEIGHT * lines) + list.viewport_bounds().size.height * pages);
