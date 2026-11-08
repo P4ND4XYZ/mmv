@@ -9,8 +9,8 @@ mod production;
 use std::{cell::RefCell, path::PathBuf, rc::Rc, time::Instant};
 
 use gpui_kit::{
-    AppContext as _, Bounds, TestAppContext, WindowBounds, WindowOptions, point, px, size,
-    test::TestWindowExt as _,
+    AppContext as _, Bounds, Focusable as _, TestAppContext, WindowBounds, WindowOptions, point,
+    px, size, test::TestWindowExt as _,
 };
 
 use super::Viewer;
@@ -331,6 +331,114 @@ fn mermaid_parsing_hides_sources_and_keeps_search_working_during_generation(
         });
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+fn stale_diagram_completion_preserves_replacement_and_composing_input(cx: &mut TestAppContext) {
+    for (key, mode) in [
+        ("/", crate::app::Mode::Search),
+        (":", crate::app::Mode::Command),
+    ] {
+        for old_succeeds in [true, false] {
+            let (window, view) = open(cx, "old body\n\n```mermaid\nold diagram\n```".into());
+            cx.run_until_parked();
+            let old = view.read_with(cx, |viewer, _| running_diagram(viewer));
+            cx.update_window(window, |_, window, cx| {
+                window.press(key, cx);
+                window.input("edit", cx);
+            })
+            .unwrap();
+            let input = view.read_with(cx, |viewer, _| viewer.input.state.clone());
+            cx.update_window(window, |_, window, cx| {
+                input.update(cx, |input, cx| {
+                    gpui_kit::EntityInputHandler::replace_and_mark_text_in_range(
+                        input,
+                        None,
+                        "編集中",
+                        Some(0..3),
+                        window,
+                        cx,
+                    );
+                });
+            })
+            .unwrap();
+            let composing = input.read_with(cx, |input, _| input.value().to_string());
+            cx.update(|cx| {
+                view.update(cx, |viewer, cx| {
+                    let crate::app::OperationResult::Pending(request) =
+                        viewer.request_document(viewer.path.with_file_name("new.md"), None, cx)
+                    else {
+                        panic!("read required")
+                    };
+                    viewer.complete(
+                        success(
+                            request,
+                            "new body edit\n\n```mermaid\nnew diagram\n```".into(),
+                        ),
+                        cx,
+                    );
+                })
+            });
+            cx.run_until_parked();
+            cx.update(|cx| {
+                view.update(cx, |viewer, cx| {
+                    viewer.complete_diagram(
+                        DiagramResult {
+                            request: old,
+                            png: if old_succeeds {
+                                Ok(vec![137, 80, 78, 71])
+                            } else {
+                                Err("old failure".into())
+                            },
+                        },
+                        cx,
+                    );
+                    assert!(viewer.document.diagram_images.is_empty());
+                    assert_eq!(running_diagram(viewer).source, "new diagram");
+                    assert!(viewer.message.is_none());
+                    assert!(viewer.display_error.is_none());
+                })
+            });
+            cx.run_until_parked();
+            cx.update_window(window, |_, window, cx| {
+                view.read_with(cx, |viewer, cx| {
+                    assert_eq!(viewer.app.mode, mode);
+                    assert_eq!(viewer.input.state, input);
+                    assert_eq!(input.read(cx).value().as_ref(), composing);
+                    assert!(input.focus_handle(cx).is_focused(window));
+                    assert!(
+                        viewer
+                            .document
+                            .text
+                            .read(cx)
+                            .rendered_text()
+                            .as_str()
+                            .contains("new body edit")
+                    );
+                    assert!(viewer.document.diagram_images.is_empty());
+                });
+                input.update(cx, |input, cx| {
+                    assert!(
+                        gpui_kit::EntityInputHandler::marked_text_range(input, window, cx)
+                            .is_some()
+                    )
+                });
+            })
+            .unwrap();
+            cx.update(|cx| {
+                view.update(cx, |viewer, cx| {
+                    viewer.complete_diagram(
+                        DiagramResult {
+                            request: running_diagram(viewer),
+                            png: Ok(vec![137, 80, 78, 71]),
+                        },
+                        cx,
+                    );
+                    assert_eq!(viewer.document.diagram_images.len(), 1);
+                })
+            });
+        }
+    }
 }
 
 #[gpui_kit::test]
