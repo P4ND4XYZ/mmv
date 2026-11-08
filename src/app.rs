@@ -5,7 +5,10 @@ mod search;
 use std::{collections::BTreeMap, ops::Range, path::PathBuf};
 
 pub use crate::core::{ImageLocation, LinkTarget, resolve_image, resolve_link};
-pub use document::{Document, Generation, ReadRequest, ReadResult};
+pub use document::{
+    Document, DocumentKey, ExternalRequestId, Generation, LoadedDocument, ReadCompletion,
+    ReadRequest, ReadResult,
+};
 #[cfg(test)]
 pub use mermaid::{Diagram, DiagramStatus};
 pub use mermaid::{DiagramRequest, DiagramResult};
@@ -68,17 +71,24 @@ impl App {
     }
 
     pub fn open(&mut self, path: PathBuf) -> ReadRequest {
-        self.document.open(path)
+        self.open_request(path, None)
     }
 
-    /// Returns true only when the current request successfully replaces the document.
-    pub fn complete(&mut self, result: ReadResult) -> bool {
-        if !self.document.complete(result) {
-            return false;
+    pub fn open_request(
+        &mut self,
+        path: PathBuf,
+        response_to: Option<ExternalRequestId>,
+    ) -> ReadRequest {
+        self.document.open(path, response_to)
+    }
+
+    pub fn complete(&mut self, result: ReadResult) -> Option<ReadCompletion> {
+        let completion = self.document.complete(result)?;
+        if completion.adopted {
+            self.mermaid.replace_document();
+            self.search.replace_document();
         }
-        self.mermaid.replace_document();
-        self.search.replace_document();
-        true
+        Some(completion)
     }
 
     pub fn is_loading(&self) -> bool {
@@ -157,9 +167,13 @@ mod tests {
     use super::*;
 
     fn success(request: ReadRequest, source: &str) -> ReadResult {
+        let key = DocumentKey(request.path.clone());
         ReadResult {
             request,
-            content: Ok(source.into()),
+            content: Ok(LoadedDocument {
+                key,
+                source: source.into(),
+            }),
         }
     }
 
@@ -168,34 +182,148 @@ mod tests {
         let mut app = App::default();
         let first = app.open("first.md".into());
         let latest = app.open("latest.md".into());
-        assert!(!app.complete(success(first.clone(), "old")));
+        assert!(!app.complete(success(first.clone(), "old")).unwrap().adopted);
         assert!(app.is_loading());
-        assert!(app.complete(success(latest, "new")));
-        assert!(!app.complete(ReadResult {
-            request: first,
-            content: Err("late failure".into())
-        }));
+        assert!(app.complete(success(latest, "new")).unwrap().adopted);
+        assert!(
+            app.complete(ReadResult {
+                request: first,
+                content: Err("late failure".into())
+            })
+            .is_none()
+        );
         assert_eq!(app.document().unwrap().source, "new");
         assert!(app.error().is_none());
 
         let first = app.open("first.md".into());
         let latest = app.open("latest.md".into());
-        assert!(!app.complete(ReadResult {
-            request: latest,
-            content: Err("latest failure".into()),
-        }));
-        assert!(!app.complete(success(first, "late success")));
+        assert!(
+            !app.complete(ReadResult {
+                request: latest,
+                content: Err("latest failure".into()),
+            })
+            .unwrap()
+            .adopted
+        );
+        assert!(
+            !app.complete(success(first, "late success"))
+                .unwrap()
+                .adopted
+        );
         assert_eq!(app.document().unwrap().path, PathBuf::from("latest.md"));
         assert_eq!(app.document().unwrap().source, "new");
         assert_eq!(app.error(), Some("latest failure"));
         assert!(!app.is_loading());
     }
 
+    #[test]
+    fn external_completions_keep_their_ids_and_results_when_finishing_in_reverse() {
+        for a_succeeds in [false, true] {
+            for b_succeeds in [false, true] {
+                let mut app = with_confirmed_search();
+                app.begin_search();
+                app.preview_search("get".into());
+                app.step_match(true);
+                app.discover_diagrams(BTreeMap::from([(10, "diagram".into())]));
+                let diagram = app.next_diagram().unwrap();
+                let generation = app.document().unwrap().generation;
+                let a_id = ExternalRequestId("cli-a".into());
+                let b_id = ExternalRequestId("cli-b".into());
+                let a = app.open_request("a.md".into(), Some(a_id.clone()));
+                let b = app.open_request("b.md".into(), Some(b_id.clone()));
+                let finish = |request: ReadRequest, succeeds| {
+                    if succeeds {
+                        success(request, "new body")
+                    } else {
+                        ReadResult {
+                            request,
+                            content: Err("read failed".into()),
+                        }
+                    }
+                };
+                let b_completion = app.complete(finish(b.clone(), b_succeeds)).unwrap();
+                assert_eq!(b_completion.request_id, b.id);
+                assert_eq!(b_completion.response_to, Some(b_id));
+                assert_eq!(
+                    b_completion.outcome,
+                    if b_succeeds {
+                        Ok(())
+                    } else {
+                        Err("read failed".into())
+                    }
+                );
+                assert_eq!(b_completion.adopted, b_succeeds);
+                let a_completion = app.complete(finish(a.clone(), a_succeeds)).unwrap();
+                assert_eq!(a_completion.request_id, a.id);
+                assert_eq!(a_completion.response_to, Some(a_id));
+                assert_eq!(
+                    a_completion.outcome,
+                    if a_succeeds {
+                        Ok(())
+                    } else {
+                        Err("read failed".into())
+                    }
+                );
+                assert!(!a_completion.adopted);
+                assert!(!app.is_loading());
+                assert_eq!(app.mode, Mode::Search);
+                if b_succeeds {
+                    assert_eq!(app.document().unwrap().source, "new body");
+                    assert_ne!(app.document().unwrap().generation, generation);
+                    assert!(app.error().is_none());
+                    assert!(app.matches().is_empty());
+                    assert!(app.diagrams().is_empty());
+                } else {
+                    assert_eq!(app.document().unwrap().source, "target target");
+                    assert_eq!(app.document().unwrap().generation, generation);
+                    assert_eq!(app.error(), Some("read failed"));
+                    assert_eq!(app.matches(), vec![3..6, 10..13]);
+                    assert_eq!(app.current_match(), Some(1));
+                    assert_eq!(app.diagrams()[&10].status, DiagramStatus::Running);
+                    assert!(app.complete_diagram(&DiagramResult {
+                        request: diagram,
+                        png: Ok(vec![1])
+                    }));
+                }
+                assert!(app.complete(finish(a, a_succeeds)).is_none());
+                assert!(app.complete(finish(b, b_succeeds)).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn duplicate_completion_cannot_replace_or_reset_the_current_document() {
+        let mut app = with_confirmed_search();
+        app.step_match(true);
+        app.discover_diagrams(BTreeMap::from([(10, "diagram".into())]));
+        let generation = app.document().unwrap().generation;
+        let request = app.open("new.md".into());
+        let mut altered = request.clone();
+        altered.response_to = Some(ExternalRequestId("not-the-caller".into()));
+        assert!(app.complete(success(altered, "wrong")).is_none());
+        assert!(app.is_loading());
+        assert!(
+            app.complete(success(request.clone(), "new body"))
+                .unwrap()
+                .adopted
+        );
+        let adopted_generation = app.document().unwrap().generation;
+        assert_ne!(adopted_generation, generation);
+        app.rendered(adopted_generation, "target target");
+        app.step_match(true);
+        app.discover_diagrams(BTreeMap::from([(20, "new diagram".into())]));
+        assert!(app.complete(success(request, "new body")).is_none());
+        assert_eq!(app.document().unwrap().generation, adopted_generation);
+        assert_eq!(app.current_match(), Some(1));
+        assert_eq!(app.diagrams()[&20].status, DiagramStatus::Pending);
+        assert!(!app.is_loading());
+    }
+
     fn with_confirmed_search() -> App {
         let mut app = App::default();
         let request = app.open("sample.md".into());
-        let generation = request.generation;
         app.complete(success(request, "target target"));
+        let generation = app.document().unwrap().generation;
         app.rendered(generation, "target target");
         app.begin_search();
         assert_eq!(app.confirm_search("target".into(), 0), SearchOutcome::Found);
@@ -225,8 +353,12 @@ mod tests {
                     app.begin_command();
                 }
                 let request = app.open(path.into());
-                let generation = request.generation;
-                assert!(app.complete(success(request, "prefix target")));
+                assert!(
+                    app.complete(success(request, "prefix target"))
+                        .unwrap()
+                        .adopted
+                );
+                let generation = app.document().unwrap().generation;
                 assert!(app.rendered(generation, "prefix target"));
                 assert_eq!(app.mode, mode);
                 assert_eq!(app.matches(), vec![7..13]);
@@ -242,8 +374,12 @@ mod tests {
         app.preview_search("edit".into());
         let mode = app.mode.clone();
         let request = app.open("sample.md".into());
-        let generation = request.generation;
-        assert!(app.complete(success(request, "edit edit target")));
+        assert!(
+            app.complete(success(request, "edit edit target"))
+                .unwrap()
+                .adopted
+        );
+        let generation = app.document().unwrap().generation;
         assert!(app.rendered(generation, "edit edit target"));
         assert_eq!(app.mode, mode);
         assert_eq!(app.matches(), vec![0..4, 5..9]);
@@ -255,8 +391,12 @@ mod tests {
         app.begin_search();
         let mode = app.mode.clone();
         let request = app.open("sample.md".into());
-        let generation = request.generation;
-        assert!(app.complete(success(request, "prefix target")));
+        assert!(
+            app.complete(success(request, "prefix target"))
+                .unwrap()
+                .adopted
+        );
+        let generation = app.document().unwrap().generation;
         assert!(app.rendered(generation, "prefix target"));
         assert_eq!(app.mode, mode);
         assert!(app.matches().is_empty());
@@ -279,10 +419,14 @@ mod tests {
             let mode = app.mode.clone();
             let matches = app.matches().to_vec();
             let request = app.open("missing.md".into());
-            assert!(!app.complete(ReadResult {
-                request,
-                content: Err("unreadable".into()),
-            }));
+            assert!(
+                !app.complete(ReadResult {
+                    request,
+                    content: Err("unreadable".into()),
+                })
+                .unwrap()
+                .adopted
+            );
             assert_eq!(app.mode, mode);
             assert_eq!(app.document().unwrap().path, PathBuf::from("sample.md"));
             assert_eq!(app.document().unwrap().source, "target target");
@@ -315,10 +459,14 @@ mod tests {
         let request = app.open("sample.md".into());
         app.complete(success(request.clone(), "retained"));
         let reload = app.open(request.path);
-        assert!(!app.complete(ReadResult {
-            request: reload,
-            content: Err("unreadable".into())
-        }));
+        assert!(
+            !app.complete(ReadResult {
+                request: reload,
+                content: Err("unreadable".into())
+            })
+            .unwrap()
+            .adopted
+        );
         assert_eq!(app.document().unwrap().source, "retained");
         assert_eq!(app.error(), Some("unreadable"));
         assert!(!app.is_loading());
@@ -387,8 +535,8 @@ mod tests {
     fn search_preview_cancel_and_empty_commit_keep_the_confirmed_query() {
         let mut app = App::default();
         let request = app.open("sample.md".into());
-        let generation = request.generation;
         app.complete(success(request, "日本語 日本語"));
+        let generation = app.document().unwrap().generation;
         app.rendered(generation, "日本語 日本語");
         app.begin_search();
         assert_eq!(
@@ -413,14 +561,14 @@ mod tests {
         let mut app = App::default();
         let first = app.open("a.md".into());
         app.complete(success(first.clone(), "x x"));
-        app.rendered(first.generation, "x x");
+        app.rendered(app.document().unwrap().generation, "x x");
         app.begin_search();
         app.confirm_search("x".into(), 2);
         assert_eq!(app.current_match(), Some(1));
         app.begin_search();
         let second = app.open("b.md".into());
         app.complete(success(second.clone(), "x x"));
-        app.rendered(second.generation, "x x");
+        app.rendered(app.document().unwrap().generation, "x x");
         app.cancel_input();
         assert_eq!(app.current_match(), Some(0));
     }
@@ -430,8 +578,9 @@ mod tests {
         let mut app = App::default();
         let first = app.open("a.md".into());
         app.complete(success(first.clone(), "日本語 日本語"));
+        let first_generation = app.document().unwrap().generation;
         app.set_query("日本語".into());
-        assert!(app.rendered(first.generation, "日本語 日本語"));
+        assert!(app.rendered(first_generation, "日本語 日本語"));
         assert_eq!(app.matches(), vec![0..9, 10..19]);
         app.step_match(true);
         assert_eq!(app.current_match(), Some(1));
@@ -441,10 +590,10 @@ mod tests {
         assert_eq!(app.current_match(), Some(1));
         let second = app.open("b.md".into());
         app.complete(success(second.clone(), "other"));
-        assert!(!app.rendered(first.generation, "日本語"));
+        assert!(!app.rendered(first_generation, "日本語"));
         assert!(app.matches().is_empty());
         assert_eq!(app.current_match(), None);
-        assert!(app.rendered(second.generation, "other"));
+        assert!(app.rendered(app.document().unwrap().generation, "other"));
         app.step_match(false);
         assert_eq!(app.current_match(), None);
     }

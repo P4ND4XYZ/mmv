@@ -9,7 +9,18 @@ use gpui_kit::{
 };
 
 use super::Viewer;
-use crate::app::{DiagramRequest, DiagramResult, DiagramStatus, ReadRequest, ReadResult};
+use crate::app::{
+    DiagramRequest, DiagramResult, DiagramStatus, DocumentKey, ExternalRequestId, LoadedDocument,
+    ReadCompletion, ReadRequest, ReadResult,
+};
+
+fn success(request: ReadRequest, source: String) -> ReadResult {
+    let key = DocumentKey(request.path.clone());
+    ReadResult {
+        request,
+        content: Ok(LoadedDocument { key, source }),
+    }
+}
 
 fn open(
     cx: &mut TestAppContext,
@@ -38,13 +49,7 @@ fn open(
                 });
                 view.update(cx, |view, cx| {
                     let request = view.app.open(view.path.clone());
-                    view.complete(
-                        ReadResult {
-                            request,
-                            content: Ok(source),
-                        },
-                        cx,
-                    );
+                    view.complete(success(request, source), cx);
                 });
                 view
             },
@@ -87,13 +92,7 @@ fn clicking_local_links_replaces_the_document_and_reload_uses_the_new_path(
     });
     cx.update(|cx| {
         view.update(cx, |viewer, cx| {
-            viewer.complete(
-                ReadResult {
-                    request,
-                    content: Ok("切り替え後の本文".into()),
-                },
-                cx,
-            );
+            viewer.complete(success(request, "切り替え後の本文".into()), cx);
         })
     });
     cx.run_until_parked();
@@ -170,6 +169,67 @@ fn failed_local_link_load_keeps_the_document_and_reload_target(cx: &mut TestAppC
     cx.update_window(window, |_, window, cx| window.press("f5", cx))
         .unwrap();
     assert_eq!(requests.borrow_mut().pop().unwrap().path, original);
+}
+
+#[gpui_kit::test]
+fn read_completions_reach_the_connection_boundary_even_when_not_adopted(cx: &mut TestAppContext) {
+    let (_, view) = open(cx, "元の本文".into());
+    cx.run_until_parked();
+    let requests = Rc::new(RefCell::new(Vec::<ReadRequest>::new()));
+    let completions = Rc::new(RefCell::new(Vec::<ReadCompletion>::new()));
+    let captured_requests = requests.clone();
+    let captured_completions = completions.clone();
+    let (_reads, _completed) = cx.update(|cx| {
+        (
+            cx.subscribe(&view, move |_, request: &ReadRequest, _| {
+                captured_requests.borrow_mut().push(request.clone());
+            }),
+            cx.subscribe(&view, move |_, completion: &ReadCompletion, _| {
+                captured_completions.borrow_mut().push(completion.clone());
+            }),
+        )
+    });
+    cx.update(|cx| {
+        view.update(cx, |viewer, cx| {
+            viewer.request_document("a.md".into(), Some(ExternalRequestId("a".into())), cx);
+            viewer.request_document("b.md".into(), Some(ExternalRequestId("b".into())), cx);
+        })
+    });
+    let requests = requests.borrow();
+    let a = requests[0].clone();
+    let b = requests[1].clone();
+    cx.update(|cx| {
+        view.update(cx, |viewer, cx| {
+            viewer.complete(
+                ReadResult {
+                    request: b,
+                    content: Err("B failed".into()),
+                },
+                cx,
+            );
+            viewer.complete(success(a.clone(), "古い本文".into()), cx);
+            viewer.complete(success(a, "古い本文".into()), cx);
+        })
+    });
+    cx.run_until_parked();
+    let completions = completions.borrow();
+    assert_eq!(completions.len(), 2);
+    assert_eq!(
+        completions[0].response_to,
+        Some(ExternalRequestId("b".into()))
+    );
+    assert_eq!(completions[0].outcome, Err("B failed".into()));
+    assert_eq!(
+        completions[1].response_to,
+        Some(ExternalRequestId("a".into()))
+    );
+    assert_eq!(completions[1].outcome, Ok(()));
+    assert!(completions.iter().all(|completion| !completion.adopted));
+    view.read_with(cx, |viewer, _| {
+        assert_eq!(viewer.app.document().unwrap().source, "元の本文");
+        assert_eq!(viewer.app.error(), Some("B failed"));
+        assert!(!viewer.app.is_loading());
+    });
 }
 
 fn running_diagram(viewer: &Viewer) -> DiagramRequest {

@@ -60,13 +60,7 @@ fn footer_rows_and_mode_width_stay_fixed_across_modes_and_long_filenames(cx: &mu
                 .path
                 .with_file_name(format!("{}.md", "長いファイル名".repeat(40)));
             let request = viewer.app.open(path);
-            viewer.complete(
-                crate::app::ReadResult {
-                    request,
-                    content: Ok("本文".into()),
-                },
-                cx,
-            );
+            viewer.complete(super::success(request, "本文".into()), cx);
         })
     });
     cx.run_until_parked();

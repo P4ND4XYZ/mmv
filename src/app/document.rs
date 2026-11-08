@@ -1,67 +1,114 @@
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Generation(u64);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ReadRequestId(u64);
+
+/// Supplied by the connection boundary, never derived from a document generation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExternalRequestId(pub String);
+
+/// Filesystem identity resolved by infra, not by app or individual input sources.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DocumentKey(pub PathBuf);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReadRequest {
-    pub generation: Generation,
+    pub id: ReadRequestId,
     pub path: PathBuf,
+    pub response_to: Option<ExternalRequestId>,
+}
+
+pub struct LoadedDocument {
+    pub key: DocumentKey,
+    pub source: String,
 }
 
 pub struct ReadResult {
     pub request: ReadRequest,
-    pub content: Result<String, String>,
+    pub content: Result<LoadedDocument, String>,
+}
+
+/// Completion of one outstanding read, independently of display adoption.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadCompletion {
+    pub request_id: ReadRequestId,
+    pub response_to: Option<ExternalRequestId>,
+    pub outcome: Result<(), String>,
+    pub adopted: bool,
 }
 
 pub struct Document {
     pub generation: Generation,
     pub path: PathBuf,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Identity is delivered in stage A; operation classification uses it in stage B."
+        )
+    )]
+    pub key: DocumentKey,
     pub source: String,
 }
 
 #[derive(Default)]
 pub(super) struct DocumentState {
+    next_request: u64,
     next_generation: u64,
-    pending: Option<ReadRequest>,
+    outstanding: BTreeMap<ReadRequestId, ReadRequest>,
+    pending: Option<ReadRequestId>,
     pub current: Option<Document>,
     pub error: Option<String>,
 }
 
 impl DocumentState {
-    pub fn open(&mut self, path: PathBuf) -> ReadRequest {
-        self.next_generation += 1;
+    pub fn open(&mut self, path: PathBuf, response_to: Option<ExternalRequestId>) -> ReadRequest {
+        self.next_request += 1;
         let request = ReadRequest {
-            generation: Generation(self.next_generation),
+            id: ReadRequestId(self.next_request),
             path,
+            response_to,
         };
-        self.pending = Some(request.clone());
+        self.outstanding.insert(request.id, request.clone());
+        self.pending = Some(request.id);
         self.error = None;
         request
     }
 
-    /// Returns true only when the current request successfully replaces the document.
-    pub fn complete(&mut self, result: ReadResult) -> bool {
-        if self.pending.as_ref().is_none_or(|pending| {
-            pending.generation != result.request.generation || pending.path != result.request.path
-        }) {
-            return false;
+    /// Unknown, altered, and already completed requests produce no second completion.
+    pub fn complete(&mut self, result: ReadResult) -> Option<ReadCompletion> {
+        let request = self.outstanding.get(&result.request.id)?;
+        if request != &result.request {
+            return None;
         }
-        self.pending = None;
-        match result.content {
-            Ok(source) => {
-                self.current = Some(Document {
-                    generation: result.request.generation,
-                    path: result.request.path,
-                    source,
-                });
-                true
-            }
-            Err(error) => {
-                self.error = Some(error);
-                false
+        let request = self.outstanding.remove(&result.request.id)?;
+        let current = self.pending == Some(request.id);
+        let mut completion = ReadCompletion {
+            request_id: request.id,
+            response_to: request.response_to,
+            outcome: result.content.as_ref().map(|_| ()).map_err(Clone::clone),
+            adopted: false,
+        };
+        if current {
+            self.pending = None;
+            match result.content {
+                Ok(loaded) => {
+                    self.next_generation += 1;
+                    self.current = Some(Document {
+                        generation: Generation(self.next_generation),
+                        path: request.path,
+                        key: loaded.key,
+                        source: loaded.source,
+                    });
+                    completion.adopted = true;
+                }
+                Err(error) => self.error = Some(error),
             }
         }
+        Some(completion)
     }
 
     pub fn is_loading(&self) -> bool {

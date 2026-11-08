@@ -10,7 +10,8 @@ use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::{prelude::*, *};
 
 use crate::app::{
-    self, DiagramRequest, DiagramResult, LinkTarget, ReadRequest, ReadResult, resolve_link,
+    self, DiagramRequest, DiagramResult, ExternalRequestId, LinkTarget, ReadCompletion,
+    ReadRequest, ReadResult, resolve_link,
 };
 use document::DocumentView;
 use input::Prompt;
@@ -32,6 +33,7 @@ pub struct Viewer {
 }
 
 impl EventEmitter<ReadRequest> for Viewer {}
+impl EventEmitter<ReadCompletion> for Viewer {}
 impl EventEmitter<DiagramRequest> for Viewer {}
 
 impl Viewer {
@@ -62,6 +64,17 @@ impl Viewer {
         cx.notify();
     }
 
+    pub fn request_document(
+        &mut self,
+        path: PathBuf,
+        response_to: Option<ExternalRequestId>,
+        cx: &mut Context<Self>,
+    ) {
+        let request = self.app.open_request(path, response_to);
+        cx.emit(request);
+        cx.notify();
+    }
+
     fn open_link(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.message = None;
         self.display_error = None;
@@ -69,8 +82,7 @@ impl Viewer {
             Ok(LinkTarget::File(path)) => {
                 self.cancel_input(window, cx);
                 self.body_focus.focus(window, cx);
-                let request = self.app.open(path);
-                cx.emit(request);
+                self.request_document(path, None, cx);
             }
             Ok(LinkTarget::Web(url)) => cx.open_url(&url),
             Ok(LinkTarget::Heading) => self.message = Some("見出しへの移動は未対応です".into()),
@@ -80,7 +92,10 @@ impl Viewer {
     }
 
     pub fn complete(&mut self, result: ReadResult, cx: &mut Context<Self>) {
-        if self.app.complete(result) {
+        let Some(completion) = self.app.complete(result) else {
+            return;
+        };
+        if completion.adopted {
             let document = self.app.document().expect("accepted document");
             let generation = document.generation;
             self.path = document.path.clone();
@@ -89,6 +104,7 @@ impl Viewer {
             self.display_error = None;
             self.accept_rendered_text(generation, cx);
         }
+        cx.emit(completion);
         self.start_next_diagram(cx);
         cx.notify();
     }
