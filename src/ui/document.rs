@@ -60,6 +60,14 @@ pub(super) struct DocumentAnalysis {
     pub generation: Generation,
     pub blocks: Vec<Option<std::ops::Range<usize>>>,
     pub links: Vec<std::ops::Range<usize>>,
+    #[cfg_attr(
+        not(all(test, feature = "ui-tests")),
+        expect(
+            dead_code,
+            reason = "Consumed by the subsequent selection-panel integration."
+        )
+    )]
+    pub candidates: Vec<crate::core::links::LinkCandidate>,
     headings: BTreeMap<String, HeadingLocation>,
 }
 
@@ -267,6 +275,7 @@ impl Viewer {
                 .iter()
                 .filter_map(|range| snapshot.range_for_source(range.clone()))
                 .collect(),
+            candidates: super::links::extract_candidates(&document.path, &document.source)?,
             headings,
         });
         Ok(())

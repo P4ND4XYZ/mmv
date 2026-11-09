@@ -3,6 +3,7 @@ mod external;
 mod headings;
 mod history;
 mod layout;
+mod link_candidates;
 mod modes;
 mod operations;
 mod phase_one;

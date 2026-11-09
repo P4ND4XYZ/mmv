@@ -1,5 +1,6 @@
 mod document;
 mod input;
+mod links;
 mod mermaid;
 mod search;
 mod status;

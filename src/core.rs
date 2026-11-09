@@ -1,3 +1,5 @@
+pub mod links;
+
 use std::{
     collections::HashSet,
     ops::Range,
@@ -40,7 +42,7 @@ pub fn resolve_image(document: &Path, source: &str) -> Result<ImageLocation, Str
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum LinkTarget {
     File {
         path: PathBuf,
