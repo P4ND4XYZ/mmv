@@ -8,6 +8,8 @@ mod modes;
 mod operations;
 mod phase_one;
 mod production;
+mod selection_panel;
+mod selection_panel_lifecycle;
 mod theme;
 
 use std::{cell::RefCell, path::PathBuf, rc::Rc, time::Instant};

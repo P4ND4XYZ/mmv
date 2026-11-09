@@ -1,7 +1,7 @@
-//! Link-selection extraction adapter. This analysis-only parse uses TextView's
-//! upstream parser and public block/paragraph tree; it never changes rendering.
+//! Link-selection caller and extraction adapter. The analysis-only parse uses
+//! TextView's upstream parser and public tree; it never changes rendering.
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -13,7 +13,139 @@ use gpui_kit::{
     },
 };
 
-use crate::core::links::{LinkCandidate, candidates};
+use gpui_kit::{prelude::*, *};
+
+use super::{
+    Viewer,
+    selection_panel::{self, SelectionPanel},
+};
+use crate::{
+    app::Generation,
+    core::links::{CandidateId, LinkCandidate, LinkKind, LinkMatcher, candidates},
+};
+
+pub(super) struct LinkSelection {
+    pub generation: Generation,
+    pub panel: Entity<SelectionPanel>,
+    matcher: LinkMatcher,
+    _subscription: Subscription,
+}
+
+impl Viewer {
+    pub(super) fn begin_link_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.normal_keys_enabled() || self.app.document().is_none() {
+            return;
+        }
+        if let Err(error) = self.analyze_document(cx) {
+            self.display_error = Some(error);
+            cx.notify();
+            return;
+        }
+        let analysis = self.document.analysis.as_ref().expect("current analysis");
+        let generation = analysis.generation;
+        let mut matcher = LinkMatcher::default();
+        let items = panel_items(&analysis.candidates, &mut matcher, "");
+        let palette = self.palette.clone();
+        let panel = cx.new(|cx| {
+            SelectionPanel::new(items, "一致するリンクがありません", palette, window, cx)
+        });
+        let subscription = cx.subscribe_in(&panel, window, |this, panel, event, window, cx| {
+            if !this
+                .link_panel
+                .as_ref()
+                .is_some_and(|current| current.panel == *panel)
+            {
+                return;
+            }
+            match event {
+                selection_panel::Event::Query(query) => {
+                    let selection = this.link_panel.as_mut().expect("open panel");
+                    let Some(analysis) = this
+                        .document
+                        .analysis
+                        .as_ref()
+                        .filter(|analysis| analysis.generation == selection.generation)
+                    else {
+                        return;
+                    };
+                    let items = panel_items(&analysis.candidates, &mut selection.matcher, query);
+                    panel.update(cx, |panel, cx| panel.set_items(items, query, cx));
+                }
+                selection_panel::Event::Cancel => this.close_link_selection(window, cx),
+                selection_panel::Event::Confirm(id) => {
+                    let generation = this.link_panel.as_ref().expect("open panel").generation;
+                    let target = this
+                        .document
+                        .analysis
+                        .as_ref()
+                        .filter(|analysis| {
+                            analysis.generation == generation
+                                && this
+                                    .app
+                                    .document()
+                                    .is_some_and(|document| document.generation == generation)
+                        })
+                        .and_then(|analysis| {
+                            analysis
+                                .candidates
+                                .iter()
+                                .find(|candidate| candidate.id == CandidateId(*id))
+                        })
+                        .map(|candidate| candidate.target.clone());
+                    this.close_link_selection(window, cx);
+                    if let Some(target) = target {
+                        this.next_operation_order += 1;
+                        this.follow_link(Ok(target), this.next_operation_order, window, cx);
+                    }
+                }
+            }
+        });
+        self.link_panel = Some(LinkSelection {
+            generation,
+            panel,
+            matcher,
+            _subscription: subscription,
+        });
+        cx.notify();
+    }
+
+    fn close_link_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.link_panel = None;
+        self.body_focus.focus(window, cx);
+        cx.notify();
+    }
+}
+
+fn panel_items(
+    candidates: &[LinkCandidate],
+    matcher: &mut LinkMatcher,
+    query: &str,
+) -> Vec<selection_panel::Item> {
+    let by_id: HashMap<_, _> = candidates
+        .iter()
+        .map(|candidate| (candidate.id, candidate))
+        .collect();
+    matcher
+        .rank(candidates, query)
+        .into_iter()
+        .filter_map(|matched| {
+            let candidate = by_id.get(&matched.id)?;
+            Some(selection_panel::Item {
+                id: candidate.id.0,
+                primary: candidate.display_name.clone(),
+                secondary: candidate.destination.clone(),
+                badge: match candidate.kind {
+                    LinkKind::Heading => "見出し",
+                    LinkKind::LocalMarkdown => "Markdown",
+                    LinkKind::LocalMarkdownHeading => "Markdown・見出し",
+                    LinkKind::Web => "Web",
+                },
+                primary_ranges: matched.name_ranges,
+                secondary_ranges: matched.destination_ranges,
+            })
+        })
+        .collect()
+}
 
 enum Destination {
     Url(String),

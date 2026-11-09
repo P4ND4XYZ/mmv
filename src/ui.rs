@@ -3,6 +3,7 @@ mod input;
 mod links;
 mod mermaid;
 mod search;
+mod selection_panel;
 mod status;
 mod theme;
 
@@ -31,6 +32,8 @@ pub struct Viewer {
     document: DocumentView,
     input: Prompt,
     body_focus: FocusHandle,
+    link_panel: Option<links::LinkSelection>,
+    restore_body_focus: bool,
     message: Option<String>,
     message_is_error: bool,
     display_error: Option<String>,
@@ -92,6 +95,8 @@ impl Viewer {
             document,
             input,
             body_focus,
+            link_panel: None,
+            restore_body_focus: false,
             message: None,
             message_is_error: false,
             display_error: None,
@@ -323,6 +328,8 @@ impl Viewer {
             return;
         };
         if completion.adopted {
+            let panel_closed = self.link_panel.take().is_some();
+            self.restore_body_focus |= panel_closed;
             let document = self.app.document().expect("accepted document");
             let generation = document.generation;
             let pending_movements = self
@@ -331,7 +338,9 @@ impl Viewer {
                 .expect("adoption produces a position request")
                 .pending_movements;
             self.path = document.path.clone();
-            self.message = None;
+            self.message =
+                panel_closed.then(|| "本文が更新されたためリンク選択を閉じました".into());
+            self.message_is_error = false;
             self.document.replace(generation, pending_movements, cx);
             self.display_error = None;
             self.accept_rendered_text(generation, cx);
@@ -407,6 +416,10 @@ impl Viewer {
 
 impl Render for Viewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if std::mem::take(&mut self.restore_body_focus) {
+            // Logical focus only: never activate the OS window on external adoption.
+            self.body_focus.focus(window, cx);
+        }
         self.deferred_links.retain(|link| {
             link.order > self.latest_navigation_order
                 && self
@@ -437,7 +450,12 @@ impl Render for Viewer {
             &self.palette,
         );
 
+        let overlay = self
+            .link_panel
+            .as_ref()
+            .map(|selection| selection.panel.clone());
         input::bind_root_actions(div(), cx)
+            .relative()
             .key_context("Evaluation")
             .size_full()
             .flex()
@@ -448,5 +466,6 @@ impl Render for Viewer {
             .child(body)
             .child(status_line)
             .child(command_line)
+            .children(overlay)
     }
 }

@@ -111,7 +111,7 @@ fn code_block_scrolls_horizontally_without_expanding_the_body(cx: &mut TestAppCo
     visual.update(|window, cx| window.render_frame(cx));
     let end_text = select(&mut visual);
     assert!(end_text.contains('C'), "{end_text:?}");
-    let width = view.read_with(&mut visual, |viewer, cx| {
+    let width = view.read_with(&visual, |viewer, cx| {
         viewer
             .document
             .text
@@ -172,7 +172,7 @@ fn vertical_wheel_over_code_scrolls_the_document(cx: &mut TestAppContext) {
         ..Default::default()
     });
     visual.update(|window, cx| window.render_frame(cx));
-    let offset = view.read_with(&mut visual, |viewer, cx| {
+    let offset = view.read_with(&visual, |viewer, cx| {
         viewer
             .document
             .text
@@ -234,7 +234,7 @@ fn wide_table_scrolls_horizontally_without_expanding_the_body(cx: &mut TestAppCo
         "{before:?}"
     );
     assert!(after.contains('B'), "{after:?}");
-    let width = view.read_with(&mut visual, |viewer, cx| {
+    let width = view.read_with(&visual, |viewer, cx| {
         viewer
             .document
             .text

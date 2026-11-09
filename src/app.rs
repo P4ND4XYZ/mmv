@@ -605,7 +605,7 @@ mod tests {
             let generation = app.document().unwrap().generation;
             app.rendered(generation, "target edit edit");
             assert!(!app.highlights_visible());
-            assert_eq!(app.matches(), &[0..6]);
+            assert_eq!(app.matches(), std::slice::from_ref(&(0..6)));
             app.begin_search();
             app.preview_search("edit".into());
             let request = app.open(path.into());
@@ -616,7 +616,7 @@ mod tests {
             assert_eq!(app.matches(), &[0..4, 12..16]);
             app.cancel_input();
             assert!(!app.highlights_visible());
-            assert_eq!(app.matches(), &[5..11]);
+            assert_eq!(app.matches(), std::slice::from_ref(&(5..11)));
             assert_eq!(app.current_match(), Some(0));
         }
     }

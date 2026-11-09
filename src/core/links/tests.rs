@@ -103,9 +103,9 @@ fn japanese_combining_and_emoji_indices_convert_to_valid_utf8_byte_highlights() 
     let values = links(&[("e\u{301}👩‍💻日本語design", "#e\u{301}👩‍💻日本語design")]);
     let mut matcher = LinkMatcher::default();
     for (query, expected) in [
-        ("日本", vec![14..20]),
-        ("e\u{301}", vec![0..3]),
-        ("👩‍💻", vec![3..14]),
+        ("日本", std::iter::once(14..20).collect::<Vec<_>>()),
+        ("e\u{301}", std::iter::once(0..3).collect::<Vec<_>>()),
+        ("👩‍💻", std::iter::once(3..14).collect::<Vec<_>>()),
         ("dsg", vec![23..24, 25..26, 27..28]),
     ] {
         let result = matcher.rank(&values, query);

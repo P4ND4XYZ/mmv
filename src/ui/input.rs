@@ -8,6 +8,7 @@ actions!(
     evaluation,
     [
         Find,
+        Links,
         Command,
         NextMatch,
         PreviousMatch,
@@ -28,6 +29,7 @@ actions!(
 pub fn bind_keys(cx: &mut gpui_kit::App) {
     cx.bind_keys([
         KeyBinding::new("/", Find, Some("EvaluationNormal")),
+        KeyBinding::new("f", Links, Some("EvaluationNormal")),
         KeyBinding::new(":", Command, Some("EvaluationNormal")),
         KeyBinding::new("n", NextMatch, Some("EvaluationNormal")),
         KeyBinding::new("shift-n", PreviousMatch, Some("EvaluationNormal")),
@@ -85,7 +87,7 @@ impl Prompt {
 
 pub(super) fn bind_root_actions(root: Div, cx: &mut Context<Viewer>) -> Div {
     root.on_action(cx.listener(|this, _: &Reload, _, cx| {
-        if this.app.mode == Mode::Normal {
+        if this.normal_keys_enabled() {
             this.reload(cx);
         }
     }))
@@ -105,7 +107,7 @@ pub(super) fn bind_root_actions(root: Div, cx: &mut Context<Viewer>) -> Div {
         }
     }))
     .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-        if event.keystroke.key == "escape" {
+        if event.keystroke.key == "escape" && this.link_panel.is_none() {
             this.cancel_input(window, cx);
             cx.stop_propagation();
         }
@@ -113,7 +115,10 @@ pub(super) fn bind_root_actions(root: Div, cx: &mut Context<Viewer>) -> Div {
 }
 
 pub(super) fn bind_body_actions(body: Div, cx: &mut Context<Viewer>) -> Div {
-    body.on_action(cx.listener(|this, _: &Find, window, cx| {
+    body.on_action(cx.listener(|this, _: &Links, window, cx| {
+        this.begin_link_selection(window, cx);
+    }))
+    .on_action(cx.listener(|this, _: &Find, window, cx| {
         this.begin_input(false, window, cx);
     }))
     .on_action(cx.listener(|this, _: &Command, window, cx| this.begin_input(true, window, cx)))
@@ -136,13 +141,17 @@ pub(super) fn bind_body_actions(body: Div, cx: &mut Context<Viewer>) -> Div {
 }
 
 impl Viewer {
+    pub(super) fn normal_keys_enabled(&self) -> bool {
+        self.app.mode == Mode::Normal && self.link_panel.is_none()
+    }
+
     pub(super) fn begin_input(
         &mut self,
         command: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.app.mode != Mode::Normal {
+        if !self.normal_keys_enabled() {
             return;
         }
         self.message = None;
@@ -215,7 +224,7 @@ impl Viewer {
     }
 
     pub(super) fn step_match(&mut self, forward: bool, cx: &mut Context<Self>) {
-        if self.app.mode != Mode::Normal {
+        if !self.normal_keys_enabled() {
             return;
         }
         self.app.step_match(forward);
@@ -224,19 +233,19 @@ impl Viewer {
     }
 
     fn history_input(&mut self, operation: DocumentOperation, cx: &mut Context<Self>) {
-        if self.app.mode == Mode::Normal {
+        if self.normal_keys_enabled() {
             self.request_operation(operation, OperationOrigin::Keyboard, None, cx);
         }
     }
 
     fn scroll_input(&mut self, lines: f32, pages: f32, cx: &mut Context<Self>) {
-        if self.app.mode == Mode::Normal {
+        if self.normal_keys_enabled() {
             self.document.scroll(lines, pages, cx);
         }
     }
 
     fn scroll_edge_input(&mut self, end: bool, cx: &mut Context<Self>) {
-        if self.app.mode == Mode::Normal {
+        if self.normal_keys_enabled() {
             self.document.scroll_edge(end, cx);
         }
     }

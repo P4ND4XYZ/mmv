@@ -81,13 +81,6 @@ pub fn candidates(
         .collect()
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Consumed by the subsequent selection-panel integration."
-    )
-)]
 #[derive(Debug, PartialEq, Eq)]
 pub struct LinkMatch {
     pub id: CandidateId,
@@ -98,25 +91,11 @@ pub struct LinkMatch {
 
 /// Reuse the matcher's scratch allocation across query updates.
 /// Queries are a single literal fuzzy subsequence, with no fzf syntax.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Consumed by the subsequent selection-panel integration."
-    )
-)]
 #[derive(Default)]
 pub struct LinkMatcher {
     matcher: Matcher,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Consumed by the subsequent selection-panel integration."
-    )
-)]
 impl LinkMatcher {
     pub fn rank(&mut self, candidates: &[LinkCandidate], query: &str) -> Vec<LinkMatch> {
         // Use explicit codepoints on BOTH sides. Utf32Str::new segments into
