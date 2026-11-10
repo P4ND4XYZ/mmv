@@ -89,7 +89,7 @@ fn run_gui() -> std::io::Result<()> {
                 },
                 cx,
                 |window, cx| {
-                    window.set_window_title("Markdown Viewer");
+                    window.set_window_title("mmv");
                     // No Initial read: the first external Open uses the shared app path.
                     cx.new(|cx| {
                         ui::Viewer::with_config(
