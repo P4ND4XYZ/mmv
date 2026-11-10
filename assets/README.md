@@ -1,6 +1,6 @@
 # mmv application icon
 
-`mmv.png` is the transparent version of the approved lowercase mmv image.
+`mmv.png` is the transparent version of the approved M²V image.
 The charcoal navy rounded tile and white lettering are retained; the exterior
 background is transparent. `mmv.ico` contains 16, 24, 32, 48, 64, 128 and 256 px
 RGBA images for Windows display sizes.
