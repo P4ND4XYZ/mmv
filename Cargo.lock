@@ -4525,6 +4525,7 @@ name = "my-markdown-viewer"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "embed-resource",
  "gpui-kit",
  "gpui-pre-reqwest-client",
  "mlua",
