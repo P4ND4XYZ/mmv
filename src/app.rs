@@ -1,4 +1,5 @@
 mod document;
+pub mod file_tree;
 mod history;
 mod mermaid;
 mod search;
@@ -62,6 +63,7 @@ impl Mode {
 
 #[derive(Default)]
 pub struct App {
+    pub tree: file_tree::FileTree,
     document: DocumentState,
     search: SearchState,
     mermaid: MermaidState,

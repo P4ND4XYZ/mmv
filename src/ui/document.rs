@@ -50,6 +50,8 @@ pub(super) struct DocumentView {
     pub diagram_images: BTreeMap<usize, Arc<Image>>,
     pub analysis: Option<DocumentAnalysis>,
     layout_serial: u64,
+    pane_width: Option<Pixels>,
+    resize_distance: Option<f32>,
     heading_reveal: Option<(PositionRequest, u64)>,
     movements: VecDeque<MovementIntent>,
     started: Instant,
@@ -105,6 +107,8 @@ impl DocumentView {
             diagram_images: BTreeMap::new(),
             analysis: None,
             layout_serial: 0,
+            pane_width: None,
+            resize_distance: None,
             heading_reveal: None,
             movements: VecDeque::new(),
             started,
@@ -119,6 +123,8 @@ impl DocumentView {
         cx: &mut Context<Viewer>,
     ) {
         self.analysis = None;
+        self.pane_width = None;
+        self.resize_distance = None;
         self.heading_reveal = None;
         match pending_movements {
             PendingMovementPolicy::Carry => {
@@ -457,6 +463,16 @@ impl Viewer {
         window_width: Pixels,
         cx: &mut Context<Self>,
     ) -> Div {
+        if self
+            .document
+            .pane_width
+            .is_some_and(|width| width != window_width)
+            && self.app.position_request().is_none()
+        {
+            let distance = self.document.distance(cx);
+            self.document.resize_distance.get_or_insert(distance);
+        }
+        self.document.pane_width = Some(window_width);
         let ready = self
             .app
             .document()
@@ -514,6 +530,7 @@ impl Viewer {
             })
             .track_focus(&self.body_focus)
             .flex_1()
+            .min_w(px(super::pane::BODY_MIN_WIDTH))
             .min_h_0()
             .relative()
             .flex()
@@ -563,6 +580,14 @@ impl Viewer {
                                         return;
                                     }
                                     this.document.layout_serial += 1;
+                                    if this.document.layout_ready(cx)
+                                        && let Some(distance) = this.document.resize_distance.take()
+                                    {
+                                        text.read(cx).list_state().set_offset_from_scrollbar(
+                                            point(px(0.), -px(distance.max(0.))),
+                                        );
+                                        text.update(cx, |_, cx| cx.notify());
+                                    }
                                     if let Some(request) = position {
                                         this.apply_position_after_layout(&request, &text, cx);
                                     }

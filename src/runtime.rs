@@ -1,5 +1,6 @@
 mod diagram;
 mod document;
+mod file_tree;
 mod pipe;
 mod watch;
 
@@ -9,6 +10,7 @@ use std::{path::PathBuf, sync::Arc, time::Instant};
 use crate::{infra, ui};
 use diagram::connect_diagrams;
 pub(crate) use document::connect_document_reads;
+pub(crate) use file_tree::connect_file_tree;
 pub(crate) use pipe::connect_pipe;
 pub(crate) use watch::connect_watch;
 
@@ -48,6 +50,10 @@ pub(crate) fn run_gui() -> std::io::Result<()> {
             let (_, view) = gpui_kit::open_window(
                 WindowOptions {
                     focus: false,
+                    window_min_size: Some(gpui_kit::size(
+                        gpui_kit::px(ui::pane::MIN_WINDOW_WIDTH),
+                        gpui_kit::px(120.),
+                    )),
                     ..Default::default()
                 },
                 cx,
@@ -69,6 +75,7 @@ pub(crate) fn run_gui() -> std::io::Result<()> {
             )
             .expect("failed to open viewer window");
             connect_document_reads(&view, cx);
+            connect_file_tree(&view, cx);
             connect_diagrams(&view, cx);
             connect_watch(&view, cx);
             connect_pipe(&view, server, cx);

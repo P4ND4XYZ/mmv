@@ -1,5 +1,6 @@
 mod config;
 mod document;
+pub mod file_tree;
 mod logging;
 mod mermaid;
 mod watch;

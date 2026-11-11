@@ -1,7 +1,9 @@
 mod document;
+mod file_tree;
 mod input;
 mod links;
 mod mermaid;
+pub(crate) mod pane;
 mod search;
 mod selection_panel;
 mod status;
@@ -30,6 +32,7 @@ pub struct Viewer {
     document: DocumentView,
     input: Prompt,
     body_focus: FocusHandle,
+    tree: file_tree::TreePane,
     link_panel: Option<links::LinkSelection>,
     restore_body_focus: bool,
     message: Option<String>,
@@ -85,6 +88,7 @@ impl Viewer {
         let palette = theme::Palette::resolve(&config, cx.theme());
         let document = DocumentView::new(started, cx);
         let input = Prompt::new(window, cx);
+        let tree = file_tree::TreePane::new(config.tree.visible, cx);
         let body_focus = cx.focus_handle();
         body_focus.focus(window, cx);
         Self {
@@ -93,6 +97,7 @@ impl Viewer {
             document,
             input,
             body_focus,
+            tree,
             link_panel: None,
             restore_body_focus: false,
             message: None,
@@ -336,6 +341,12 @@ impl Viewer {
                 .expect("adoption produces a position request")
                 .pending_movements;
             self.path = document.path.clone();
+            let tree_requests = self.app.tree.document_changed(
+                document.key.0.clone(),
+                self.tree.visible,
+                &self.config.tree.root_markers,
+            );
+            self.emit_tree_requests(tree_requests, cx);
             self.message =
                 panel_closed.then(|| "本文が更新されたためリンク選択を閉じました".into());
             self.message_is_error = false;
@@ -438,7 +449,14 @@ impl Render for Viewer {
         let status = self.status_text();
         let severity = self.status_severity();
         let normal = self.palette.get(crate::config::Group::Normal);
-        let body = self.render_document(path.clone(), window.viewport_size().width, cx);
+        let body_width = window.viewport_size().width
+            - px(if self.tree.visible {
+                pane::TREE_WIDTH + pane::BORDER_WIDTH
+            } else {
+                0.
+            });
+        let body = self.render_document(path.clone(), body_width, cx);
+        let panes = self.render_panes(body, window, cx);
         let status_line = status::render_status_line(&self.app.mode, &path, &self.palette);
         let command_line = status::render_command_line(
             &self.app.mode,
@@ -452,16 +470,21 @@ impl Render for Viewer {
             .link_panel
             .as_ref()
             .map(|selection| selection.panel.clone());
+        let pane_keys = self.pane_keys_enabled(window, cx);
         input::bind_root_actions(div(), cx)
             .relative()
-            .key_context("Evaluation")
+            .key_context(if pane_keys {
+                "Evaluation EvaluationPanes"
+            } else {
+                "Evaluation"
+            })
             .size_full()
             .flex()
             .flex_col()
             .bg(normal.bg)
             .text_color(normal.fg)
             .font_family("Yu Gothic UI")
-            .child(body)
+            .child(panes)
             .child(status_line)
             .child(command_line)
             .children(overlay)

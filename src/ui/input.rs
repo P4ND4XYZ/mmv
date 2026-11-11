@@ -22,12 +22,36 @@ actions!(
         PageDown,
         PageUp,
         FirstLine,
-        LastLine
+        LastLine,
+        ToggleTree,
+        FocusTree,
+        FocusBody,
+        TreeLeft,
+        TreeRight,
+        TreeToggle,
+        TreeRefresh
     ]
 );
 
 pub fn bind_keys(cx: &mut gpui_kit::App) {
     cx.bind_keys([
+        KeyBinding::new("ctrl-shift-e", ToggleTree, Some("EvaluationPanes")),
+        KeyBinding::new("ctrl-w h", FocusTree, Some("EvaluationPanes")),
+        KeyBinding::new("ctrl-w l", FocusBody, Some("EvaluationPanes")),
+        KeyBinding::new("j", ScrollDown, Some("EvaluationTree")),
+        KeyBinding::new("down", ScrollDown, Some("EvaluationTree")),
+        KeyBinding::new("k", ScrollUp, Some("EvaluationTree")),
+        KeyBinding::new("up", ScrollUp, Some("EvaluationTree")),
+        KeyBinding::new("h", TreeLeft, Some("EvaluationTree")),
+        KeyBinding::new("left", TreeLeft, Some("EvaluationTree")),
+        KeyBinding::new("l", TreeRight, Some("EvaluationTree")),
+        KeyBinding::new("right", TreeRight, Some("EvaluationTree")),
+        KeyBinding::new("enter", TreeToggle, Some("EvaluationTree")),
+        KeyBinding::new("g g", FirstLine, Some("EvaluationTree")),
+        KeyBinding::new("home", FirstLine, Some("EvaluationTree")),
+        KeyBinding::new("shift-g", LastLine, Some("EvaluationTree")),
+        KeyBinding::new("end", LastLine, Some("EvaluationTree")),
+        KeyBinding::new("r", TreeRefresh, Some("EvaluationTree")),
         KeyBinding::new("/", Find, Some("EvaluationNormal")),
         KeyBinding::new("f", Links, Some("EvaluationNormal")),
         KeyBinding::new(":", Command, Some("EvaluationNormal")),
@@ -86,32 +110,72 @@ impl Prompt {
 }
 
 pub(super) fn bind_root_actions(root: Div, cx: &mut Context<Viewer>) -> Div {
-    root.on_action(cx.listener(|this, _: &Reload, _, cx| {
-        if this.normal_keys_enabled() {
-            this.reload(cx);
-        }
-    }))
-    .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-        if event.keystroke.key == "backspace"
-            && event.keystroke.modifiers == Modifiers::default()
-            && this.app.mode == Mode::Command
-            && this.input.state.read(cx).value().is_empty()
-        {
-            let composing = this.input.state.update(cx, |input, cx| {
-                input.marked_text_range(window, cx).is_some()
-            });
-            if !composing {
+    root.on_action(cx.listener(|this, _: &ToggleTree, window, cx| this.toggle_tree(window, cx)))
+        .on_action(cx.listener(|this, _: &FocusTree, window, cx| this.focus_pane(true, window, cx)))
+        .on_action(
+            cx.listener(|this, _: &FocusBody, window, cx| this.focus_pane(false, window, cx)),
+        )
+        .on_action(cx.listener(|this, _: &Reload, window, cx| {
+            if this.normal_keys_enabled() && this.body_focus.is_focused(window) {
+                this.reload(cx);
+            }
+        }))
+        .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+            if event.keystroke.key == "backspace"
+                && event.keystroke.modifiers == Modifiers::default()
+                && this.app.mode == Mode::Command
+                && this.input.state.read(cx).value().is_empty()
+            {
+                let composing = this.input.state.update(cx, |input, cx| {
+                    input.marked_text_range(window, cx).is_some()
+                });
+                if !composing {
+                    this.cancel_input(window, cx);
+                    cx.stop_propagation();
+                }
+            }
+        }))
+        .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+            if event.keystroke.key == "escape"
+                && this.link_panel.is_none()
+                && !this.tree.focus.is_focused(window)
+            {
                 this.cancel_input(window, cx);
                 cx.stop_propagation();
             }
-        }
+        }))
+}
+
+pub(super) fn bind_tree_actions(tree: Div, cx: &mut Context<Viewer>) -> Div {
+    use crate::app::file_tree::Action;
+    tree.on_action(
+        cx.listener(|this, _: &ScrollDown, window, cx| this.tree_action(Action::Next, window, cx)),
+    )
+    .on_action(
+        cx.listener(|this, _: &ScrollUp, window, cx| {
+            this.tree_action(Action::Previous, window, cx)
+        }),
+    )
+    .on_action(
+        cx.listener(|this, _: &TreeLeft, window, cx| this.tree_action(Action::Left, window, cx)),
+    )
+    .on_action(
+        cx.listener(|this, _: &TreeRight, window, cx| this.tree_action(Action::Right, window, cx)),
+    )
+    .on_action(
+        cx.listener(|this, _: &TreeToggle, window, cx| {
+            this.tree_action(Action::Toggle, window, cx)
+        }),
+    )
+    .on_action(cx.listener(|this, _: &TreeRefresh, window, cx| {
+        this.tree_action(Action::Refresh, window, cx)
     }))
-    .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-        if event.keystroke.key == "escape" && this.link_panel.is_none() {
-            this.cancel_input(window, cx);
-            cx.stop_propagation();
-        }
-    }))
+    .on_action(
+        cx.listener(|this, _: &FirstLine, window, cx| this.tree_action(Action::First, window, cx)),
+    )
+    .on_action(
+        cx.listener(|this, _: &LastLine, window, cx| this.tree_action(Action::Last, window, cx)),
+    )
 }
 
 pub(super) fn bind_body_actions(body: Div, cx: &mut Context<Viewer>) -> Div {

@@ -1,5 +1,6 @@
 mod config;
 mod external;
+mod file_tree;
 mod headings;
 mod history;
 mod layout;

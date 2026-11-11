@@ -49,12 +49,28 @@ pub struct Highlight {
     pub bg: Option<Color>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TreeConfig {
+    pub visible: bool,
+    pub root_markers: Vec<String>,
+}
+
+impl Default for TreeConfig {
+    fn default() -> Self {
+        Self {
+            visible: false,
+            root_markers: vec![".marksman.toml".into(), ".git".into()],
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
     pub position: Position,
     pub max_width: f64,
     pub colorscheme: ColorScheme,
     pub highlights: BTreeMap<Group, Highlight>,
+    pub tree: TreeConfig,
 }
 
 impl Default for Config {
@@ -64,6 +80,7 @@ impl Default for Config {
             max_width: 960.0,
             colorscheme: ColorScheme::Dark,
             highlights: BTreeMap::new(),
+            tree: TreeConfig::default(),
         }
     }
 }

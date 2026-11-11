@@ -93,6 +93,7 @@ fn setup(config: &mut Config, args: MultiValue) -> Result<(), String> {
                     }
                 }
             }
+            "tree" => setup_tree(config, table(value, "tree")?)?,
             "colorscheme" => {
                 config.colorscheme = match string(value, "colorscheme")?.as_str() {
                     "dark" => ColorScheme::Dark,
@@ -101,6 +102,46 @@ fn setup(config: &mut Config, args: MultiValue) -> Result<(), String> {
                 }
             }
             key => return Err(format!("unknown setup key: {key}")),
+        }
+    }
+    Ok(())
+}
+
+fn setup_tree(config: &mut Config, options: Table) -> Result<(), String> {
+    for pair in options.pairs::<Value, Value>() {
+        let (key, value) = pair.map_err(|e| e.to_string())?;
+        match string(key, "tree key")?.as_str() {
+            "visible" => {
+                config.tree.visible = match value {
+                    Value::Boolean(value) => value,
+                    _ => return Err("tree.visible: expected boolean".into()),
+                };
+            }
+            "root_markers" => {
+                let mut markers = std::collections::BTreeMap::new();
+                for pair in table(value, "tree.root_markers")?.pairs::<Value, Value>() {
+                    let (key, value) = pair.map_err(|e| e.to_string())?;
+                    let Value::Integer(index) = key else {
+                        return Err("tree.root_markers: expected contiguous array".into());
+                    };
+                    if index < 1 {
+                        return Err("tree.root_markers: expected contiguous array".into());
+                    }
+                    let name = string(value, "root marker")?;
+                    if name.is_empty()
+                        || matches!(name.as_str(), "." | "..")
+                        || name.contains(['/', '\\'])
+                    {
+                        return Err("root marker: expected a direct child name".into());
+                    }
+                    markers.insert(index, name);
+                }
+                if markers.keys().copied().ne(1..=markers.len() as i64) {
+                    return Err("tree.root_markers: expected contiguous array".into());
+                }
+                config.tree.root_markers = markers.into_values().collect();
+            }
+            key => return Err(format!("unknown tree key: {key}")),
         }
     }
     Ok(())

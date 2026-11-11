@@ -34,6 +34,19 @@ fn defaults_and_partial_updates_preserve_prior_values() {
 }
 
 #[test]
+fn tree_defaults_replacement_empty_and_partial_setup() {
+    let defaults = run("").unwrap().tree;
+    assert!(!defaults.visible);
+    assert_eq!(defaults.root_markers, [".marksman.toml", ".git"]);
+    let config = run("local m=require('mmv'); m.setup({tree={visible=true,root_markers={'project','repo'}}}); m.setup({tree={visible=false}})").unwrap();
+    assert!(!config.tree.visible);
+    assert_eq!(config.tree.root_markers, ["project", "repo"]);
+    let config = run("require('mmv').setup({tree={visible=true,root_markers={}}})").unwrap();
+    assert!(config.tree.visible);
+    assert!(config.tree.root_markers.is_empty());
+}
+
+#[test]
 fn all_documented_groups_are_accepted() {
     let groups = [
         "Normal",
@@ -75,6 +88,22 @@ fn all_documented_groups_are_accepted() {
 fn invalid_values_reject_the_entire_script_even_if_caught() {
     let invalid = [
         "m.setup({unknown=1})",
+        "m.setup({tree=true})",
+        "m.setup({tree={unknown=true}})",
+        "m.setup({tree={visible=1}})",
+        "m.setup({tree={visible='true'}})",
+        "m.setup({tree={root_markers='x'}})",
+        "m.setup({tree={root_markers={[0]='x'}}})",
+        "m.setup({tree={root_markers={[2]='x'}}})",
+        "m.setup({tree={root_markers={[1]='x',[3]='y'}}})",
+        "m.setup({tree={root_markers={name='x'}}})",
+        "m.setup({tree={root_markers={[1.5]='x'}}})",
+        "m.setup({tree={root_markers={false}}})",
+        "m.setup({tree={root_markers={''}}})",
+        "m.setup({tree={root_markers={'.'}}})",
+        "m.setup({tree={root_markers={'..'}}})",
+        "m.setup({tree={root_markers={'a/b'}}})",
+        r"m.setup({tree={root_markers={'a\\\\b'}}})",
         "m.setup({[1]=1})",
         "m.setup({view={unknown=1}})",
         "m.setup({view='left'})",
