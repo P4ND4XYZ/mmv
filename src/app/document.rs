@@ -116,6 +116,8 @@ pub struct ReadCompletion {
     pub response_to: Option<ExternalRequestId>,
     pub outcome: Result<(), String>,
     pub adopted: bool,
+    /// A current tree request succeeded, including an unchanged document.
+    pub tree_open_succeeded: bool,
 }
 
 pub struct Document {
@@ -170,6 +172,7 @@ impl DocumentState {
             response_to: request.response_to,
             outcome: result.content.as_ref().map(|_| ()).map_err(Clone::clone),
             adopted: false,
+            tree_open_succeeded: current && request.tree.is_some() && result.content.is_ok(),
         };
         if current {
             self.pending = None;

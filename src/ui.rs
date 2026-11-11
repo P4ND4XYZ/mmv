@@ -35,6 +35,7 @@ pub struct Viewer {
     tree: file_tree::TreePane,
     link_panel: Option<links::LinkSelection>,
     restore_body_focus: bool,
+    focus_body_after_tree_open: bool,
     message: Option<String>,
     message_is_error: bool,
     display_error: Option<String>,
@@ -100,6 +101,7 @@ impl Viewer {
             tree,
             link_panel: None,
             restore_body_focus: false,
+            focus_body_after_tree_open: false,
             message: None,
             message_is_error: false,
             display_error: None,
@@ -330,6 +332,7 @@ impl Viewer {
         let Some(completion) = self.app.complete_at(result, distance) else {
             return;
         };
+        self.focus_body_after_tree_open |= completion.tree_open_succeeded;
         if completion.adopted {
             let panel_closed = self.link_panel.take().is_some();
             self.restore_body_focus |= panel_closed;
@@ -425,6 +428,13 @@ impl Viewer {
 
 impl Render for Viewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if std::mem::take(&mut self.focus_body_after_tree_open)
+            && self.tree.visible
+            && self.tree.focus.is_focused(window)
+            && self.pane_keys_enabled(window, cx)
+        {
+            self.body_focus.focus(window, cx);
+        }
         if std::mem::take(&mut self.restore_body_focus) {
             // Logical focus only: never activate the OS window on external adoption.
             self.body_focus.focus(window, cx);

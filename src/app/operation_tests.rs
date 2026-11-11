@@ -14,7 +14,9 @@ fn tree_open_same_key_is_noop_and_supersedes_older_reads() {
             root: "root".into(),
         },
     );
-    assert!(!finish(&mut app, same, "canonical-a", 700.).adopted);
+    let completion = finish(&mut app, same, "canonical-a", 700.);
+    assert!(!completion.adopted);
+    assert!(completion.tree_open_succeeded);
     assert!(!finish(&mut app, older, "canonical-b", 700.).adopted);
     assert_eq!(app.document().unwrap().generation, generation);
     assert_eq!(app.history.entries, history);
@@ -40,18 +42,24 @@ fn tree_and_external_reads_share_latest_wins_history_and_failure_contracts() {
             let first = read(&mut app, first);
             let latest = read(&mut app, latest);
             if latest_succeeds {
-                assert!(finish(&mut app, latest, "canonical-latest", 480.).adopted);
+                let completion = finish(&mut app, latest, "canonical-latest", 480.);
+                assert!(completion.adopted);
+                assert_eq!(completion.tree_open_succeeded, tree_latest);
                 assert_eq!(target(&app), PositionTarget::Top);
                 assert_eq!(app.history.entries.len(), history.len() + 1);
             } else {
-                assert!(!fail(&mut app, latest).adopted);
+                let completion = fail(&mut app, latest);
+                assert!(!completion.adopted);
+                assert!(!completion.tree_open_succeeded);
                 assert_eq!(
                     app.document().unwrap().key,
                     DocumentKey("canonical-a".into())
                 );
                 assert_eq!(app.history.entries, history);
             }
-            assert!(!finish(&mut app, first, "canonical-stale", 900.).adopted);
+            let completion = finish(&mut app, first, "canonical-stale", 900.);
+            assert!(!completion.adopted);
+            assert!(!completion.tree_open_succeeded);
         }
     }
 }

@@ -273,7 +273,15 @@ fn enter_and_l_open_markdown_but_right_arrow_and_other_files_do_not(cx: &mut Tes
                 assert_eq!(viewer.app.document().unwrap().generation, generation);
             })
         });
-        // Different files replace the body without taking tree focus.
+        frame(cx, test.window);
+        cx.update_window(test.window, |_, window, cx| {
+            test.view.read_with(cx, |viewer, _| {
+                assert!(viewer.body_focus.is_focused(window));
+            })
+        })
+        .unwrap();
+        test.focus_tree(cx);
+        // Different files move focus only after successful completion.
         cx.update(|cx| {
             test.view.update(cx, |viewer, cx| {
                 let listing = viewer.app.tree.act(crate::app::file_tree::Action::Refresh);
@@ -319,7 +327,7 @@ fn enter_and_l_open_markdown_but_right_arrow_and_other_files_do_not(cx: &mut Tes
         frame(cx, test.window);
         cx.update_window(test.window, |_, window, cx| {
             test.view.read_with(cx, |viewer, cx| {
-                assert!(viewer.tree.focus.is_focused(window));
+                assert!(viewer.body_focus.is_focused(window));
                 assert_eq!(viewer.document.distance(cx), 0.);
                 assert_eq!(viewer.app.document().unwrap().source, "# Other");
             })
@@ -398,6 +406,7 @@ fn real_tree_open_keeps_same_root_state_and_reports_stale_file_failure_in_englis
             viewer.document.distance(cx),
         )
     });
+    test.focus_tree(cx);
     test.press(cx, "l");
     test.view.read_with(cx, |viewer, _| {
         assert_eq!(viewer.document.text, text);
@@ -405,6 +414,7 @@ fn real_tree_open_keeps_same_root_state_and_reports_stale_file_failure_in_englis
         assert_eq!(viewer.app.tree.rows(), rows);
         assert_eq!(viewer.tree.scroll.offset(), scroll);
     });
+    test.focus_tree(cx);
     std::fs::remove_file(&stale).unwrap();
     cx.update(|cx| {
         test.view
@@ -1029,4 +1039,78 @@ fn pane_shortcuts_are_suppressed_during_search_command_panel_and_composition(
         })
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+fn delayed_tree_completion_preserves_focus_on_failure_staleness_or_new_input(
+    cx: &mut TestAppContext,
+) {
+    for scenario in ["failure", "stale", "input"] {
+        let test = TreeTest::new(cx, true, 800.);
+        test.seed(cx);
+        test.focus_tree(cx);
+        let request = cx.update(|cx| {
+            test.view.update(cx, |viewer, _| {
+                match viewer.app.operate(
+                    crate::app::DocumentOperation::TreeOpen {
+                        path: PathBuf::from(r"C:\tree").join("other.md"),
+                        root: PathBuf::from(r"C:\tree"),
+                    },
+                    crate::app::OperationOrigin::Keyboard,
+                    0.,
+                    None,
+                ) {
+                    crate::app::OperationResult::Pending(request) => request,
+                    _ => panic!("expected pending tree request"),
+                }
+            })
+        });
+        frame(cx, test.window);
+        cx.update_window(test.window, |_, window, cx| {
+            test.view.read_with(cx, |viewer, _| {
+                assert!(viewer.tree.focus.is_focused(window));
+            })
+        })
+        .unwrap();
+        if scenario == "input" {
+            test.press(cx, "ctrl-w");
+            test.press(cx, "l");
+            test.press(cx, "/");
+        }
+        cx.update(|cx| {
+            test.view.update(cx, |viewer, cx| {
+                if scenario == "stale" {
+                    viewer.app.open(PathBuf::from("newer.md"));
+                }
+                let result = if scenario == "failure" {
+                    ReadResult {
+                        request,
+                        content: Err("File not found: other.md".into()),
+                    }
+                } else {
+                    success(request, "# Other".into())
+                };
+                viewer.complete(result, cx);
+            })
+        });
+        frame(cx, test.window);
+        cx.update_window(test.window, |_, window, cx| {
+            test.view.read_with(cx, |viewer, cx| {
+                if scenario == "input" {
+                    assert!(
+                        viewer
+                            .input
+                            .state
+                            .read(cx)
+                            .focus_handle(cx)
+                            .is_focused(window)
+                    );
+                } else {
+                    assert!(viewer.tree.focus.is_focused(window));
+                    assert!(!viewer.app.document().unwrap().source.contains("# Other"));
+                }
+            })
+        })
+        .unwrap();
+    }
 }
