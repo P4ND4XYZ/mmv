@@ -304,10 +304,7 @@ fn delayed_layout_rejects_old_generation_entity_and_same_generation_serial(
         // The current (unknown) heading, not the stale distance, is applied.
         assert_eq!(viewer.document.distance(cx), 0.);
         assert!(viewer.app.position_request().is_none());
-        assert_eq!(
-            viewer.message.as_deref(),
-            Some("見出しが見つかりません: two")
-        );
+        assert_eq!(viewer.message.as_deref(), Some("Heading not found: two"));
     });
 }
 

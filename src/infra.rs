@@ -39,6 +39,6 @@ pub use {
 
 pub use config::load_config;
 pub use document::read_document;
-pub use logging::{log_config_failure, log_diagram_failure};
+pub use logging::{log_config_failure, log_diagram_failure, log_document_failure};
 pub use mermaid::{cleanup_mermaid_scratch, generate_diagram};
 pub use watch::{FileWatch, WatchNotice};

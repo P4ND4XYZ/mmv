@@ -46,9 +46,8 @@ impl Viewer {
         let mut matcher = LinkMatcher::default();
         let items = panel_items(&analysis.candidates, &mut matcher, "");
         let palette = self.palette.clone();
-        let panel = cx.new(|cx| {
-            SelectionPanel::new(items, "一致するリンクがありません", palette, window, cx)
-        });
+        let panel =
+            cx.new(|cx| SelectionPanel::new(items, "No matching links", palette, window, cx));
         let subscription = cx.subscribe_in(&panel, window, |this, panel, event, window, cx| {
             if !this
                 .link_panel
@@ -135,9 +134,9 @@ fn panel_items(
                 primary: candidate.display_name.clone(),
                 secondary: candidate.destination.clone(),
                 badge: match candidate.kind {
-                    LinkKind::Heading => "見出し",
+                    LinkKind::Heading => "Heading",
                     LinkKind::LocalMarkdown => "Markdown",
-                    LinkKind::LocalMarkdownHeading => "Markdown・見出し",
+                    LinkKind::LocalMarkdownHeading => "Markdown heading",
                     LinkKind::Web => "Web",
                 },
                 primary_ranges: matched.name_ranges,
@@ -265,7 +264,10 @@ pub(super) fn extract_candidates(
             None // Observe only; keep upstream's normal conversion unchanged.
         })
         .plugin(CandidatePlugin);
-    let blocks = parse_markdown(source, extensions.into()).map_err(|error| error.to_string())?;
+    let blocks = parse_markdown(source, extensions.into()).map_err(|error| {
+        crate::infra::log_document_failure(document, error.as_ref());
+        "Unable to analyze document links".to_string()
+    })?;
     let definitions = definitions.lock().expect("link definitions");
     let mut links = Vec::new();
     visit(&blocks, &mut |block| match block {

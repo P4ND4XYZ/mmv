@@ -161,7 +161,7 @@ fn missing_and_unmatched_queries_report_in_the_normal_input_line(cx: &mut TestAp
     press(cx, window, "enter");
     view.read_with(cx, |viewer, _| {
         assert_eq!(viewer.app.mode, Mode::Normal);
-        assert_eq!(viewer.message.as_deref(), Some("直前の検索語がありません"));
+        assert_eq!(viewer.message.as_deref(), Some("No previous search query"));
     });
     press(cx, window, "/");
     input(cx, window, "存在しない検索語");
@@ -169,10 +169,7 @@ fn missing_and_unmatched_queries_report_in_the_normal_input_line(cx: &mut TestAp
     view.read_with(cx, |viewer, _| {
         assert_eq!(viewer.app.mode, Mode::Normal);
         assert!(viewer.app.matches().is_empty());
-        assert_eq!(
-            viewer.message.as_deref(),
-            Some("一致する文字列がありません")
-        );
+        assert_eq!(viewer.message.as_deref(), Some("No matches found"));
     });
 }
 
@@ -192,7 +189,7 @@ fn command_escape_and_unknown_command_do_not_quit_but_q_enter_closes_the_window(
     press(cx, window, "enter");
     view.read_with(cx, |viewer, _| {
         assert_eq!(viewer.app.mode, Mode::Normal);
-        assert_eq!(viewer.message.as_deref(), Some("未対応のコマンド: :e"));
+        assert_eq!(viewer.message.as_deref(), Some("Unsupported command: :e"));
     });
     press(cx, window, ":");
     input(cx, window, "q");

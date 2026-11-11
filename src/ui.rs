@@ -348,7 +348,7 @@ impl Viewer {
             );
             self.emit_tree_requests(tree_requests, cx);
             self.message =
-                panel_closed.then(|| "本文が更新されたためリンク選択を閉じました".into());
+                panel_closed.then(|| "Link selection closed because the document changed".into());
             self.message_is_error = false;
             self.document.replace(generation, pending_movements, cx);
             self.display_error = None;
@@ -411,11 +411,11 @@ impl Viewer {
             .or_else(|| self.message.clone())
             .or_else(|| {
                 self.config_notice
-                    .then(|| "設定を読み込めませんでした".into())
+                    .then(|| "Unable to load configuration".into())
             })
             .unwrap_or_else(|| {
                 if self.app.is_loading() {
-                    "読み込み中…".into()
+                    "Loading…".into()
                 } else {
                     String::new()
                 }

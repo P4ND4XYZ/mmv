@@ -28,6 +28,7 @@ actions!(
         FocusBody,
         TreeLeft,
         TreeRight,
+        TreeOpen,
         TreeToggle,
         TreeRefresh
     ]
@@ -44,7 +45,7 @@ pub fn bind_keys(cx: &mut gpui_kit::App) {
         KeyBinding::new("up", ScrollUp, Some("EvaluationTree")),
         KeyBinding::new("h", TreeLeft, Some("EvaluationTree")),
         KeyBinding::new("left", TreeLeft, Some("EvaluationTree")),
-        KeyBinding::new("l", TreeRight, Some("EvaluationTree")),
+        KeyBinding::new("l", TreeOpen, Some("EvaluationTree")),
         KeyBinding::new("right", TreeRight, Some("EvaluationTree")),
         KeyBinding::new("enter", TreeToggle, Some("EvaluationTree")),
         KeyBinding::new("g g", FirstLine, Some("EvaluationTree")),
@@ -162,11 +163,8 @@ pub(super) fn bind_tree_actions(tree: Div, cx: &mut Context<Viewer>) -> Div {
     .on_action(
         cx.listener(|this, _: &TreeRight, window, cx| this.tree_action(Action::Right, window, cx)),
     )
-    .on_action(
-        cx.listener(|this, _: &TreeToggle, window, cx| {
-            this.tree_action(Action::Toggle, window, cx)
-        }),
-    )
+    .on_action(cx.listener(|this, _: &TreeOpen, window, cx| this.tree_open(false, window, cx)))
+    .on_action(cx.listener(|this, _: &TreeToggle, window, cx| this.tree_open(true, window, cx)))
     .on_action(cx.listener(|this, _: &TreeRefresh, window, cx| {
         this.tree_action(Action::Refresh, window, cx)
     }))
@@ -259,8 +257,8 @@ impl Viewer {
                 self.message_is_error = false;
                 self.message = match outcome {
                     SearchOutcome::Found => None,
-                    SearchOutcome::NotFound => Some("一致する文字列がありません".into()),
-                    SearchOutcome::NoPreviousQuery => Some("直前の検索語がありません".into()),
+                    SearchOutcome::NotFound => Some("No matches found".into()),
+                    SearchOutcome::NoPreviousQuery => Some("No previous search query".into()),
                 };
             }
             Mode::Command => {
@@ -277,7 +275,7 @@ impl Viewer {
                     }
                     _ => {
                         self.message_is_error = false;
-                        self.message = Some(format!("未対応のコマンド: :{input}"));
+                        self.message = Some(format!("Unsupported command: :{input}"));
                     }
                 }
             }

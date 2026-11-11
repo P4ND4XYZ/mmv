@@ -35,6 +35,35 @@
 - 下部の状態行・入力行は本文の最大幅や配置にかかわらずウィンドウ全幅とする。
 - 表・コード・画像・Mermaid図の幅と、Markdownによる配置指定は[Markdown描画](markdown-rendering.md#本文幅と要素の配置)に従う。
 
+## 表示言語と通知
+
+アプリが生成するGUIのエラー・警告・案内・状態・空表示・種類ラベル・アクセシビリティ文言は英語に統一する。Markdown本文、ファイル名・パス、URL、見出しID、利用者の入力は翻訳しない。モード欄のNORMAL／SEARCH／COMMANDは維持する。ローカライズ基盤は追加せず、ログとCLI全体の翻訳は対象外とする。
+
+OSや描画基盤の生エラーは画面へ流さず、固定英語へ分類し、対象パスと詳細原因を既存ログへ記録する。通知に付けるパス・ID・入力は元の文字列を維持する。以下の入力行表示はNormalで表示し、Search／Commandでは入力モードと文字列を保護する。ダイアログは使わない。
+
+| 条件 | 英語表示 | 位置 | 保持する状態 |
+|---|---|---|---|
+| 文書要求が処理中 | `Loading…` | 入力行 | 既存本文・距離・履歴 |
+| ファイル不在 | `File not found: {path}` | 入力行 | 本文・距離・履歴・ツリー |
+| アクセス拒否・ロック | `File access denied or locked: {path}` | 入力行 | 同上 |
+| 不正UTF-8 | `File is not valid UTF-8: {path}` | 入力行 | 同上 |
+| ツリー対象・祖先が通常非reparseでない、ルート外など | `Tree target is not a regular accessible file: {path}` | 入力行 | 同上 |
+| ドライブ切断・一般I/O・未知のOS原因 | `Unable to read file: {path}` | 入力行 | 同上 |
+| 設定の読み込み・実行・検証失敗 | `Unable to load configuration` | 入力行 | 標準設定で本文閲覧を継続 |
+| 検索一致なし | `No matches found` | 入力行 | 本文・履歴、Normalへ戻る |
+| 再利用する検索語なし | `No previous search query` | 入力行 | 本文・履歴、Normalへ戻る |
+| 未対応コマンド | `Unsupported command: :{input}` | 入力行 | 本文・履歴、Normalへ戻る |
+| 文書の読み込み／解析待ち | `Document is loading` / `Document is being analyzed` | 入力行 | 本文・履歴 |
+| 位置解析・リンク解析・検索強調の失敗 | `Unable to determine document positions` / `Unable to analyze document links` / `Unable to highlight search results` | 入力行 | 本文・履歴 |
+| 見出しがない | `Heading not found: {id}` | 入力行 | 採用した本文を先頭表示 |
+| 本文置換でリンク選択を終了 | `Link selection closed because the document changed` | 入力行 | 新しい本文・入力モードと文字列 |
+| リンク候補なし | `No matching links` | 選択パネル | パネル入力・本文・履歴 |
+| フォルダー一覧取得失敗 | `Unable to access directory.` | ツリー内 | 既存一覧・本文・入力。ルート不能時だけカーソルをルートへ |
+| リンクの種類 | `Heading` / `Markdown` / `Markdown heading` / `Web` | 選択パネル | 本文由来の表示名と宛先 |
+| Mermaidのアクセシビリティ | `Mermaid diagram` | 図のアクセシビリティラベル | 図の内容は翻訳しない |
+
+リンク形式の不正時は既存の英語要約（`invalid URL`、`invalid file URL`、`invalid fragment encoding`、`invalid UTF-8 fragment`、`document path must be absolute`、`unsupported link scheme: {scheme}`）を入力行へ表示し、本文・履歴を保持する。Mermaid生成失敗は引き続き画面には出さずログだけとする。
+
 ## モードと入力
 
 - 起動時はNormalモードとする。
@@ -49,7 +78,7 @@
 
 `Ctrl+Shift+e`でツリー表示を切り替える。表示中は`Ctrl+W`に続けて`h`で左のツリーへ、`l`で右の本文へフォーカスを移す。移動先がない場合は何もしない。初期フォーカスは本文とする。
 
-ツリー入力と本文入力は分離し、ツリーでは本文検索・履歴移動・本文再読み込み・F5を受け付けない。Search・Command・リンク選択パネル・IME変換中はpane移動と表示切替を受け付けない。表示対象・カーソル・状態保持・ルート追従・エラー時の振る舞いは[ファイルツリー](file-tree.md)にまとめる。ツリーエラーで本文や入力欄を置き換えない。
+ツリー入力と本文入力は分離し、ツリーでは本文検索・履歴移動・本文再読み込み・F5を受け付けない。Search・Command・リンク選択パネル・IME変換中はpane移動と表示切替を受け付けない。表示対象・カーソル・状態保持・ルート追従・エラー時の振る舞いは[ファイルツリー](file-tree.md)にまとめる。一覧取得エラーはツリー内に表示し、本文や入力欄を置き換えない。ツリーから文書を開く失敗は入力行に英語で表示する。Enter／`l`で別文書を開いてもツリーにフォーカスを残し、`→`では文書を開かない。
 
 2打目待機中の取消・タイムアウト・無効キー・修飾キーはGPUI標準のキー割り当て機構に従い、独自規則は設けない。共通選択パネルの取消操作を、そのままツリーの操作として追加しない。
 

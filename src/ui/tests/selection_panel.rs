@@ -114,7 +114,7 @@ fn selection_panel_empty_enter_is_noop_and_empty_message_is_exact(cx: &mut TestA
         cx.update_window(window, |_, window, cx| {
             assert_eq!(
                 window.find("selection-empty").label(),
-                Some("一致するリンクがありません")
+                Some("No matching links")
             );
             window.press("enter", cx);
         })
@@ -138,7 +138,7 @@ fn selection_panel_ranked_id_confirmation_and_both_utf8_highlight_fields(cx: &mu
                 .iter()
                 .map(|item| item.badge)
                 .collect::<Vec<_>>(),
-            ["Markdown", "Markdown・見出し", "Markdown", "見出し", "Web"]
+            ["Markdown", "Markdown heading", "Markdown", "Heading", "Web"]
         );
     });
     press(cx, window, "down");

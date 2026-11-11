@@ -138,6 +138,25 @@ fn move_if_exists(from: &Path, to: &Path) -> io::Result<()> {
 
 static LOGGER: OnceLock<Mutex<Logger>> = OnceLock::new();
 
+pub fn log_document_failure(path: &Path, reason: &str) {
+    let directory = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .map(|path| path.join("my-markdown-viewer").join("logs"));
+    LOGGER
+        .get_or_init(|| Mutex::new(Logger::default()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .record(
+            path,
+            0,
+            "",
+            reason,
+            directory.as_deref(),
+            &mut io::stderr().lock(),
+        );
+}
+
 pub fn log_config_failure(error: &super::config::ConfigError) {
     let _guard = LOGGER
         .get_or_init(|| Mutex::new(Logger::default()))
@@ -218,6 +237,24 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn document_failure_keeps_detailed_localized_cause_in_bounded_log() {
+        let dir = TempDir::new();
+        let mut stderr = Vec::new();
+        Logger::default().record(
+            Path::new("日本語.md"),
+            0,
+            "",
+            "不明なOSエラー (os error 1234)",
+            Some(&dir.0),
+            &mut stderr,
+        );
+        let log = fs::read_to_string(dir.0.join("viewer.log")).unwrap();
+        assert!(log.contains("日本語.md"));
+        assert!(log.contains("不明なOSエラー (os error 1234)"));
+        assert!(stderr.is_empty());
     }
 
     #[test]

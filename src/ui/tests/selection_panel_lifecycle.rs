@@ -106,7 +106,7 @@ fn selection_panel_only_adopted_body_closes_panel_warns_and_old_ids_cannot_execu
         view.read_with(cx, |viewer, _| {
             assert_eq!(
                 viewer.message.as_deref(),
-                Some("本文が更新されたためリンク選択を閉じました")
+                Some("Link selection closed because the document changed")
             );
             assert!(!viewer.message_is_error);
             assert_eq!(
@@ -435,7 +435,7 @@ fn selection_panel_external_history_adoption_closes_only_on_success(cx: &mut Tes
         assert!(viewer.link_panel.is_none());
         assert_eq!(
             viewer.message.as_deref(),
-            Some("本文が更新されたためリンク選択を閉じました")
+            Some("Link selection closed because the document changed")
         );
     });
 }

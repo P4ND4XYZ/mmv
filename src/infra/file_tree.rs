@@ -12,7 +12,9 @@ pub fn execute(request: Request) -> Completion {
             Completion::Root(request, root)
         }
         Request::Directory(request) => {
-            let result = list_directory(&request).map_err(|_| ());
+            let result = list_directory(&request).map_err(|error| {
+                super::logging::log_document_failure(&request.path, &error.to_string());
+            });
             Completion::Directory(request, result)
         }
     }
@@ -47,7 +49,7 @@ fn find_root_with(
     parent.to_owned()
 }
 
-fn reparse(metadata: &fs::Metadata) -> bool {
+pub(super) fn reparse(metadata: &fs::Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt as _;
@@ -68,7 +70,7 @@ fn expandable(metadata: &fs::Metadata, name: &std::ffi::OsStr) -> bool {
     metadata.is_dir() && !reparse(metadata) && !name.to_string_lossy().eq_ignore_ascii_case(".git")
 }
 
-fn check_directory_path(root: &Path, path: &Path) -> io::Result<()> {
+pub(super) fn check_directory_path(root: &Path, path: &Path) -> io::Result<()> {
     let relative = path.strip_prefix(root).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -97,7 +99,10 @@ fn check_directory_path(root: &Path, path: &Path) -> io::Result<()> {
 fn check_directory(path: &Path) -> io::Result<()> {
     let metadata = fs::symlink_metadata(path)?;
     if !expandable(&metadata, path.file_name().unwrap_or(path.as_os_str())) {
-        return Err(io::Error::other("directory is not expandable"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "directory is not expandable",
+        ));
     }
     Ok(())
 }
@@ -114,6 +119,7 @@ fn list_directory(request: &DirectoryRequest) -> io::Result<Vec<Entry>> {
             path: entry.path(),
             directory: metadata.is_dir(),
             expandable: expandable(&metadata, &name),
+            reparse: reparse(&metadata),
             name,
         });
     }

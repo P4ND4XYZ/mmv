@@ -152,10 +152,7 @@ fn other_document_fragment_is_decoded_and_missing_headings_go_to_top(cx: &mut Te
         view.read_with(cx, |viewer, cx| {
             assert_eq!(viewer.document.distance(cx), 0.);
             assert!(viewer.app.position_request().is_none());
-            assert_eq!(
-                viewer.message.as_deref(),
-                Some("見出しが見つかりません: 不明")
-            );
+            assert_eq!(viewer.message.as_deref(), Some("Heading not found: 不明"));
         });
     }
 }

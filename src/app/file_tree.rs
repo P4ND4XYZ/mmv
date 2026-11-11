@@ -10,6 +10,7 @@ pub struct Entry {
     pub name: OsString,
     pub directory: bool,
     pub expandable: bool,
+    pub reparse: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,6 +86,25 @@ impl FileTree {
         self.nodes.get(path)
     }
 
+    pub fn open_candidate(&self) -> Option<(PathBuf, PathBuf)> {
+        if self.resolving_root() {
+            return None;
+        }
+        let root = self.root.as_ref()?;
+        if self.nodes.get(root)?.error {
+            return None;
+        }
+        let node = self.nodes.get(self.cursor.as_ref()?)?;
+        (!node.entry.directory
+            && !node.entry.reparse
+            && node
+                .entry
+                .path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("md")))
+        .then(|| (node.entry.path.clone(), root.clone()))
+    }
+
     pub fn resolving_root(&self) -> bool {
         self.root_request.is_some() || self.dirty_document.is_some()
     }
@@ -141,6 +161,7 @@ impl FileTree {
                     path: root.clone(),
                     directory: true,
                     expandable: true,
+                    reparse: false,
                 });
                 node.expanded = true;
                 self.nodes.insert(root.clone(), node);

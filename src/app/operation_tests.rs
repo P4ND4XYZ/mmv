@@ -1,6 +1,62 @@
 use super::*;
 
 #[test]
+fn tree_open_same_key_is_noop_and_supersedes_older_reads() {
+    let mut app = loaded();
+    let generation = app.document().unwrap().generation;
+    let position = app.position_request().cloned();
+    let history = app.history.entries.clone();
+    let older = read(&mut app, DocumentOperation::Open("b.md".into()));
+    let same = read(
+        &mut app,
+        DocumentOperation::TreeOpen {
+            path: "alias-a.md".into(),
+            root: "root".into(),
+        },
+    );
+    assert!(!finish(&mut app, same, "canonical-a", 700.).adopted);
+    assert!(!finish(&mut app, older, "canonical-b", 700.).adopted);
+    assert_eq!(app.document().unwrap().generation, generation);
+    assert_eq!(app.history.entries, history);
+    assert_eq!(app.position_request(), position.as_ref());
+}
+
+#[test]
+fn tree_and_external_reads_share_latest_wins_history_and_failure_contracts() {
+    for tree_latest in [false, true] {
+        for latest_succeeds in [false, true] {
+            let mut app = loaded();
+            let history = app.history.entries.clone();
+            let tree = DocumentOperation::TreeOpen {
+                path: "tree.MD".into(),
+                root: "root".into(),
+            };
+            let external = DocumentOperation::Open("external.md".into());
+            let (first, latest) = if tree_latest {
+                (external, tree)
+            } else {
+                (tree, external)
+            };
+            let first = read(&mut app, first);
+            let latest = read(&mut app, latest);
+            if latest_succeeds {
+                assert!(finish(&mut app, latest, "canonical-latest", 480.).adopted);
+                assert_eq!(target(&app), PositionTarget::Top);
+                assert_eq!(app.history.entries.len(), history.len() + 1);
+            } else {
+                assert!(!fail(&mut app, latest).adopted);
+                assert_eq!(
+                    app.document().unwrap().key,
+                    DocumentKey("canonical-a".into())
+                );
+                assert_eq!(app.history.entries, history);
+            }
+            assert!(!finish(&mut app, first, "canonical-stale", 900.).adopted);
+        }
+    }
+}
+
+#[test]
 fn watcher_changes_only_on_adoption_and_rejects_a_b_a_delayed_notifications() {
     let mut app = App::default();
     assert!(app.watch_target().is_none());

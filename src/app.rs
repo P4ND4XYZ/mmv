@@ -154,10 +154,17 @@ impl App {
             response_to: response_to.clone(),
             outcome,
         };
+        let tree = match &operation {
+            DocumentOperation::TreeOpen { root, .. } => Some(document::TreeOpen {
+                root: root.clone(),
+                current: self.document().map(|doc| doc.key.clone()),
+            }),
+            _ => None,
+        };
         let (path, pending) = match operation {
-            DocumentOperation::Initial(path) | DocumentOperation::Open(path) => {
-                (path, PendingOperation::Open)
-            }
+            DocumentOperation::Initial(path)
+            | DocumentOperation::Open(path)
+            | DocumentOperation::TreeOpen { path, .. } => (path, PendingOperation::Open),
             DocumentOperation::Reload => {
                 let Some(document) = self.document() else {
                     return complete(Err(OperationError::DocumentUnavailable));
@@ -197,7 +204,7 @@ impl App {
                 )
             }
         };
-        let request = self.document.open(path, response_to, origin);
+        let request = self.document.open(path, response_to, origin, tree);
         self.pending_operation = Some((request.id, pending));
         OperationResult::Pending(request)
     }

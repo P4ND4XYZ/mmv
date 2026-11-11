@@ -27,6 +27,14 @@ pub struct ReadRequest {
     pub path: PathBuf,
     pub response_to: Option<ExternalRequestId>,
     pub origin: OperationOrigin,
+    pub tree: Option<TreeOpen>,
+}
+
+/// Tree-only preflight and identity check, performed by infra before any read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TreeOpen {
+    pub root: PathBuf,
+    pub current: Option<DocumentKey>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,6 +49,7 @@ pub enum OperationOrigin {
 pub enum DocumentOperation {
     Initial(PathBuf),
     Open(PathBuf),
+    TreeOpen { path: PathBuf, root: PathBuf },
     Reload,
     Heading { path: Option<PathBuf>, id: String },
     Back,
@@ -132,6 +141,7 @@ impl DocumentState {
         path: PathBuf,
         response_to: Option<ExternalRequestId>,
         origin: OperationOrigin,
+        tree: Option<TreeOpen>,
     ) -> ReadRequest {
         self.next_request += 1;
         let request = ReadRequest {
@@ -139,6 +149,7 @@ impl DocumentState {
             path,
             response_to,
             origin,
+            tree,
         };
         self.outstanding.insert(request.id, request.clone());
         self.pending = Some(request.id);
@@ -163,6 +174,12 @@ impl DocumentState {
         if current {
             self.pending = None;
             match result.content {
+                Ok(loaded)
+                    if request.tree.is_some()
+                        && self
+                            .current
+                            .as_ref()
+                            .is_some_and(|doc| doc.key == loaded.key) => {}
                 Ok(loaded) => {
                     self.next_generation += 1;
                     self.current = Some(Document {

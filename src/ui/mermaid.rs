@@ -41,7 +41,10 @@ impl MarkdownPlugin for MermaidPlugin {
             .expect("diagram inbox")
             .insert(start, code.value.clone());
         // Empty plain text keeps both source and pending/failed diagrams out of search.
-        Some(MarkdownNode::new(self.name().to_string(), start).accessibility_label("Mermaid図"))
+        Some(
+            MarkdownNode::new(self.name().to_string(), start)
+                .accessibility_label("Mermaid diagram"),
+        )
     }
 
     fn render(&self, node: &MarkdownNode, window: &mut Window, cx: &mut App) -> impl IntoElement {

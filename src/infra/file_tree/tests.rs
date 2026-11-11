@@ -162,12 +162,14 @@ fn case_ties_use_original_name() {
             name: "a".into(),
             directory: false,
             expandable: false,
+            reparse: false,
         },
         Entry {
             path: "A".into(),
             name: "A".into(),
             directory: false,
             expandable: false,
+            reparse: false,
         },
     ];
     sort_entries(&mut entries);
@@ -195,6 +197,52 @@ impl Junction {
 impl Drop for Junction {
     fn drop(&mut self) {
         fs::remove_dir(&self.0).unwrap();
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn tree_open_revalidates_replaced_ancestor_and_leaf_junctions() {
+    use crate::app::{App, DocumentOperation, OperationOrigin, OperationResult};
+    for replace_ancestor in [false, true] {
+        let fixture = Fixture::new();
+        let root = fixture.0.join("root");
+        let parent = root.join("parent");
+        let target = fixture.0.join("target");
+        fs::create_dir_all(&parent).unwrap();
+        fs::create_dir(&target).unwrap();
+        fs::write(parent.join("doc.md"), "original").unwrap();
+        fs::write(target.join("doc.md"), "must not be read").unwrap();
+        let mut app = App::default();
+        let request = match app.operate(
+            DocumentOperation::TreeOpen {
+                path: parent.join("doc.md"),
+                root: root.clone(),
+            },
+            OperationOrigin::Keyboard,
+            0.,
+            None,
+        ) {
+            OperationResult::Pending(request) => request,
+            _ => panic!(),
+        };
+        let replaced = if replace_ancestor {
+            parent
+        } else {
+            parent.join("doc.md")
+        };
+        fs::rename(&replaced, fixture.0.join("original")).unwrap();
+        let junction = Junction::new(replaced, &target);
+        let result = crate::infra::read_document(request);
+        assert!(
+            result
+                .content
+                .err()
+                .unwrap()
+                .starts_with("Tree target is not a regular accessible file")
+        );
+        assert!(app.document().is_none());
+        drop(junction);
     }
 }
 

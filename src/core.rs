@@ -31,7 +31,7 @@ pub fn resolve_image(document: &Path, source: &str) -> Result<ImageLocation, Str
     }
     let base = url::Url::from_file_path(document)
         .map_err(|_| "document path must be absolute".to_string())?;
-    let resolved = base.join(source).map_err(|error| error.to_string())?;
+    let resolved = base.join(source).map_err(|_| "invalid URL".to_string())?;
     match resolved.scheme() {
         "file" => resolved
             .to_file_path()
@@ -70,7 +70,7 @@ pub fn resolve_link(document: &Path, source: &str) -> Result<LinkTarget, String>
     }
     let base = url::Url::from_file_path(document)
         .map_err(|_| "document path must be absolute".to_string())?;
-    let resolved = base.join(source).map_err(|error| error.to_string())?;
+    let resolved = base.join(source).map_err(|_| "invalid URL".to_string())?;
     match resolved.scheme() {
         "file" => Ok(LinkTarget::File {
             path: resolved

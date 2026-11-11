@@ -193,7 +193,7 @@ impl Viewer {
     /// Share the same upstream block spans between search and heading links;
     /// heading labels come from TextView's plain rendered-text projection.
     pub(super) fn analyze_document(&mut self, cx: &gpui_kit::App) -> Result<(), String> {
-        let document = self.app.document().ok_or("本文を読み込み中です")?;
+        let document = self.app.document().ok_or("Document is loading")?;
         if self
             .document
             .analysis
@@ -204,7 +204,7 @@ impl Viewer {
         }
         let snapshot = self.document.text.read(cx).rendered_text();
         if snapshot.source() != document.source {
-            return Err("本文を解析中です".into());
+            return Err("Document is being analyzed".into());
         }
         let links = Arc::new(Mutex::new(Vec::new()));
         let extensions = MarkdownExtensions::default()
@@ -213,8 +213,10 @@ impl Viewer {
                 images: Default::default(),
             })
             .plugin(LinkRanges(links.clone()));
-        let blocks = parse_markdown(&document.source, extensions.into())
-            .map_err(|error| format!("文書の位置を取得できません: {error}"))?;
+        let blocks = parse_markdown(&document.source, extensions.into()).map_err(|error| {
+            crate::infra::log_document_failure(&document.path, error.as_ref());
+            "Unable to determine document positions".to_string()
+        })?;
         let mut ids = HeadingIds::default();
         let mut headings = BTreeMap::new();
         fn collect(
@@ -425,7 +427,7 @@ impl Viewer {
                 } else {
                     list.set_offset_from_scrollbar(point(px(0.), px(0.)));
                     self.message_is_error = false;
-                    self.message = Some(format!("見出しが見つかりません: {id}"));
+                    self.message = Some(format!("Heading not found: {id}"));
                 }
             }
         }

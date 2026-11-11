@@ -27,7 +27,7 @@ fn startup_configuration_notice_survives_first_document_adoption(cx: &mut TestAp
     });
     cx.run_until_parked();
     view.read_with(cx, |viewer, _| {
-        assert_eq!(viewer.status_text(), "設定を読み込めませんでした");
+        assert_eq!(viewer.status_text(), "Unable to load configuration");
         assert!(viewer.app.document().is_some());
     });
     let mut visual = gpui_kit::VisualTestContext::from_window(window, cx);

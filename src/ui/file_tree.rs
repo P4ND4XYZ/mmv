@@ -63,6 +63,45 @@ impl Viewer {
         cx.notify();
     }
 
+    pub(super) fn tree_open(&mut self, toggle: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.tree.visible
+            || !self.tree.focus.is_focused(window)
+            || !self.pane_keys_enabled(window, cx)
+            || self.app.tree.resolving_root()
+        {
+            return;
+        }
+        if let Some((path, root)) = self.app.tree.open_candidate() {
+            self.message = None;
+            self.display_error = None;
+            self.request_operation(
+                crate::app::DocumentOperation::TreeOpen { path, root },
+                crate::app::OperationOrigin::Keyboard,
+                None,
+                cx,
+            );
+        } else if self
+            .app
+            .tree
+            .cursor
+            .as_ref()
+            .and_then(|path| self.app.tree.node(path))
+            .is_some_and(|node| {
+                node.entry.directory && node.entry.expandable && !node.entry.reparse
+            })
+        {
+            self.tree_action(
+                if toggle {
+                    Action::Toggle
+                } else {
+                    Action::Right
+                },
+                window,
+                cx,
+            );
+        }
+    }
+
     fn reveal_tree_cursor(&self) {
         if let Some(index) = self
             .app
@@ -135,7 +174,7 @@ impl Viewer {
                     .flex_shrink_0()
                     .child(row)
                     .when(node.error, |row| {
-                        row.child(div().h(px(24.)).px_2().child("アクセスできません。"))
+                        row.child(div().h(px(24.)).px_2().child("Unable to access directory."))
                     })
             })
             .collect::<Vec<_>>();

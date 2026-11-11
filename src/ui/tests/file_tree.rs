@@ -127,6 +127,7 @@ fn entry(name: &str, directory: bool) -> Entry {
         name: name.into(),
         directory,
         expandable: directory,
+        reparse: false,
     }
 }
 
@@ -238,6 +239,201 @@ fn real_background_document_and_tree_delivery_uses_canonical_root_and_refreshes_
     let requests = test.requests.borrow();
     assert_eq!(requests.len() - start, 1);
     assert!(matches!(&requests[start], Request::Directory(request) if request.path == root));
+}
+
+#[gpui_kit::test]
+fn enter_and_l_open_markdown_but_right_arrow_and_other_files_do_not(cx: &mut TestAppContext) {
+    for key in ["enter", "l"] {
+        let test = TreeTest::new(cx, true, 800.);
+        test.seed(cx);
+        let reads = Rc::new(RefCell::new(Vec::new()));
+        let captured = reads.clone();
+        let _subscription = cx.update(|cx| {
+            cx.subscribe(&test.view, move |_, request: &ReadRequest, _| {
+                captured.borrow_mut().push(request.clone());
+            })
+        });
+        test.focus_tree(cx);
+        cx.update(|cx| {
+            test.view.update(cx, |viewer, _| {
+                viewer.app.tree.cursor = Some(PathBuf::from(r"C:\tree").join("sample.md"));
+            })
+        });
+        test.press(cx, "right");
+        assert!(reads.borrow().is_empty());
+        let generation = test
+            .view
+            .read_with(cx, |viewer, _| viewer.app.document().unwrap().generation);
+        test.press(cx, key);
+        let request = reads.borrow_mut().pop().expect("tree document request");
+        assert!(request.tree.is_some());
+        cx.update(|cx| {
+            test.view.update(cx, |viewer, cx| {
+                viewer.complete(success(request, "ignored same file".into()), cx);
+                assert_eq!(viewer.app.document().unwrap().generation, generation);
+            })
+        });
+        // Different files replace the body without taking tree focus.
+        cx.update(|cx| {
+            test.view.update(cx, |viewer, cx| {
+                let listing = viewer.app.tree.act(crate::app::file_tree::Action::Refresh);
+                let Request::Directory(listing) = listing.into_iter().next().unwrap() else {
+                    panic!()
+                };
+                let mut link = entry("link.md", false);
+                link.reparse = true;
+                viewer.complete_tree(
+                    Completion::Directory(
+                        listing,
+                        Ok(vec![
+                            entry("other.MD", false),
+                            entry("asset.txt", false),
+                            link,
+                        ]),
+                    ),
+                    cx,
+                );
+            })
+        });
+        for name in ["asset.txt", "link.md"] {
+            cx.update(|cx| {
+                test.view.update(cx, |viewer, _| {
+                    viewer.app.tree.cursor = Some(PathBuf::from(r"C:\tree").join(name));
+                })
+            });
+            test.press(cx, key);
+            assert!(reads.borrow().is_empty());
+        }
+        cx.update(|cx| {
+            test.view.update(cx, |viewer, _| {
+                viewer.app.tree.cursor = Some(PathBuf::from(r"C:\tree").join("other.MD"));
+            })
+        });
+        test.press(cx, key);
+        let request = reads.borrow_mut().pop().unwrap();
+        cx.update(|cx| {
+            test.view.update(cx, |viewer, cx| {
+                viewer.complete(success(request, "# Other".into()), cx)
+            })
+        });
+        frame(cx, test.window);
+        cx.update_window(test.window, |_, window, cx| {
+            test.view.read_with(cx, |viewer, cx| {
+                assert!(viewer.tree.focus.is_focused(window));
+                assert_eq!(viewer.document.distance(cx), 0.);
+                assert_eq!(viewer.app.document().unwrap().source, "# Other");
+            })
+        })
+        .unwrap();
+        test.press(cx, "ctrl-w");
+        test.press(cx, "l");
+        test.press(cx, "ctrl-o");
+        assert!(
+            reads
+                .borrow_mut()
+                .pop()
+                .unwrap()
+                .path
+                .ends_with("sample.md")
+        );
+    }
+}
+
+#[gpui_kit::test]
+fn real_tree_open_keeps_same_root_state_and_reports_stale_file_failure_in_english(
+    cx: &mut TestAppContext,
+) {
+    let files = TreeFiles::new();
+    std::fs::write(files.0.join(".marksman.toml"), "").unwrap();
+    std::fs::write(files.0.join("a.md"), "# Original 日本語\n\n".repeat(80)).unwrap();
+    std::fs::write(
+        files.0.join("別文書.MD"),
+        "# Destination 日本語\n\n".repeat(80),
+    )
+    .unwrap();
+    std::fs::write(files.0.join("stale.md"), "# Deleted").unwrap();
+    let test = TreeTest::new(cx, false, 800.);
+    cx.update(|cx| {
+        crate::runtime::connect_document_reads(&test.view, cx);
+        crate::runtime::connect_file_tree(&test.view, cx);
+        test.view.update(cx, |viewer, cx| {
+            viewer.request_document(files.0.join("a.md"), None, cx);
+        });
+    });
+    frame(cx, test.window);
+    test.press(cx, "shift-g");
+    let original_distance = test
+        .view
+        .read_with(cx, |viewer, cx| viewer.document.distance(cx));
+    assert!(original_distance > 0.);
+    test.press(cx, "ctrl-shift-e");
+    test.focus_tree(cx);
+    let root = std::fs::canonicalize(&files.0).unwrap();
+    let destination = root.join("別文書.MD");
+    let stale = root.join("stale.md");
+    cx.update(|cx| {
+        test.view.update(cx, |viewer, _| {
+            viewer.app.tree.cursor = Some(destination.clone());
+        })
+    });
+    test.press(cx, "enter");
+    let (text, generation, rows, scroll, distance) = test.view.read_with(cx, |viewer, cx| {
+        assert_eq!(viewer.app.document().unwrap().path, destination);
+        assert!(
+            viewer
+                .app
+                .document()
+                .unwrap()
+                .source
+                .contains("Destination 日本語")
+        );
+        assert_eq!(viewer.app.tree.root, Some(root.clone()));
+        assert_eq!(viewer.app.tree.cursor, Some(destination.clone()));
+        assert_eq!(viewer.document.distance(cx), 0.);
+        (
+            viewer.document.text.clone(),
+            viewer.app.document().unwrap().generation,
+            viewer.app.tree.rows(),
+            viewer.tree.scroll.offset(),
+            viewer.document.distance(cx),
+        )
+    });
+    test.press(cx, "l");
+    test.view.read_with(cx, |viewer, _| {
+        assert_eq!(viewer.document.text, text);
+        assert_eq!(viewer.app.document().unwrap().generation, generation);
+        assert_eq!(viewer.app.tree.rows(), rows);
+        assert_eq!(viewer.tree.scroll.offset(), scroll);
+    });
+    std::fs::remove_file(&stale).unwrap();
+    cx.update(|cx| {
+        test.view
+            .update(cx, |viewer, _| viewer.app.tree.cursor = Some(stale.clone()))
+    });
+    test.press(cx, "l");
+    cx.update_window(test.window, |_, window, cx| {
+        test.view.read_with(cx, |viewer, cx| {
+            assert!(viewer.tree.focus.is_focused(window));
+            assert_eq!(viewer.document.text, text);
+            assert_eq!(viewer.app.document().unwrap().generation, generation);
+            assert_eq!(viewer.document.distance(cx), distance);
+            assert_eq!(viewer.app.tree.rows(), rows);
+            assert_eq!(viewer.app.tree.cursor, Some(stale.clone()));
+            assert_eq!(
+                viewer.status_text(),
+                format!("File not found: {}", stale.display())
+            );
+        })
+    })
+    .unwrap();
+    // Failure and same-document re-selection must not add history entries.
+    test.press(cx, "ctrl-w");
+    test.press(cx, "l");
+    test.press(cx, "ctrl-o");
+    test.view.read_with(cx, |viewer, cx| {
+        assert!(viewer.app.document().unwrap().path.ends_with("a.md"));
+        assert!((viewer.document.distance(cx) - original_distance).abs() < 2.);
+    });
 }
 
 #[gpui_kit::test]
@@ -447,6 +643,7 @@ fn tree_navigation_expansion_and_refresh_keys_have_separate_effects(cx: &mut Tes
             name: "child.txt".into(),
             directory: false,
             expandable: false,
+            reparse: false,
         }]),
     );
     test.press(cx, "right");

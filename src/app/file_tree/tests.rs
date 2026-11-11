@@ -1,11 +1,42 @@
 use super::*;
 
+#[test]
+fn only_normal_markdown_files_are_open_candidates() {
+    let mut tree = FileTree::default();
+    let root = tree
+        .document_changed("/tree/a.md".into(), true, &[])
+        .remove(0);
+    let Request::Root(root) = root else { panic!() };
+    let listing = directory(tree.complete(Completion::Root(root, "/tree".into())));
+    let mut reparse = entry("/tree", "link.md", false);
+    reparse.reparse = true;
+    tree.complete(Completion::Directory(
+        listing,
+        Ok(vec![
+            entry("/tree", "folder", true),
+            entry("/tree", "a.MD", false),
+            entry("/tree", "asset.txt", false),
+            reparse,
+        ]),
+    ));
+    for (name, allowed) in [
+        ("folder", false),
+        ("a.MD", true),
+        ("asset.txt", false),
+        ("link.md", false),
+    ] {
+        tree.cursor = Some(PathBuf::from("/tree").join(name));
+        assert_eq!(tree.open_candidate().is_some(), allowed);
+    }
+}
+
 fn entry(parent: &str, name: &str, directory: bool) -> Entry {
     Entry {
         path: PathBuf::from(parent).join(name),
         name: name.into(),
         directory,
         expandable: directory && name != ".git",
+        reparse: false,
     }
 }
 

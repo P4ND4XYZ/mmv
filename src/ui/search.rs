@@ -8,11 +8,11 @@ impl Viewer {
     /// of a wrapped line. Use the same upstream parser to map that block's source
     /// span into the rendered-text snapshot; never infer offsets from Markdown lines.
     pub(super) fn search_origin(&mut self, cx: &mut Context<Self>) -> Result<usize, String> {
-        let document = self.app.document().ok_or("本文を読み込み中です")?;
+        let document = self.app.document().ok_or("Document is loading")?;
         let text = self.document.text.read(cx);
         let snapshot = text.rendered_text();
         if snapshot.source() != document.source {
-            return Err("本文を解析中です".into());
+            return Err("Document is being analyzed".into());
         }
         let first = text.list_state().logical_scroll_top().item_ix;
         if first == 0 {
@@ -54,7 +54,10 @@ impl Viewer {
             }
             Ok::<_, gpui_kit::component::text::RangeHighlightError>(())
         });
-        self.display_error = result.err().map(|error| error.to_string());
+        self.display_error = result.err().map(|error| {
+            crate::infra::log_document_failure(&self.path, &error.to_string());
+            "Unable to highlight search results".into()
+        });
     }
 
     pub(super) fn range_highlights(&self) -> Vec<RangeHighlight> {
