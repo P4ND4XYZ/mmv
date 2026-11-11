@@ -493,8 +493,8 @@ fn production_watch_connection_catches_up_a_save_before_registration(cx: &mut Te
     });
     // This save predates watcher registration and produces no watched OS event.
     std::fs::write(&path, "new body saved before registration").unwrap();
-    let connection = cx.update(|cx| crate::connect_watch(&view, cx));
-    cx.update(|cx| crate::connect_document_reads(&view, cx));
+    let connection = cx.update(|cx| crate::runtime::connect_watch(&view, cx));
+    cx.update(|cx| crate::runtime::connect_document_reads(&view, cx));
     let (done, completed) = mpsc::channel();
     let _completion = cx.update(|cx| {
         cx.subscribe(
@@ -544,11 +544,9 @@ fn production_watch_connection_catches_up_a_save_before_registration(cx: &mut Te
     cx.run_until_parked();
     let join = {
         let mut connection = connection.borrow_mut();
-        assert!(connection.watch.is_none());
-        assert!(connection.delivery.is_none());
+        assert!(connection.is_stopped());
         connection
-            .joining
-            .take()
+            .take_joining()
             .expect("release must start worker join")
     };
     let (joined, worker_stopped) = mpsc::channel();

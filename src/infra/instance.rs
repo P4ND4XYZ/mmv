@@ -6,11 +6,6 @@ use super::{
 };
 use crate::app::ExternalOperation;
 use std::{io, marker::PhantomData, os::windows::ffi::OsStrExt as _, rc::Rc, time::Instant};
-#[cfg(test)]
-use std::{
-    os::windows::process::CommandExt,
-    process::{Child, Command, Stdio},
-};
 use windows_sys::Win32::{
     Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT},
     Security::Authorization::SE_KERNEL_OBJECT,
@@ -170,6 +165,8 @@ mod tests {
     use super::super::ipc::PipeServer;
     use super::*;
     use std::{
+        os::windows::process::CommandExt,
+        process::{Child, Command, Stdio},
         sync::{
             Arc, Barrier,
             atomic::{AtomicUsize, Ordering},

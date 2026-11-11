@@ -1,7 +1,7 @@
 //! Real Named Pipe -> production delivery -> Viewer -> production reply wiring.
 use crate::{
     app::{ExternalOperation, ExternalRequestId, ReadRequest},
-    infra,
+    infra, runtime,
 };
 use gpui_kit::{AppContext as _, Focusable as _, TestAppContext, test::TestWindowExt as _};
 use std::{
@@ -51,8 +51,8 @@ fn request(
     (worker, rx)
 }
 
-fn join(cx: &mut TestAppContext, connection: &Rc<RefCell<crate::PipeConnection>>) {
-    let task = connection.borrow_mut().joining.take().unwrap();
+fn join(cx: &mut TestAppContext, connection: &Rc<RefCell<runtime::PipeConnection>>) {
+    let task = connection.borrow_mut().take_joining().unwrap();
     let done = Rc::new(std::cell::Cell::new(false));
     let flag = done.clone();
     cx.update(|cx| {
@@ -71,8 +71,9 @@ fn production_pipe_reverse_completions_with_colliding_external_ids_and_disconnec
 ) {
     let (_, view) = super::open(cx, "original".into());
     let namespace = infra::test_support::namespace();
-    let connection = cx
-        .update(|cx| crate::connect_pipe(&view, infra::PipeServer::bind(&namespace).unwrap(), cx));
+    let connection = cx.update(|cx| {
+        runtime::connect_pipe(&view, infra::PipeServer::bind(&namespace).unwrap(), cx)
+    });
     let reads = Rc::new(RefCell::new(Vec::<ReadRequest>::new()));
     let captured = reads.clone();
     let _subscription = cx.update(|cx| {
@@ -95,7 +96,7 @@ fn production_pipe_reverse_completions_with_colliding_external_ids_and_disconnec
         false,
     );
     pump_until(cx, || reads.borrow().len() == 2);
-    assert_eq!(connection.borrow().pending.len(), 2);
+    assert_eq!(connection.borrow().pending_count(), 2);
     let b_read = reads.borrow_mut().pop().unwrap();
     let a_read = reads.borrow_mut().pop().unwrap();
     cx.update(|cx| {
@@ -139,7 +140,7 @@ fn production_pipe_reverse_completions_with_colliding_external_ids_and_disconnec
         std::io::ErrorKind::TimedOut
     );
     gone.join().unwrap();
-    pump_until(cx, || connection.borrow().pending.is_empty());
+    pump_until(cx, || connection.borrow().pending_count() == 0);
     let late = reads.borrow_mut().pop().unwrap();
     cx.update(|cx| {
         view.update(cx, |view, cx| {
@@ -159,12 +160,12 @@ fn production_pipe_reverse_completions_with_colliding_external_ids_and_disconnec
     );
     pump_until(cx, || reads.borrow().len() == 1);
     cx.update(|cx| connection.borrow_mut().stop(cx));
-    assert!(connection.borrow().pending.is_empty());
+    assert_eq!(connection.borrow().pending_count(), 0);
     pump_until(cx, || held.is_finished());
     assert!(held_rx.recv().unwrap().is_err());
     held.join().unwrap();
     join(cx, &connection);
-    assert!(connection.borrow().server.is_none());
+    assert!(connection.borrow().is_stopped());
 }
 
 #[gpui_kit::test]
@@ -193,8 +194,8 @@ fn production_pipe_reads_real_files_and_preserves_prompt_composition_and_focus(
         let (window, view) = super::open(cx, "old".into());
         let namespace = infra::test_support::namespace();
         let connection = cx.update(|cx| {
-            crate::connect_document_reads(&view, cx);
-            crate::connect_pipe(&view, infra::PipeServer::bind(&namespace).unwrap(), cx)
+            runtime::connect_document_reads(&view, cx);
+            runtime::connect_pipe(&view, infra::PipeServer::bind(&namespace).unwrap(), cx)
         });
         cx.update_window(window, |_, window, cx| {
             window.press(key, cx);

@@ -20,8 +20,6 @@ use crate::app::{
 use document::{DocumentView, Movement};
 use input::Prompt;
 pub use input::bind_keys;
-#[cfg(all(test, feature = "ui-tests"))]
-use status::MODE_WIDTH;
 
 #[cfg(all(test, feature = "ui-tests"))]
 mod tests;

@@ -3,7 +3,7 @@ use gpui_kit::{
     VisualTestContext, px, test::TestWindowExt as _,
 };
 
-use crate::app::Mode;
+use crate::{app::Mode, ui::status::MODE_WIDTH};
 
 fn press(cx: &mut TestAppContext, window: AnyWindowHandle, key: &str) {
     cx.update_window(window, |_, window, cx| window.press(key, cx))
@@ -29,7 +29,7 @@ fn footer_rows_and_mode_width_stay_fixed_across_modes_and_long_filenames(cx: &mu
     assert_eq!(status.size.height, px(21.));
     assert_eq!(command.size.height, px(21.));
     assert_eq!(status.bottom(), command.top());
-    assert_eq!(label.size.width, px(super::super::MODE_WIDTH));
+    assert_eq!(label.size.width, px(MODE_WIDTH));
     assert_eq!(
         visual.debug_bounds("document-body").unwrap().bottom(),
         status.top()
