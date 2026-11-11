@@ -16,6 +16,10 @@ Windows向けの読み取り専用ビューアーを、GPUIとgpui-componentを�
 - [リンクと履歴](../requirements/features/links-history.md)、[外部操作](../requirements/features/external-control.md)
 - [Markdown描画](../requirements/features/markdown-rendering.md)、[Mermaid図](../requirements/features/mermaid.md)、[エラーログ](../requirements/features/logging.md)
 
+## 検討中の設計案
+
+- [ファイルツリーの設計たたき台](components/file-tree.md)：表示専用・全ファイル表示・Lua初期表示設定・Vim風フォーカス移動・一覧取得の合意方針と、ルート検出などの未決定案。実装済みの機能を示すものではありません。
+
 ## 技術方針
 
 ### 描画基盤と依存関係
