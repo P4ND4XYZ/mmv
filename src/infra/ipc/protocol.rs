@@ -93,7 +93,9 @@ impl Request {
                     return Err(invalid("odd UTF-16 path length"));
                 }
                 let units: Vec<u16> = raw
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|b| u16::from_le_bytes([b[0], b[1]]))
                     .collect();
                 let path = PathBuf::from(OsString::from_wide(&units));

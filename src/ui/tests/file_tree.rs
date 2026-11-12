@@ -329,7 +329,7 @@ fn enter_and_l_open_markdown_but_right_arrow_and_other_files_do_not(cx: &mut Tes
             test.view.read_with(cx, |viewer, cx| {
                 assert!(viewer.body_focus.is_focused(window));
                 assert_eq!(viewer.document.distance(cx), 0.);
-                assert_eq!(viewer.app.document().unwrap().source, "# Other");
+                assert_eq!(viewer.app.document().unwrap().source.as_str(), "# Other");
             })
         })
         .unwrap();

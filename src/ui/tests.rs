@@ -11,6 +11,7 @@ mod phase_one;
 mod production;
 mod selection_panel;
 mod selection_panel_lifecycle;
+mod source_preview;
 mod theme;
 
 use std::{cell::RefCell, path::PathBuf, rc::Rc, time::Instant};
@@ -34,7 +35,7 @@ fn success(request: ReadRequest, source: String) -> ReadResult {
     }
 }
 
-fn open(
+pub(super) fn open(
     cx: &mut TestAppContext,
     source: String,
 ) -> (gpui_kit::AnyWindowHandle, gpui_kit::Entity<Viewer>) {
@@ -238,7 +239,7 @@ fn read_completions_reach_the_connection_boundary_even_when_not_adopted(cx: &mut
     assert_eq!(completions[1].outcome, Ok(()));
     assert!(completions.iter().all(|completion| !completion.adopted));
     view.read_with(cx, |viewer, _| {
-        assert_eq!(viewer.app.document().unwrap().source, "元の本文");
+        assert_eq!(viewer.app.document().unwrap().source.as_str(), "元の本文");
         assert_eq!(viewer.app.error(), Some("B failed"));
         assert!(!viewer.app.is_loading());
     });

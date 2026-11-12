@@ -1,11 +1,13 @@
 mod document;
 mod file_tree;
+mod floating_panel;
 mod input;
 mod links;
 mod mermaid;
 pub(crate) mod pane;
 mod search;
 mod selection_panel;
+mod source_preview;
 mod status;
 mod theme;
 
@@ -479,7 +481,7 @@ impl Render for Viewer {
         let overlay = self
             .link_panel
             .as_ref()
-            .map(|selection| selection.panel.clone());
+            .map(|selection| selection.overlay(&self.palette));
         let pane_keys = self.pane_keys_enabled(window, cx);
         input::bind_root_actions(div(), cx)
             .relative()

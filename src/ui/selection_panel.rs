@@ -29,6 +29,8 @@ pub(super) struct Item {
 pub(super) enum Event {
     Query(String),
     Confirm(usize),
+    SelectionChanged(Option<usize>),
+    PreviewScrollRequested(bool),
     Cancel,
 }
 
@@ -43,6 +45,8 @@ pub(super) struct SelectionPanel {
     reset_selection: bool,
     empty: SharedString,
     palette: Palette,
+    preview: Option<AnyView>,
+    list_height: Pixels,
     _subscription: Subscription,
     _keystroke_subscription: Subscription,
 }
@@ -109,16 +113,51 @@ impl SelectionPanel {
             reset_selection: true,
             empty: empty.into(),
             palette,
+            preview: None,
+            list_height: px(0.),
             _subscription: subscription,
             _keystroke_subscription: keystroke_subscription,
         }
     }
 
     pub fn set_items(&mut self, items: Vec<Item>, query: &str, cx: &mut Context<Self>) {
+        let previous = self.selected_id();
         self.items_query = query.to_owned();
         self.selected.set((!items.is_empty()).then_some(0));
         self.items = items;
         self.reset_selection = true;
+        self.emit_selection_change(previous, cx);
+        cx.notify();
+    }
+
+    pub fn set_preview(&mut self, preview: AnyView) {
+        self.preview = Some(preview);
+    }
+
+    /// Called by the feature only after its subscription and lifetime are installed.
+    pub fn activate(&self, cx: &mut Context<Self>) {
+        cx.emit(Event::SelectionChanged(self.selected_id()));
+    }
+
+    fn selected_id(&self) -> Option<usize> {
+        self.selected
+            .get()
+            .and_then(|ix| self.items.get(ix))
+            .map(|item| item.id)
+    }
+
+    fn emit_selection_change(&self, previous: Option<usize>, cx: &mut Context<Self>) {
+        let selected = self.selected_id();
+        if previous != selected {
+            cx.emit(Event::SelectionChanged(selected));
+        }
+    }
+
+    fn select_index(&mut self, index: usize, cx: &mut Context<Self>) {
+        let previous = self.selected_id();
+        self.selected
+            .set((index < self.items.len()).then_some(index));
+        self.emit_selection_change(previous, cx);
         cx.notify();
     }
 
@@ -157,7 +196,7 @@ impl SelectionPanel {
         } else {
             (current + count - 1) % count
         };
-        self.selected.set(Some(next));
+        self.select_index(next, cx);
         self.command.update(cx, |state, cx| {
             state.set_selected_index(Some(IndexPath::new(next)), window, cx);
         });
@@ -183,7 +222,12 @@ impl SelectionPanel {
                     control: true,
                     ..Default::default()
                 };
-            if (plain && matches!(key, "down" | "up")) || (control && matches!(key, "n" | "p")) {
+            if control && matches!(key, "u" | "d") {
+                cx.emit(Event::PreviewScrollRequested(key == "d"));
+                cx.stop_propagation();
+            } else if (plain && matches!(key, "down" | "up"))
+                || (control && matches!(key, "n" | "p"))
+            {
                 self.move_selection(matches!(key, "down" | "n"), window, cx);
                 cx.stop_propagation();
             }
@@ -252,7 +296,7 @@ pub(super) fn input_element(input: &Entity<InputState>, colors: Colors) -> Input
 }
 
 impl Render for SelectionPanel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = self.palette.get(Group::Panel);
         let items = self
             .items
@@ -267,23 +311,16 @@ impl Render for SelectionPanel {
                     .child(move |_, _| item_element(&item, selected.get() == Some(ix), &palette))
             })
             .collect::<Vec<_>>();
-        let input = self.input.clone();
         let empty = self.empty.clone();
-        let selected = self.selected.clone();
         let weak = cx.entity().downgrade();
         let confirmed_items = self.items.iter().map(|item| item.id).collect::<Vec<_>>();
         let command = Command::new(&self.command)
             .searchable(false)
             .filterable(false)
             .bordered(false)
-            .max_h(
-                px(180.)
-                    .min(window.viewport_size().height - px(96.))
-                    .max(px(24.)),
-            )
+            .max_h(self.list_height)
             .bg(colors.bg)
             .text_color(colors.fg)
-            .header(move |_, _, _| input_element(&input, colors))
             .items(items)
             .empty(move |_, _, _| {
                 div()
@@ -296,25 +333,32 @@ impl Render for SelectionPanel {
                     .child(empty.clone())
             })
             .on_select(move |index, _, cx| {
-                selected.set(Some(index.row));
-                if let Some(panel) = weak.upgrade() {
-                    panel.update(cx, |_, cx| cx.notify());
-                }
+                let _ = weak.update(cx, |panel, cx| panel.select_index(index.row, cx));
             })
             .on_confirm({
                 let weak = cx.entity().downgrade();
                 move |index, _, cx| {
                     if let Some(&id) = confirmed_items.get(index.row) {
-                        let _ = weak.update(cx, |_, cx| cx.emit(Event::Confirm(id)));
+                        let _ = weak.update(cx, |panel, cx| {
+                            // Deferred mouse confirmations must still refer to this query/list.
+                            if panel.items.get(index.row).is_some_and(|item| item.id == id) {
+                                panel.select_index(index.row, cx);
+                                panel.confirm(cx);
+                            }
+                        });
                     }
                 }
             });
         let reset = std::mem::take(&mut self.reset_selection);
         let state = self.command.clone();
-        let surface = div()
+        div()
             .debug_selector(|| "selection-panel".into())
             .key_context("SelectionPanel")
-            .w_full()
+            .size_full()
+            .flex()
+            .flex_col()
+            .min_h_0()
+            .min_w_0()
             .bg(colors.bg)
             .text_color(colors.fg)
             .capture_key_down(cx.listener(Self::capture_key))
@@ -358,40 +402,53 @@ impl Render for SelectionPanel {
                     });
                 }
             })
-            .child(command);
-        div()
-            .absolute()
-            .inset_0()
-            .size_full()
             .child(
                 div()
-                    .id("selection-backdrop")
-                    .debug_selector(|| "selection-backdrop".into())
-                    .absolute()
-                    .inset_0()
-                    .size_full()
-                    .occlude()
-                    // Keep the backdrop mounted until release. Removing it on
-                    // mouse-down would expose the body to that click's mouse-up.
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(|_, _, _, cx| {
-                        cx.emit(Event::Cancel);
-                        cx.stop_propagation();
-                    })),
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .debug_selector(|| "selection-list".into())
+                            .on_prepaint({
+                                let panel = cx.entity().downgrade();
+                                move |bounds, _, cx| {
+                                    let _ = panel.update(cx, |panel, cx| {
+                                        if panel.list_height != bounds.size.height {
+                                            panel.list_height = bounds.size.height;
+                                            cx.notify();
+                                        }
+                                    });
+                                }
+                            })
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .overflow_hidden()
+                            .child(command),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "selection-preview".into())
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .h_full()
+                            .border_l_1()
+                            .border_color(self.palette.get(Group::Border).fg)
+                            .children(self.preview.clone()),
+                    ),
             )
             .child(
                 div()
-                    .id("selection-frame")
-                    .absolute()
-                    .top(px(24.))
-                    .left(px(16.))
-                    .right(px(16.))
-                    .occlude()
-                    .border_1()
+                    .debug_selector(|| "selection-input".into())
+                    .w_full()
+                    .flex_shrink_0()
+                    .border_t_1()
                     .border_color(self.palette.get(Group::Border).fg)
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(|_, _, cx| cx.stop_propagation())
-                    .child(surface),
+                    .child(input_element(&self.input, colors)),
             )
     }
 }

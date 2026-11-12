@@ -339,7 +339,10 @@ fn external_open_supersedes_a_queued_link(cx: &mut TestAppContext, url: &str) {
     );
     view.read_with(cx, |viewer, _| {
         assert_eq!(viewer.app.document().unwrap().path, newest);
-        assert_eq!(viewer.app.document().unwrap().source, "Newest document B");
+        assert_eq!(
+            viewer.app.document().unwrap().source.as_str(),
+            "Newest document B"
+        );
         assert!(!viewer.app.is_loading());
         assert!(viewer.app.position_request().is_none());
         assert!(
@@ -417,6 +420,6 @@ fn failed_and_stale_heading_loads_keep_the_displayed_text_and_distance(cx: &mut 
     frame(cx, window);
     view.read_with(cx, |viewer, cx| {
         assert_eq!(viewer.document.distance(cx), 480.);
-        assert_eq!(viewer.app.document().unwrap().source, fixture());
+        assert_eq!(viewer.app.document().unwrap().source.as_str(), fixture());
     });
 }

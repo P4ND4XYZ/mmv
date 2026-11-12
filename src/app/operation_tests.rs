@@ -127,7 +127,10 @@ fn saves_during_read_collapse_to_one_trailing_reload_even_after_failure() {
         let a = app.watch_target().unwrap().clone();
         let request = app.watch_changed(&a).unwrap();
         assert_eq!(request.origin, OperationOrigin::Automatic);
-        assert_eq!(app.document().unwrap().source, "target edit target");
+        assert_eq!(
+            app.document().unwrap().source.as_str(),
+            "target edit target"
+        );
         assert!(app.watch_changed(&a).is_none());
         assert!(app.watch_changed(&a).is_none());
         if succeeds {
@@ -528,7 +531,10 @@ fn failed_and_stale_heading_reads_preserve_document_history_and_pending_position
     assert_eq!(app.history.entries, history);
     assert_eq!(app.position_request(), position.as_ref());
     assert_eq!(app.document().unwrap().path, PathBuf::from("a.md"));
-    assert_eq!(app.document().unwrap().source, "target edit target");
+    assert_eq!(
+        app.document().unwrap().source.as_str(),
+        "target edit target"
+    );
     assert_eq!(app.error(), Some("missing"));
 }
 

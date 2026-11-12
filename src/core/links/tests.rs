@@ -14,7 +14,7 @@ fn links(values: &[(&str, &str)]) -> Vec<LinkCandidate> {
         &document(),
         values
             .iter()
-            .map(|(name, url)| (name.to_string(), url.to_string())),
+            .map(|(name, url)| (name.to_string(), url.to_string(), None)),
     )
 }
 
@@ -44,6 +44,23 @@ fn dedup_requires_both_name_and_resolved_destination_and_keeps_first_identity() 
     assert_eq!(values[0].kind, LinkKind::LocalMarkdownHeading);
     assert_eq!(values[3].kind, LinkKind::Heading);
     assert_eq!(values[4].kind, LinkKind::Web);
+}
+
+#[test]
+fn first_duplicate_retains_its_source_range_after_reranking() {
+    let values = candidates(
+        &document(),
+        [
+            ("Design".into(), "./design.md".into(), Some(3..22)),
+            ("Design".into(), "design.md".into(), Some(90..109)),
+            ("Other".into(), "other.md".into(), None),
+        ],
+    );
+    assert_eq!(values.len(), 2);
+    assert_eq!(values[0].source_range, Some(3..22));
+    let ranked = LinkMatcher::default().rank(&values, "dsg");
+    assert_eq!(ranked[0].id, values[0].id);
+    assert_eq!(values[0].source_range, Some(3..22));
 }
 
 #[test]

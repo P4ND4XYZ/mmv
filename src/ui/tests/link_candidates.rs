@@ -44,6 +44,23 @@ fn upstream_markdown_links_include_references_autolinks_tables_and_nested_contai
 }
 
 #[test]
+fn source_ranges_are_ast_usage_bytes_for_unicode_crlf_multiline_and_references() {
+    let source = "日本語\r\n\r\n[**最初**\r\nのリンク](target.md)\r\n\r\n> [参照][id]\r\n\r\n[before ![画像](img.png) after](mixed.md)\r\n\r\n[id]: other.md\r\n";
+    let values = candidates(source);
+    let expected = [
+        "[**最初**\r\nのリンク](target.md)",
+        "[参照][id]",
+        "[before ![画像](img.png) after](mixed.md)",
+    ];
+    assert_eq!(values.len(), expected.len());
+    for (candidate, expected) in values.iter().zip(expected) {
+        let start = source.find(expected).unwrap();
+        assert_eq!(candidate.source_range, Some(start..start + expected.len()));
+        assert_eq!(&source[candidate.source_range.clone().unwrap()], expected);
+    }
+}
+
+#[test]
 fn decoded_unicode_and_literal_math_keep_the_displayed_link_name() {
     let values = candidates("[e\u{301}👩‍💻 &amp; $5$](unicode.md)");
     assert_eq!(values.len(), 1);
@@ -75,27 +92,15 @@ fn embedded_images_are_excluded_but_complete_links_wrapping_images_are_included(
 }
 
 #[test]
-fn html_roots_paragraph_marks_and_html_tables_remain_candidates() {
+fn html_links_in_roots_paragraphs_and_tables_are_excluded_from_picker() {
     let values = candidates(
         "<div><p><a href=\"block.md\">Block <strong>HTML</strong></a></p>\
          <table><tr><td><a href=\"table.md\">HTML table</a></td></tr></table></div>\n\n\
          <p><a href=\"inline.md#part\"><em>Inline</em> HTML</a></p>\n\n\
          [Markdown](normal.md).\n\n<img src=\"image.png\">",
     );
-    assert_eq!(
-        values
-            .iter()
-            .map(|v| v.display_name.as_str())
-            .collect::<Vec<_>>(),
-        ["Block HTML", "HTML table", "Inline HTML", "Markdown"]
-    );
-    assert_eq!(
-        values[2].target,
-        LinkTarget::File {
-            path: PathBuf::from(r"C:\fixtures\inline.md"),
-            fragment: Some("part".into())
-        }
-    );
+    assert_eq!(values.len(), 1);
+    assert_eq!(values[0].display_name, "Markdown");
 }
 
 #[test]
@@ -125,42 +130,18 @@ fn extraction_deduplicates_only_equal_names_and_resolved_targets_and_is_determin
 }
 
 #[test]
-fn approved_html_image_fragments_keep_targets_order_and_dedup_without_merging_anchors() {
+fn html_anchor_fragments_are_excluded_without_splitting_markdown_image_links() {
     for source in [
         r#"<p><a href="target.md#part">before<img src="image.png" alt="preview">after</a><a href="target.md#part">before</a></p>"#,
-        r#"<p><a href="target.md#part">before</a><a href="target.md#part"><img src="image.png" alt="preview"></a><a href="target.md#part">after</a><a href="target.md#part">before</a></p>"#,
+        r#"<p><a href="target.md#part">before</a><a href="target.md#part"><img src="image.png" alt="preview"></a><a href="target.md#part">after</a></p>"#,
     ] {
-        let values = candidates(source);
-        assert_eq!(
-            values
-                .iter()
-                .map(|value| value.display_name.as_str())
-                .collect::<Vec<_>>(),
-            ["before", "preview", "after"]
-        );
-        assert_eq!(
-            values
-                .iter()
-                .map(|value| value.document_order)
-                .collect::<Vec<_>>(),
-            [0, 1, 2]
-        );
-        for value in &values {
-            assert_eq!(
-                value.target,
-                LinkTarget::File {
-                    path: PathBuf::from(r"C:\fixtures\target.md"),
-                    fragment: Some("part".into())
-                }
-            );
-        }
-        let mut matcher = LinkMatcher::default();
-        assert!(matcher.rank(&values, "beforeafter").is_empty());
-        assert_eq!(matcher.rank(&values, "preview")[0].id, values[1].id);
+        assert!(candidates(source).is_empty());
     }
-    let markdown = candidates("[before![preview](image.png)after](target.md#part)");
+    let source = "[before![preview](image.png)after](target.md#part)";
+    let markdown = candidates(source);
     assert_eq!(markdown.len(), 1);
     assert_eq!(markdown[0].display_name, "beforepreviewafter");
+    assert_eq!(markdown[0].source_range, Some(0..source.len()));
     assert_eq!(
         LinkMatcher::default().rank(&markdown, "beforeafter").len(),
         1
@@ -260,7 +241,7 @@ fn document_analysis_collects_offscreen_links_without_changing_normal_rendering(
                     .iter()
                     .map(|v| v.display_name.as_str())
                     .collect::<Vec<_>>(),
-                ["Start", "Offscreen HTML", "Preview"]
+                ["Start", "Preview"]
             );
             let rendered = viewer.document.text.read(cx).rendered_text();
             assert!(rendered.as_str().contains("Start"));

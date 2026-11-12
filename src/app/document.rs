@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Generation(u64);
@@ -124,7 +124,7 @@ pub struct Document {
     pub generation: Generation,
     pub path: PathBuf,
     pub key: DocumentKey,
-    pub source: String,
+    pub source: Arc<String>,
 }
 
 #[derive(Default)]
@@ -189,7 +189,7 @@ impl DocumentState {
                         generation: Generation(self.next_generation),
                         path: request.path,
                         key: loaded.key,
-                        source: loaded.source,
+                        source: Arc::new(loaded.source),
                     });
                     completion.adopted = true;
                 }

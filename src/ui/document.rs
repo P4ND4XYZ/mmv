@@ -63,6 +63,7 @@ pub(super) struct DocumentAnalysis {
     pub blocks: Vec<Option<std::ops::Range<usize>>>,
     pub links: Vec<std::ops::Range<usize>>,
     pub candidates: Vec<crate::core::links::LinkCandidate>,
+    pub source: Arc<super::source_preview::SourceSnapshot>,
     headings: BTreeMap<String, HeadingLocation>,
 }
 
@@ -203,7 +204,7 @@ impl Viewer {
             return Ok(());
         }
         let snapshot = self.document.text.read(cx).rendered_text();
-        if snapshot.source() != document.source {
+        if snapshot.source() != document.source.as_str() {
             return Err("Document is being analyzed".into());
         }
         let links = Arc::new(Mutex::new(Vec::new()));
@@ -277,6 +278,10 @@ impl Viewer {
                 .filter_map(|range| snapshot.range_for_source(range.clone()))
                 .collect(),
             candidates: super::links::extract_candidates(&document.path, &document.source)?,
+            source: Arc::new(super::source_preview::SourceSnapshot::new(
+                document.source.clone(),
+                document.generation,
+            )),
             headings,
         });
         Ok(())
@@ -323,7 +328,7 @@ impl Viewer {
             .retain(|intent| intent.generation == generation);
         if self.document.movements.is_empty()
             || self.app.position_request().is_some()
-            || self.document.text.read(cx).rendered_text().source() != document.source
+            || self.document.text.read(cx).rendered_text().source() != document.source.as_str()
             || !self.document.layout_ready(cx)
         {
             return;
@@ -367,7 +372,7 @@ impl Viewer {
             || self.document.text != *text
             || !self.app.document().is_some_and(|doc| {
                 doc.generation == request.generation
-                    && text.read(cx).rendered_text().source() == doc.source
+                    && text.read(cx).rendered_text().source() == doc.source.as_str()
             })
         {
             return;
@@ -441,7 +446,7 @@ impl Viewer {
         let Some(document) = self.app.document() else {
             return;
         };
-        if document.generation != generation || snapshot.source() != document.source {
+        if document.generation != generation || snapshot.source() != document.source.as_str() {
             return;
         }
         let discovered = std::mem::take(
@@ -475,10 +480,9 @@ impl Viewer {
             self.document.resize_distance.get_or_insert(distance);
         }
         self.document.pane_width = Some(window_width);
-        let ready = self
-            .app
-            .document()
-            .is_some_and(|doc| self.document.text.read(cx).rendered_text().source() == doc.source);
+        let ready = self.app.document().is_some_and(|doc| {
+            self.document.text.read(cx).rendered_text().source() == doc.source.as_str()
+        });
         // The child installs extensions during render. Only then hand it the source,
         // and read synchronous results here as well as asynchronous notifications.
         if let Some(generation) = self.app.document().map(|doc| doc.generation) {

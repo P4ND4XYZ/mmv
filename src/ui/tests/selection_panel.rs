@@ -261,7 +261,7 @@ fn selection_panel_navigation_wraps_repaint_preserves_selection_and_focus_is_not
     assert!(
         row_after.is_none_or(|row| row.top() >= list_bounds.bottom()
             && row.origin.y - row_before.origin.y == px(120.)),
-        "wheel must move the previous visible item below the viewport; overscan may keep it mounted"
+        "wheel must move the previous visible item below the viewport; overscan may keep it mounted: before={row_before:?}, after={row_after:?}, list={list_bounds:?}"
     );
     assert_eq!(
         view.read_with(cx, |viewer, cx| viewer.document.distance(cx)),

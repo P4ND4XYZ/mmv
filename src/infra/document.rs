@@ -118,7 +118,7 @@ mod tests {
             assert!(!completion.adopted);
             assert_eq!(completion.outcome, Ok(()));
             assert_eq!(app.document().unwrap().generation, generation);
-            assert_eq!(app.document().unwrap().source, "# Original 日本語");
+            assert_eq!(app.document().unwrap().source.as_str(), "# Original 日本語");
             assert_eq!(app.position_request(), position.as_ref());
         }
         std::fs::remove_dir_all(root).unwrap();

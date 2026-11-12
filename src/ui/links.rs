@@ -17,7 +17,10 @@ use gpui_kit::{prelude::*, *};
 
 use super::{
     Viewer,
+    floating_panel::FloatingPanel,
     selection_panel::{self, SelectionPanel},
+    source_preview::SourcePreview,
+    theme::Palette,
 };
 use crate::{
     app::Generation,
@@ -27,8 +30,23 @@ use crate::{
 pub(super) struct LinkSelection {
     pub generation: Generation,
     pub panel: Entity<SelectionPanel>,
+    pub preview: Entity<SourcePreview>,
     matcher: LinkMatcher,
     _subscription: Subscription,
+}
+
+impl LinkSelection {
+    pub fn overlay(&self, palette: &Palette) -> FloatingPanel {
+        let panel = self.panel.downgrade();
+        FloatingPanel::new(
+            self.panel.clone(),
+            0.8,
+            palette.get(crate::config::Group::Border).fg,
+            move |_, _, cx| {
+                let _ = panel.update(cx, |_, cx| cx.emit(selection_panel::Event::Cancel));
+            },
+        )
+    }
 }
 
 impl Viewer {
@@ -46,14 +64,19 @@ impl Viewer {
         let mut matcher = LinkMatcher::default();
         let items = panel_items(&analysis.candidates, &mut matcher, "");
         let palette = self.palette.clone();
+        let source = analysis.source.clone();
+        let preview = cx.new(|_| SourcePreview::new(source, palette.clone()));
         let panel =
             cx.new(|cx| SelectionPanel::new(items, "No matching links", palette, window, cx));
+        panel.update(cx, |panel, _| panel.set_preview(preview.clone().into()));
         let subscription = cx.subscribe_in(&panel, window, |this, panel, event, window, cx| {
-            if !this
-                .link_panel
-                .as_ref()
-                .is_some_and(|current| current.panel == *panel)
-            {
+            if !this.link_panel.as_ref().is_some_and(|current| {
+                current.panel == *panel
+                    && this
+                        .app
+                        .document()
+                        .is_some_and(|doc| doc.generation == current.generation)
+            }) {
                 return;
             }
             match event {
@@ -69,6 +92,41 @@ impl Viewer {
                     };
                     let items = panel_items(&analysis.candidates, &mut selection.matcher, query);
                     panel.update(cx, |panel, cx| panel.set_items(items, query, cx));
+                }
+                selection_panel::Event::SelectionChanged(id) => {
+                    let selection = this.link_panel.as_ref().expect("open panel");
+                    let Some(analysis) = this
+                        .document
+                        .analysis
+                        .as_ref()
+                        .filter(|analysis| analysis.generation == selection.generation)
+                    else {
+                        return;
+                    };
+                    let range = id
+                        .and_then(|id| {
+                            analysis
+                                .candidates
+                                .iter()
+                                .find(|candidate| candidate.id == CandidateId(id))
+                        })
+                        .and_then(|candidate| candidate.source_range.clone());
+                    selection
+                        .preview
+                        .update(cx, |preview, cx| match (id, range) {
+                            (None, _) => preview.clear_target(cx),
+                            (Some(_), Some(range)) => {
+                                preview.reveal_range(range, selection.generation, cx)
+                            }
+                            (Some(_), None) => preview.show_unavailable(cx),
+                        });
+                }
+                selection_panel::Event::PreviewScrollRequested(down) => {
+                    this.link_panel
+                        .as_ref()
+                        .expect("open panel")
+                        .preview
+                        .update(cx, |preview, cx| preview.scroll_half_page(*down, cx));
                 }
                 selection_panel::Event::Cancel => this.close_link_selection(window, cx),
                 selection_panel::Event::Confirm(id) => {
@@ -101,10 +159,12 @@ impl Viewer {
         });
         self.link_panel = Some(LinkSelection {
             generation,
-            panel,
+            panel: panel.clone(),
+            preview,
             matcher,
             _subscription: subscription,
         });
+        panel.update(cx, |panel, cx| panel.activate(cx));
         cx.notify();
     }
 
@@ -154,6 +214,7 @@ enum Destination {
 struct ParsedLink {
     name: String,
     destination: Destination,
+    source_range: Option<std::ops::Range<usize>>,
 }
 
 struct CandidatePlugin;
@@ -183,6 +244,9 @@ impl MarkdownPlugin for CandidatePlugin {
                 ParsedLink {
                     name: name.clone(),
                     destination,
+                    source_range: node.position().map(|position| {
+                        cx.offset() + position.start.offset..cx.offset() + position.end.offset
+                    }),
                 },
             )
             .text(name),
@@ -290,8 +354,8 @@ pub(super) fn extract_candidates(
     Ok(candidates(document, links))
 }
 
-/// Root includes HTML's public tree. Candidate extraction deliberately does not
-/// share link-background styling's Markdown-only exclusion.
+/// Visit the public tree, accepting only Markdown nodes claimed by our plugin.
+/// HTML marks remain available to the body renderer, not the picker.
 fn visit(blocks: &[BlockNode], f: &mut impl FnMut(&BlockNode)) {
     for block in blocks {
         f(block);
@@ -308,7 +372,7 @@ fn visit(blocks: &[BlockNode], f: &mut impl FnMut(&BlockNode)) {
 fn collect_paragraph(
     paragraph: &Paragraph,
     definitions: &BTreeMap<String, String>,
-    links: &mut Vec<(String, String)>,
+    links: &mut Vec<(String, String, Option<std::ops::Range<usize>>)>,
 ) {
     for run in paragraph.children() {
         if let Some(link) = run.as_custom().and_then(|node| node.data::<ParsedLink>()) {
@@ -317,26 +381,13 @@ fn collect_paragraph(
                 Destination::Reference(id) => definitions.get(id),
             };
             if let Some(destination) = destination {
-                links.push((link.name.clone(), destination.clone()));
+                links.push((
+                    link.name.clone(),
+                    destination.clone(),
+                    link.source_range.clone(),
+                ));
             }
             continue;
-        }
-        // HTML anchors are already parsed by upstream. Their link marks carry
-        // decoded labels/URLs, including formatting inside the anchor.
-        for (range, mark) in run.mark_runs() {
-            if let Some(link) = &mark.link
-                && let Some(name) = run.text().get(range.clone())
-            {
-                links.push((name.to_owned(), link.url.to_string()));
-            }
-        }
-        if let Some(image) = run.as_image()
-            && let Some(link) = &image.link
-        {
-            links.push((
-                image.alt.as_deref().unwrap_or_default().to_owned(),
-                link.url.to_string(),
-            ));
         }
     }
 }

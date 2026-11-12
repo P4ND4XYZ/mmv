@@ -24,19 +24,21 @@ pub struct LinkCandidate {
     pub target: LinkTarget,
     pub kind: LinkKind,
     pub document_order: usize,
+    /// UTF-8 source bytes in the same document generation as this analysis.
+    pub source_range: Option<Range<usize>>,
 }
 
 /// The adapter supplies links in document order, not viewport order.
 /// Resolution and deduplication do not access the filesystem.
 pub fn candidates(
     document: &Path,
-    links: impl IntoIterator<Item = (String, String)>,
+    links: impl IntoIterator<Item = (String, String, Option<Range<usize>>)>,
 ) -> Vec<LinkCandidate> {
     let mut seen = HashSet::new();
     links
         .into_iter()
         .enumerate()
-        .filter_map(|(order, (display_name, source))| {
+        .filter_map(|(order, (display_name, source, source_range))| {
             let target = resolve_link(document, &source).ok()?;
             // A same-document fragment and an explicit file URL to that
             // fragment denote the same resolved destination.
@@ -76,6 +78,7 @@ pub fn candidates(
                 target,
                 kind,
                 document_order: order,
+                source_range,
             })
         })
         .collect()

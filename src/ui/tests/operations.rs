@@ -517,7 +517,7 @@ fn production_watch_connection_catches_up_a_save_before_registration(cx: &mut Te
     };
     view.read_with(cx, |viewer, _| {
         assert_eq!(
-            viewer.app.document().unwrap().source,
+            viewer.app.document().unwrap().source.as_str(),
             "new body saved before registration"
         )
     });

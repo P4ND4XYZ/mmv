@@ -54,6 +54,58 @@ fn selection_panel_palette_applies_to_input_and_both_row_states_without_overridi
     });
 }
 
+#[gpui_kit::test]
+fn initial_selection_after_subscription_same_id_suppression_none_revival_and_query_guard(
+    cx: &mut TestAppContext,
+) {
+    use super::{Event, SelectionPanel};
+    use gpui_kit::EntityInputHandler as _;
+    use std::{cell::RefCell, rc::Rc};
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let captured = events.clone();
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        let _ = gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+            let palette = Palette::resolve(&Default::default(), Theme::global(cx));
+            let row = Item {
+                id: 42,
+                primary: "One".into(),
+                secondary: "destination".into(),
+                badge: "Test",
+                primary_ranges: vec![],
+                secondary_ranges: vec![],
+            };
+            let panel =
+                cx.new(|cx| SelectionPanel::new(vec![row.clone()], "Empty", palette, window, cx));
+            let subscription = cx.subscribe(&panel, move |_, event, _| match event {
+                Event::SelectionChanged(id) => captured.borrow_mut().push(*id),
+                Event::Confirm(_) => panic!("query/list mismatch must block confirmation"),
+                _ => {}
+            });
+            assert!(
+                events.borrow().is_empty(),
+                "constructor must not emit before subscription"
+            );
+            panel.update(cx, |panel, cx| {
+                panel.activate(cx);
+                panel.set_items(vec![row.clone()], "", cx);
+                panel.set_items(vec![], "", cx);
+                panel.set_items(vec![row], "", cx);
+                panel.input.update(cx, |input, cx| {
+                    input.replace_text_in_range(None, "pending", window, cx)
+                });
+                panel.confirm(cx);
+            });
+            // Keep subscription alive until queued typed notifications are delivered.
+            subscription.detach();
+            panel
+        })
+        .unwrap();
+    });
+    cx.run_until_parked();
+    assert_eq!(*events.borrow(), vec![Some(42), None, Some(42)]);
+}
+
 struct Empty;
 impl Render for Empty {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {

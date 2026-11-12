@@ -365,7 +365,7 @@ fn selection_panel_confirm_then_read_failure_keeps_original_body_distance_and_hi
             assert!(viewer.link_panel.is_none());
             assert_eq!(viewer.app.mode, Mode::Normal);
             assert_eq!(viewer.app.error(), Some("missing destination"));
-            assert_eq!(viewer.app.document().unwrap().source, source);
+            assert_eq!(viewer.app.document().unwrap().source.as_str(), source);
             assert_eq!(viewer.document.distance(cx), distance);
             assert!(viewer.body_focus.is_focused(window));
             assert!(matches!(
