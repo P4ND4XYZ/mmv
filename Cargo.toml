@@ -17,6 +17,7 @@ mlua = { version = "=0.12.2", features = ["lua54", "vendored"] }
 nucleo-matcher = "=0.3.1"
 
 [target.'cfg(windows)'.dependencies]
+tokio = { version = "=1.54.1", features = ["rt", "net", "io-util", "sync", "time", "macros"] }
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Threading"] }
 
 [features]

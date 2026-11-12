@@ -30,6 +30,13 @@ pub(super) struct Handle(pub HANDLE);
 unsafe impl Send for Handle {}
 unsafe impl Sync for Handle {}
 impl Handle {
+    /// Transfer sole ownership to an I/O driver (which also closes on failure).
+    pub fn into_raw(self) -> HANDLE {
+        let raw = self.0;
+        std::mem::forget(self);
+        raw
+    }
+
     pub fn new(raw: HANDLE) -> io::Result<Self> {
         if raw.is_null() || raw == INVALID_HANDLE_VALUE {
             Err(io::Error::last_os_error())

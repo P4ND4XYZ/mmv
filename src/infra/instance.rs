@@ -102,13 +102,15 @@ fn spawn_gui() -> io::Result<()> {
     Ok(())
 }
 
-pub fn connect_or_start(
+pub async fn connect_or_start(
     namespace: &Namespace,
     operation: &ExternalOperation,
 ) -> io::Result<PipeClient> {
-    connect_with(namespace, operation, spawn_gui)
+    connect_with(namespace, operation, spawn_gui).await
 }
-fn connect_with(
+// Run exactly one negotiation at a time on this current_thread runtime: Windows
+// mutex ownership is thread-owned (including across awaits), not task-owned.
+async fn connect_with(
     namespace: &Namespace,
     operation: &ExternalOperation,
     spawn: impl FnOnce() -> io::Result<()>,
@@ -120,7 +122,7 @@ fn connect_with(
         Err(error) => return Err(error),
     }
     if gui_is_alive(namespace)? {
-        return PipeClient::connect(namespace, Deadline::connection(start));
+        return PipeClient::connect(namespace, Deadline::connection(start)).await;
     }
     if !matches!(operation, ExternalOperation::Open(_)) {
         return Err(io::Error::new(
@@ -139,11 +141,7 @@ fn connect_with(
         if let Some(guard) = InstanceGuard::try_acquire(namespace, "startup")? {
             break guard;
         }
-        std::thread::sleep(
-            deadline
-                .remaining(Instant::now())
-                .min(std::time::Duration::from_millis(10)),
-        );
+        deadline.pause().await?;
     };
     // Another CLI may have started a GUI while we waited for arbitration.
     // Recheck both its ownership and endpoint before exercising the startup right.
@@ -155,7 +153,7 @@ fn connect_with(
     if !gui_is_alive(namespace)? {
         spawn()?;
     }
-    let client = PipeClient::connect(namespace, deadline);
+    let client = PipeClient::connect(namespace, deadline).await;
     drop(startup);
     client
 }
@@ -175,6 +173,18 @@ mod tests {
         thread,
         time::Duration,
     };
+
+    fn connect_with(
+        namespace: &Namespace,
+        operation: &ExternalOperation,
+        spawn: impl FnOnce() -> io::Result<()>,
+    ) -> io::Result<PipeClient> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(super::connect_with(namespace, operation, spawn))
+    }
 
     #[test]
     fn real_mutex_lifetime_is_thread_owned_and_released() {

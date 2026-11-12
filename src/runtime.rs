@@ -5,7 +5,7 @@ mod pipe;
 mod watch;
 
 use gpui_kit::{AppContext as _, WindowOptions, assets::Assets};
-use std::{path::PathBuf, sync::Arc, time::Instant};
+use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc, time::Instant};
 
 use crate::{infra, ui};
 use diagram::connect_diagrams;
@@ -19,6 +19,8 @@ pub(crate) use pipe::PipeConnection;
 
 pub(crate) fn run_gui() -> std::io::Result<()> {
     let namespace = infra::Namespace::current_user()?;
+    #[cfg(all(test, feature = "ui-tests"))]
+    let namespace = infra::test_support::process_namespace().unwrap_or(namespace);
     // Thread-owned guard outlives the window, Pipe shutdown and application run.
     let Some(_live) = infra::InstanceGuard::claim_gui(&namespace)? else {
         return Ok(());
@@ -31,6 +33,8 @@ pub(crate) fn run_gui() -> std::io::Result<()> {
     let config_notice = loaded.error.is_some();
     let config = loaded.config;
     let started = Instant::now();
+    let startup_error = Rc::new(RefCell::new(None));
+    let report_error = startup_error.clone();
     gpui_kit::application()
         .with_assets(Assets)
         .with_http_client(Arc::new(reqwest_client::ReqwestClient::new()))
@@ -47,7 +51,7 @@ pub(crate) fn run_gui() -> std::io::Result<()> {
                 }
             })
             .detach();
-            let (_, view) = gpui_kit::open_window(
+            let opened = gpui_kit::open_window(
                 WindowOptions {
                     focus: false,
                     window_min_size: Some(gpui_kit::size(
@@ -72,13 +76,39 @@ pub(crate) fn run_gui() -> std::io::Result<()> {
                         )
                     })
                 },
-            )
-            .expect("failed to open viewer window");
+            );
+            let (_, view) = match opened {
+                Ok(opened) => opened,
+                Err(error) => {
+                    *report_error.borrow_mut() = Some(std::io::Error::other(error.to_string()));
+                    // No window owns the server yet. Reap on the background
+                    // executor and make application quit await that join too.
+                    let mut server = server;
+                    server.request_shutdown();
+                    let mut joining = Some(cx.background_executor().spawn(async move {
+                        server.shutdown();
+                    }));
+                    cx.on_app_quit(move |_| {
+                        let joining = joining.take();
+                        async move {
+                            if let Some(joining) = joining {
+                                joining.await;
+                            }
+                        }
+                    })
+                    .detach();
+                    cx.quit();
+                    return;
+                }
+            };
             connect_document_reads(&view, cx);
             connect_file_tree(&view, cx);
             connect_diagrams(&view, cx);
             connect_watch(&view, cx);
             connect_pipe(&view, server, cx);
         });
-    Ok(())
+    match startup_error.borrow_mut().take() {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }

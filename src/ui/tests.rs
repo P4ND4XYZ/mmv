@@ -620,6 +620,133 @@ fn search_input_and_navigation_use_rendered_japanese_text(cx: &mut TestAppContex
     .unwrap();
 }
 
+// These boundary tests intentionally never advance GPUI's fake clock: transport
+// delivery and pending cleanup must be driven by events, not a polling timer.
+#[cfg(windows)]
+mod pipe_notifications {
+    use super::*;
+    use crate::{app::ExternalOperation, infra, runtime};
+    use std::{sync::mpsc, thread, time::Duration};
+
+    fn pump(cx: &mut TestAppContext, mut ready: impl FnMut() -> bool) {
+        let limit = Instant::now() + Duration::from_secs(5);
+        loop {
+            cx.run_until_parked();
+            if ready() {
+                return;
+            }
+            assert!(Instant::now() < limit, "event-driven Pipe delivery stalled");
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+    fn client(
+        namespace: &infra::Namespace,
+    ) -> (
+        thread::JoinHandle<()>,
+        mpsc::Receiver<std::io::Result<infra::Response>>,
+    ) {
+        let namespace = namespace.clone();
+        let (sender, receiver) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let client =
+                infra::PipeClient::connect(&namespace, infra::Deadline::connection(Instant::now()))
+                    .unwrap();
+            let result = client.request(
+                infra::Request {
+                    id: ExternalRequestId("same-external-id".into()),
+                    operation: ExternalOperation::Open(r"C:\fixtures\never-finishes.md".into()),
+                },
+                infra::test_support::deadline(Duration::from_millis(150)),
+            );
+            sender.send(result).unwrap();
+        });
+        (worker, receiver)
+    }
+    fn stop(cx: &mut TestAppContext, connection: &Rc<RefCell<runtime::PipeConnection>>) {
+        cx.update(|cx| connection.borrow_mut().stop(cx));
+        let joining = connection.borrow_mut().take_joining().unwrap();
+        let done = Rc::new(std::cell::Cell::new(false));
+        let flag = done.clone();
+        cx.update(|cx| {
+            cx.spawn(async move |_| {
+                joining.await;
+                flag.set(true);
+            })
+            .detach()
+        });
+        pump(cx, || done.get());
+        assert!(connection.borrow().is_stopped());
+    }
+    fn capture(
+        cx: &mut TestAppContext,
+        view: &gpui_kit::Entity<Viewer>,
+    ) -> Rc<RefCell<Vec<ReadRequest>>> {
+        let reads = Rc::new(RefCell::new(Vec::new()));
+        let captured = reads.clone();
+        cx.update(|cx| {
+            cx.subscribe(view, move |_, request: &ReadRequest, _| {
+                captured.borrow_mut().push(request.clone())
+            })
+            .detach()
+        });
+        reads
+    }
+
+    #[gpui_kit::test]
+    fn disconnect_before_delivery_preserves_operation_without_storing_dead_reply(
+        cx: &mut TestAppContext,
+    ) {
+        let (_, view) = open(cx, "original".into());
+        let reads = capture(cx, &view);
+        let namespace = infra::test_support::namespace();
+        let server = infra::PipeServer::bind(&namespace).unwrap();
+        let (worker, result) = client(&namespace);
+        pump(cx, || worker.is_finished());
+        worker.join().unwrap();
+        assert_eq!(
+            result.recv().unwrap().unwrap_err().kind(),
+            std::io::ErrorKind::TimedOut
+        );
+        let connection = cx.update(|cx| runtime::connect_pipe(&view, server, cx));
+        pump(cx, || reads.borrow().len() == 1);
+        assert_eq!(connection.borrow().pending_count(), 0);
+        let request = reads.borrow_mut().pop().unwrap();
+        cx.update(|cx| {
+            view.update(cx, |view, cx| {
+                view.complete(success(request.clone(), "still completes".into()), cx)
+            })
+        });
+        view.read_with(cx, |view, _| assert_eq!(view.path, request.path));
+        stop(cx, &connection);
+    }
+
+    #[gpui_kit::test]
+    fn disconnect_after_delivery_releases_pending_without_read_completion_or_clock_tick(
+        cx: &mut TestAppContext,
+    ) {
+        let (_, view) = open(cx, "original".into());
+        let reads = capture(cx, &view);
+        let namespace = infra::test_support::namespace();
+        let connection = cx.update(|cx| {
+            runtime::connect_pipe(&view, infra::PipeServer::bind(&namespace).unwrap(), cx)
+        });
+        let (worker, result) = client(&namespace);
+        pump(cx, || reads.borrow().len() == 1);
+        assert_eq!(connection.borrow().pending_count(), 1);
+        pump(cx, || {
+            worker.is_finished() && connection.borrow().pending_count() == 0
+        });
+        worker.join().unwrap();
+        assert_eq!(
+            result.recv().unwrap().unwrap_err().kind(),
+            std::io::ErrorKind::TimedOut
+        );
+        // No ReadCompletion was delivered. The accepted read is still in app.
+        assert_eq!(reads.borrow().len(), 1);
+        stop(cx, &connection);
+    }
+}
+
 #[gpui_kit::test]
 fn revealing_an_offscreen_match_scrolls_the_real_text_view(cx: &mut TestAppContext) {
     let source = (0..80)

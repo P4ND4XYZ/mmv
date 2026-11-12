@@ -22,10 +22,22 @@ fn main() -> std::process::ExitCode {
         Ok(operation) => operation,
         Err(output) => return print_output(output),
     };
-    let result = (|| -> Result<(), String> {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => return print_output(cli::execution_output(Err(error.to_string()))),
+    };
+    // One CLI negotiation on this thread; never move its InstanceGuard to a worker.
+    let result = runtime.block_on(async {
         let namespace = infra::Namespace::current_user().map_err(|error| error.to_string())?;
-        let client =
-            infra::connect_or_start(&namespace, &operation).map_err(|error| error.to_string())?;
+        // Only a cfg(test) build can isolate the actual process/main startup path.
+        #[cfg(all(test, feature = "ui-tests"))]
+        let namespace = infra::test_support::process_namespace().unwrap_or(namespace);
+        let client = infra::connect_or_start(&namespace, &operation)
+            .await
+            .map_err(|error| error.to_string())?;
         // Independent of app generations. One invocation sends exactly one request.
         let id = app::ExternalRequestId(format!(
             "{}-{}",
@@ -40,9 +52,10 @@ fn main() -> std::process::ExitCode {
                 infra::Request { id, operation },
                 infra::Deadline::response(Instant::now()),
             )
+            .await
             .map_err(|error| error.to_string())?
             .outcome
-    })();
+    });
     print_output(cli::execution_output(result))
 }
 
