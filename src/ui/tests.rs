@@ -1,4 +1,5 @@
 mod config;
+mod copy;
 mod external;
 mod file_tree;
 mod headings;
@@ -93,6 +94,8 @@ fn clicking_local_links_replaces_the_document_and_reload_uses_the_new_path(
     visual.simulate_mouse_down(position, gpui_kit::MouseButton::Right, Default::default());
     visual.simulate_mouse_up(position, gpui_kit::MouseButton::Right, Default::default());
     assert!(requests.borrow().is_empty());
+    // Dismiss the Copy menu before activating the link normally.
+    visual.update(|window, cx| window.press("escape", cx));
     visual.simulate_click(position, Default::default());
     let request = requests
         .borrow_mut()

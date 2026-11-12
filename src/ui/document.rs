@@ -9,7 +9,13 @@ use std::{
 };
 
 use crate::core::HeadingIds;
-use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::{
+    base::TextSelection,
+    component::{
+        ActiveTheme as _,
+        menu::{ContextMenuExt as _, PopupMenuItem},
+    },
+};
 use gpui_kit::{
     base::text::{
         TextView,
@@ -544,29 +550,51 @@ impl Viewer {
             .py_3()
             .when(centered, |body| body.justify_center())
             .child(
-                TextView::new(&self.document.text)
-                    .style(style)
-                    .plugin(MermaidPlugin {
-                        discovered: self.document.discovered_diagrams.clone(),
-                        images: self.document.diagram_images.clone(),
-                    })
-                    .scrollable(true)
+                div()
                     .size_full()
                     .max_w(px(max_width))
-                    .image_source(move |uri| match resolve_image(&path, uri.as_ref()) {
-                        Ok(ImageLocation::File(path)) => path.into(),
-                        Ok(ImageLocation::Url(url)) => ImageSource::from(SharedUri::from(url)),
-                        Err(error) => {
-                            eprintln!("image {uri}: {error}");
-                            // Keep failed/unsupported resources failed; never read them as local paths.
-                            ImageSource::from(uri.clone())
-                        }
-                    })
-                    .on_link_click(move |url, event, window, cx| {
-                        if event.is_right_click() {
-                            return;
-                        }
-                        let _ = weak.update(cx, |this, cx| this.open_link(url, window, cx));
+                    .child(
+                        TextView::new(&self.document.text)
+                            .style(style)
+                            .plugin(MermaidPlugin {
+                                discovered: self.document.discovered_diagrams.clone(),
+                                images: self.document.diagram_images.clone(),
+                            })
+                            .scrollable(true)
+                            .size_full()
+                            .max_w(px(max_width))
+                            .image_source(move |uri| match resolve_image(&path, uri.as_ref()) {
+                                Ok(ImageLocation::File(path)) => path.into(),
+                                Ok(ImageLocation::Url(url)) => {
+                                    ImageSource::from(SharedUri::from(url))
+                                }
+                                Err(error) => {
+                                    eprintln!("image {uri}: {error}");
+                                    // Keep failed/unsupported resources failed; never read them as local paths.
+                                    ImageSource::from(uri.clone())
+                                }
+                            })
+                            .on_link_click(move |url, event, window, cx| {
+                                if event.is_right_click() {
+                                    return;
+                                }
+                                let _ = weak.update(cx, |this, cx| this.open_link(url, window, cx));
+                            }),
+                    )
+                    .context_menu(|menu, window, cx| {
+                        // Snapshot before the popup takes focus or its click clears selection.
+                        let selected = TextSelection::selected_text(window, cx).trim().to_owned();
+                        menu.item(
+                            PopupMenuItem::new("Copy")
+                                .disabled(selected.is_empty())
+                                .on_click(move |_, _, cx| {
+                                    if !selected.is_empty() {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            selected.clone(),
+                                        ));
+                                    }
+                                }),
+                        )
                     }),
             )
             .when(ready, |body| {
