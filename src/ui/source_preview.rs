@@ -276,6 +276,16 @@ impl Render for SourcePreview {
                             })
                         },
                         |_, (lines, height), window, cx| {
+                            for (line, origin) in &lines {
+                                let _ = line.paint_background(
+                                    *origin,
+                                    height,
+                                    TextAlign::Left,
+                                    None,
+                                    window,
+                                    cx,
+                                );
+                            }
                             for (line, origin) in lines {
                                 let _ =
                                     line.paint(origin, height, TextAlign::Left, None, window, cx);

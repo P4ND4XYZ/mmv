@@ -92,6 +92,50 @@ fn frame(cx: &mut TestAppContext, window: AnyWindowHandle) {
 }
 
 #[gpui_kit::test]
+fn selected_link_background_is_painted_and_cleared(cx: &mut TestAppContext) {
+    let source = "before [Link](target.md) after";
+    let start = source.find("[Link]").unwrap();
+    let (window, _, preview) = open(cx, source.into(), start..start + "[Link](target.md)".len());
+    let background = preview.read_with(cx, |preview, _| {
+        gpui_kit::Background::from(
+            preview
+                .palette
+                .get(crate::config::Group::PanelSelected)
+                .bg
+                .opacity(0.35),
+        )
+    });
+    cx.update_window(window, |_, window, _| {
+        let quads = window
+            .painted_quads()
+            .into_iter()
+            .filter(|quad| quad.background == background)
+            .collect::<Vec<_>>();
+        assert_eq!(quads.len(), 1, "paint the selected link's background");
+        let bounds = quads[0].bounds;
+        assert!(bounds.origin.x.0 > 0., "leave the prefix unhighlighted");
+        assert!(bounds.size.width.0 > 0.);
+        assert!(
+            bounds.right().0 < f32::from(window.viewport_size().width) * window.scale_factor(),
+            "highlight the link rather than the full row"
+        );
+    })
+    .unwrap();
+    cx.update(|cx| preview.update(cx, |preview, cx| preview.clear_target(cx)));
+    frame(cx, window);
+    cx.update_window(window, |_, window, _| {
+        assert!(
+            window
+                .painted_quads()
+                .iter()
+                .all(|quad| quad.background != background),
+            "clearing the target removes its background"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn actual_preview_centers_clamps_scrolls_full_source_and_preserves_anchor_on_reflow(
     cx: &mut TestAppContext,
 ) {
