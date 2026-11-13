@@ -624,29 +624,25 @@ fn real_notify_save_and_same_file_source_line_preserve_both_arrival_orders(
                 captured.borrow_mut().push(request.clone())
             })
         });
-        let open_line = |cx: &mut TestAppContext| {
-            cx.update(|cx| {
-                view.update(cx, |viewer, cx| {
-                    let generation = viewer.app.document().unwrap().generation;
-                    let text = viewer.document.text.clone();
-                    let OperationResult::Pending(request) = viewer.request_external(
-                        ExternalOperation::Open {
-                            path: file.0.clone(),
-                            line: std::num::NonZeroU64::new(241),
-                        },
-                        ExternalRequestId("save-line".into()),
-                        cx,
-                    ) else {
-                        panic!("identity check");
-                    };
-                    viewer.complete(crate::infra::read_document(request), cx);
-                    assert_eq!(viewer.app.document().unwrap().generation, generation);
-                    assert_eq!(viewer.document.text, text);
-                })
-            });
+        let open_line = |viewer: &mut Viewer, cx: &mut gpui_kit::Context<Viewer>| {
+            let generation = viewer.app.document().unwrap().generation;
+            let text = viewer.document.text.clone();
+            let OperationResult::Pending(request) = viewer.request_external(
+                ExternalOperation::Open {
+                    path: file.0.clone(),
+                    line: std::num::NonZeroU64::new(241),
+                },
+                ExternalRequestId("save-line".into()),
+                cx,
+            ) else {
+                panic!("identity check");
+            };
+            viewer.complete(crate::infra::read_document(request), cx);
+            assert_eq!(viewer.app.document().unwrap().generation, generation);
+            assert_eq!(viewer.document.text, text);
         };
         if !save_first {
-            open_line(cx);
+            cx.update(|cx| view.update(cx, open_line));
             for _ in 0..6 {
                 frame(cx, window);
             }
@@ -667,24 +663,32 @@ fn real_notify_save_and_same_file_source_line_preserve_both_arrival_orders(
             requests.remove(ix)
         };
         let result = crate::infra::read_document(reload);
-        if save_first {
-            open_line(cx);
-            view.read_with(cx, |viewer, _| {
-                assert!(
-                    viewer.app.is_loading(),
-                    "line confirmation must not cancel saved body"
-                )
-            });
-        }
-        cx.update(|cx| {
+        let departure = cx.update(|cx| {
             view.update(cx, |viewer, cx| {
+                if save_first {
+                    // Deliver the loaded body before layout can finish the line
+                    // request; separate test updates may render between calls.
+                    open_line(viewer, cx);
+                    assert!(
+                        viewer.app.is_loading(),
+                        "line confirmation must not cancel saved body"
+                    );
+                } else {
+                    assert!(viewer.app.position_request().is_none());
+                }
+                let departure = viewer.document.distance(cx);
                 viewer.complete(result, cx);
                 assert_eq!(viewer.app.document().unwrap().source.as_str(), new_source);
                 assert_eq!(
                     viewer.app.position_request().unwrap().target,
-                    PositionTarget::SourceLine(std::num::NonZeroU64::new(241).unwrap())
+                    if save_first {
+                        PositionTarget::SourceLine(std::num::NonZeroU64::new(241).unwrap())
+                    } else {
+                        PositionTarget::Distance(departure)
+                    }
                 );
                 assert_eq!(viewer.app.watch_target(), Some(&target));
+                departure
             })
         });
         for _ in 0..8 {
@@ -699,6 +703,11 @@ fn real_notify_save_and_same_file_source_line_preserve_both_arrival_orders(
                 bounds.bottom() > viewport.top() && bounds.top() < viewport.bottom(),
                 "save_first={save_first}: {bounds:?} / {viewport:?}"
             );
+            if !save_first {
+                // Once the line is applied, save restores live distance instead
+                // of reviving the completed source-line request.
+                assert_eq!(viewer.document.distance(cx), departure);
+            }
             assert!(viewer.app.position_request().is_none());
         });
         let worker = watch.stop();

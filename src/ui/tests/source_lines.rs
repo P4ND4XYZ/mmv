@@ -135,7 +135,9 @@ fn external_source_lines_reveal_paragraph_code_nested_list_and_table(cx: &mut Te
 }
 
 #[gpui_kit::test]
-fn source_line_reapplies_after_reload_resize_and_rejects_old_callbacks(cx: &mut TestAppContext) {
+fn completed_source_line_does_not_resurrect_after_resize_reload_or_old_callbacks(
+    cx: &mut TestAppContext,
+) {
     let source = (0..240)
         .map(|ix| format!("source line {ix} with words 日本語\n"))
         .collect::<String>();
@@ -154,11 +156,16 @@ fn source_line_reapplies_after_reload_resize_and_rejects_old_callbacks(cx: &mut 
         frame(cx, window);
     }
     assert_visible_source(cx, window, &view, start..start + 15);
+    cx.update(|cx| view.update(cx, |viewer, cx| viewer.document.scroll_edge(false, cx)));
+    frame(cx, window);
     cx.simulate_window_resize(window, size(px(420.), px(360.)));
     for _ in 0..8 {
         frame(cx, window);
     }
-    assert_visible_source(cx, window, &view, start..start + 15);
+    view.read_with(cx, |viewer, cx| {
+        assert!(viewer.app.position_request().is_none());
+        assert_eq!(viewer.document.distance(cx), 0.);
+    });
     cx.update(|cx| {
         view.update(cx, |viewer, cx| {
             let crate::app::OperationResult::Pending(request) = viewer.request_operation(
@@ -176,7 +183,10 @@ fn source_line_reapplies_after_reload_resize_and_rejects_old_callbacks(cx: &mut 
     for _ in 0..8 {
         frame(cx, window);
     }
-    assert_visible_source(cx, window, &view, start..start + 15);
+    view.read_with(cx, |viewer, cx| {
+        assert!(viewer.app.position_request().is_none());
+        assert_eq!(viewer.document.distance(cx), 0.);
+    });
 }
 
 #[gpui_kit::test]
@@ -209,6 +219,115 @@ fn repeated_text_uses_source_identity_and_blank_code_lines_reveal_nearby_text(
         frame(cx, window);
     }
     assert_visible_source(cx, window, &view, start..start + 8);
+}
+
+#[gpui_kit::test]
+fn completed_source_line_allows_manual_scroll_across_blocks_and_same_line_is_new(
+    cx: &mut TestAppContext,
+) {
+    let source = (0..240)
+        .map(|ix| format!("paragraph {ix}\n\n"))
+        .collect::<String>();
+    let (window, view) = open(cx, source.clone());
+    frame(cx, window);
+    let first = navigate(cx, &view, 241);
+    for _ in 0..8 {
+        frame(cx, window);
+    }
+    view.read_with(cx, |viewer, _| {
+        assert!(viewer.app.position_request().is_none())
+    });
+    cx.update(|cx| view.update(cx, |viewer, cx| viewer.document.scroll_edge(false, cx)));
+    for _ in 0..8 {
+        frame(cx, window);
+    }
+    view.read_with(cx, |viewer, cx| {
+        assert_eq!(viewer.document.distance(cx), 0.)
+    });
+    cx.update(|cx| view.update(cx, |viewer, cx| viewer.document.scroll(0., 1., cx)));
+    for _ in 0..8 {
+        frame(cx, window);
+    }
+    let start = source.find("paragraph 120\n").unwrap();
+    let second = navigate(cx, &view, 241);
+    assert_ne!(first.serial, second.serial);
+    for _ in 0..8 {
+        frame(cx, window);
+    }
+    assert_visible_source(cx, window, &view, start..start + 13);
+    view.read_with(cx, |viewer, _| {
+        assert!(viewer.app.position_request().is_none())
+    });
+}
+
+#[gpui_kit::test]
+fn pending_source_line_and_relative_move_survive_async_reload(cx: &mut TestAppContext) {
+    let source = (0..240)
+        .map(|ix| format!("line {ix} with words\n"))
+        .collect::<String>();
+    let (window, view) = open(cx, source.clone());
+    frame(cx, window);
+    navigate(cx, &view, 181);
+    for _ in 0..8 {
+        frame(cx, window);
+    }
+    let baseline = view.read_with(cx, |viewer, cx| viewer.document.distance(cx));
+    cx.update(|cx| view.update(cx, |viewer, cx| viewer.document.scroll_edge(false, cx)));
+    frame(cx, window);
+    cx.update(|cx| {
+        view.update(cx, |viewer, cx| {
+            // Install an unlaid-out TextView so the request cannot complete
+            // before the second asynchronous body replacement arrives.
+            let request = viewer.app.open(viewer.path.clone());
+            viewer.complete(success(request, source.clone()), cx);
+            let key = viewer.app.document().unwrap().key.clone();
+            let crate::app::OperationResult::Pending(request) = viewer.request_external(
+                crate::app::ExternalOperation::Open {
+                    path: viewer.path.clone(),
+                    line: std::num::NonZeroU64::new(181),
+                },
+                ExternalRequestId("pending-line".into()),
+                cx,
+            ) else {
+                panic!("identity check");
+            };
+            viewer.complete(
+                crate::app::ReadResponse::Resolved {
+                    request,
+                    key: Ok(key),
+                },
+                cx,
+            );
+            let old = viewer.app.position_request().unwrap().clone();
+            let text = viewer.document.text.clone();
+            let crate::app::OperationResult::Pending(request) = viewer.request_operation(
+                crate::app::DocumentOperation::Reload,
+                crate::app::OperationOrigin::Automatic,
+                None,
+                cx,
+            ) else {
+                panic!("reload");
+            };
+            viewer.request_external(
+                crate::app::ExternalOperation::Scroll(crate::app::ScrollDirection::Down),
+                ExternalRequestId("after-line".into()),
+                cx,
+            );
+            viewer.complete(success(request, source), cx);
+            assert!(matches!(
+                viewer.app.position_request().map(|request| &request.target),
+                Some(crate::app::PositionTarget::SourceLine(_))
+            ));
+            viewer.apply_position_after_layout(&old, &text, cx);
+        })
+    });
+    for _ in 0..10 {
+        frame(cx, window);
+    }
+    view.read_with(cx, |viewer, cx| {
+        assert!(viewer.app.position_request().is_none());
+        assert_eq!(viewer.document.distance(cx), baseline + 20.);
+    });
 }
 
 #[gpui_kit::test]
@@ -412,7 +531,9 @@ fn same_source_line_open_keeps_prompt_and_link_selection_entities(cx: &mut TestA
 }
 
 #[gpui_kit::test]
-fn image_and_mermaid_targets_reapply_after_real_dimension_changes(cx: &mut TestAppContext) {
+fn completed_image_and_mermaid_targets_do_not_resurrect_after_dimension_changes(
+    cx: &mut TestAppContext,
+) {
     let image = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/mmv.png");
     let source = "before\n\n".repeat(80)
         + &format!(
@@ -480,7 +601,10 @@ fn image_and_mermaid_targets_reapply_after_real_dimension_changes(cx: &mut TestA
     for _ in 0..10 {
         frame(cx, window);
     }
-    visible(cx, diagram_start);
+    view.read_with(cx, |viewer, cx| {
+        assert!(viewer.app.position_request().is_none());
+        assert_eq!(viewer.document.distance(cx), 0.);
+    });
 }
 
 #[gpui_kit::test]

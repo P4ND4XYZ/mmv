@@ -329,7 +329,7 @@ fn unread_same_key_cli_open_keeps_reload_and_an_older_body_read_keeps_a_newer_re
 }
 
 #[test]
-fn original_source_line_survives_ack_reload_and_failure_but_not_successful_switch() {
+fn completed_source_line_is_not_restored_by_reload_failure_or_return_to_file() {
     let mut app = loaded();
     let a = external_open(&mut app, "a.md", Some(u64::MAX));
     resolve(&mut app, a, "canonical-a");
@@ -339,28 +339,24 @@ fn original_source_line_survives_ack_reload_and_failure_but_not_successful_switc
     let a = external_open(&mut app, "a.md", None);
     resolve(&mut app, a, "canonical-a");
     finish(&mut app, reload, "canonical-a", 100.);
-    assert_eq!(
-        target(&app),
-        PositionTarget::SourceLine(std::num::NonZeroU64::new(u64::MAX).unwrap())
-    );
+    assert_eq!(target(&app), PositionTarget::Distance(100.));
     let failed = external_open(&mut app, "missing.md", Some(1));
     assert!(matches!(
         app.resolve_at(failed, Err("missing".into()), 0.),
         Some(ReadResolution::Complete(_))
     ));
-    assert_eq!(app.source_line.map(|line| line.get()), Some(u64::MAX));
+    assert_eq!(target(&app), PositionTarget::Distance(100.));
     let b = external_open(&mut app, "b.md", None);
     let ReadResolution::Continue(b) = resolve(&mut app, b, "canonical-b") else {
         panic!();
     };
     finish(&mut app, b, "canonical-b", 0.);
-    assert_eq!(app.source_line, None);
+    assert_eq!(target(&app), PositionTarget::Top);
     let a = external_open(&mut app, "a.md", None);
     let ReadResolution::Continue(a) = resolve(&mut app, a, "canonical-a") else {
         panic!();
     };
     finish(&mut app, a, "canonical-a", 0.);
-    assert_eq!(app.source_line, None);
     assert_eq!(target(&app), PositionTarget::Top);
 }
 
@@ -377,8 +373,41 @@ fn stale_resolutions_still_read_and_reply_but_never_apply_their_source_line() {
     assert_eq!(completion.outcome, Err("missing".into()));
     assert!(!completion.adopted);
     assert!(!completion.current);
-    assert_eq!(app.source_line.map(|line| line.get()), Some(20));
+    assert_eq!(
+        target(&app),
+        PositionTarget::SourceLine(std::num::NonZeroU64::new(20).unwrap())
+    );
     assert!(app.error().is_none());
+}
+
+#[test]
+fn same_line_is_a_new_request_and_only_unapplied_intent_survives_body_replacement() {
+    let mut app = loaded();
+    let a = external_open(&mut app, "a.md", Some(20));
+    resolve(&mut app, a, "canonical-a");
+    let first = app.position_request().unwrap().clone();
+    assert!(app.acknowledge_position(&first));
+    let a = external_open(&mut app, "a.md", Some(20));
+    resolve(&mut app, a, "canonical-a");
+    let second = app.position_request().unwrap().clone();
+    assert_ne!(first.serial, second.serial);
+    assert!(!app.acknowledge_position(&first));
+    for operation in [
+        DocumentOperation::Reload,
+        DocumentOperation::Open("a.md".into()),
+    ] {
+        let request = pending(app.operate(operation, OperationOrigin::Link, 0., None));
+        finish(&mut app, request, "canonical-a", 900.);
+        let carried = app.position_request().unwrap().clone();
+        assert_eq!(carried.target, second.target);
+        assert_eq!(carried.pending_movements, PendingMovementPolicy::Carry);
+        assert!(!app.acknowledge_position(&second));
+    }
+    let carried = app.position_request().unwrap().clone();
+    assert!(app.acknowledge_position(&carried));
+    let reload = read(&mut app, DocumentOperation::Reload);
+    finish(&mut app, reload, "canonical-a", 640.);
+    assert_eq!(target(&app), PositionTarget::Distance(640.));
 }
 
 fn read(app: &mut App, operation: DocumentOperation) -> ReadRequest {

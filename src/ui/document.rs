@@ -60,7 +60,6 @@ pub(super) struct DocumentView {
     resize_distance: Option<f32>,
     heading_reveal: Option<(PositionRequest, u64)>,
     source_reveal: Option<(PositionRequest, u64, f32, u8)>,
-    dimensions: Option<(Size<Pixels>, Vec<Option<Pixels>>)>,
     movements: VecDeque<MovementIntent>,
     started: Instant,
     first_paint: Arc<AtomicBool>,
@@ -121,7 +120,6 @@ impl DocumentView {
             resize_distance: None,
             heading_reveal: None,
             source_reveal: None,
-            dimensions: None,
             movements: VecDeque::new(),
             started,
             first_paint: Arc::new(AtomicBool::new(false)),
@@ -139,7 +137,6 @@ impl DocumentView {
         self.resize_distance = None;
         self.heading_reveal = None;
         self.source_reveal = None;
-        self.dimensions = None;
         match pending_movements {
             PendingMovementPolicy::Carry => {
                 for intent in &mut self.movements {
@@ -571,11 +568,8 @@ impl Viewer {
             .is_some_and(|width| width != window_width)
             && self.app.position_request().is_none()
         {
-            self.app.refresh_source_line();
-            if self.app.position_request().is_none() {
-                let distance = self.document.distance(cx);
-                self.document.resize_distance.get_or_insert(distance);
-            }
+            let distance = self.document.distance(cx);
+            self.document.resize_distance.get_or_insert(distance);
         }
         self.document.pane_width = Some(window_width);
         let ready = self.app.document().is_some_and(|doc| {
@@ -706,31 +700,6 @@ impl Viewer {
                                         return;
                                     }
                                     this.document.layout_serial += 1;
-                                    let list = text.read(cx).list_state();
-                                    let dimensions = (
-                                        list.viewport_bounds().size,
-                                        (0..list.item_count())
-                                            .map(|ix| {
-                                                list.bounds_for_item(ix)
-                                                    .map(|bounds| bounds.size.height)
-                                            })
-                                            .collect(),
-                                    );
-                                    if this
-                                        .document
-                                        .dimensions
-                                        .as_ref()
-                                        .is_some_and(|old| old != &dimensions)
-                                    {
-                                        this.document.source_reveal = None;
-                                        if this.app.position_request().is_none() {
-                                            this.app.refresh_source_line();
-                                            if this.app.position_request().is_some() {
-                                                cx.notify();
-                                            }
-                                        }
-                                    }
-                                    this.document.dimensions = Some(dimensions);
                                     if this.document.layout_ready(cx)
                                         && let Some(distance) = this.document.resize_distance.take()
                                     {

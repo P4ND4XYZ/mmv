@@ -73,7 +73,6 @@ pub struct App {
     mermaid: MermaidState,
     history: History,
     pending_operations: BTreeMap<ReadRequestId, PendingOperation>,
-    source_line: Option<std::num::NonZeroU64>,
     position: Option<PositionRequest>,
     next_position: u64,
     watch_target: Option<WatchTarget>,
@@ -257,14 +256,18 @@ impl App {
     /// Capture the departure distance immediately before replacing the displayed body.
     pub fn complete_at(&mut self, result: ReadResult, distance: f32) -> Option<ReadCompletion> {
         let previous_key = self.document().map(|document| document.key.clone());
-        // A reload may finish before the pending heading has a layout. Preserve
-        // that intent in the new generation rather than capturing the fresh
-        // TextView's zero offset. Once acknowledged, live distance wins again.
-        let pending_heading = self.position.as_ref().and_then(|request| {
-            matches!(request.target, PositionTarget::Heading(_)).then(|| request.target.clone())
+        // A body replacement may finish before a heading or source line has a
+        // layout. Carry only the unapplied intent into the new generation;
+        // after acknowledgement, the live (possibly user-moved) distance wins.
+        let pending_position = self.position.as_ref().and_then(|request| {
+            matches!(
+                request.target,
+                PositionTarget::Heading(_) | PositionTarget::SourceLine(_)
+            )
+            .then(|| request.target.clone())
         });
         let completion = self.document.complete(result)?;
-        self.finish_operation(&completion, previous_key, pending_heading, distance);
+        self.finish_operation(&completion, previous_key, pending_position, distance);
         Some(completion)
     }
 
@@ -272,13 +275,12 @@ impl App {
         &mut self,
         completion: &ReadCompletion,
         previous_key: Option<DocumentKey>,
-        pending_heading: Option<PositionTarget>,
+        pending_position: Option<PositionTarget>,
         distance: f32,
     ) {
         if let Some(operation) = self.pending_operations.remove(&completion.request_id) {
             if completion.current && completion.outcome.is_ok() && !completion.adopted {
                 if let PendingOperation::Open(Some(line)) = operation {
-                    self.source_line = Some(line);
                     self.request_position(
                         PositionTarget::SourceLine(line),
                         PendingMovementPolicy::Replace,
@@ -290,22 +292,18 @@ impl App {
                 let document = self.document().expect("adopted document");
                 let same_document = previous_key.as_ref() == Some(&document.key);
                 let path = document.path.clone();
-                if !same_document {
-                    self.source_line = None;
-                }
                 let (target, pending_movements) = match operation {
                     PendingOperation::Open(Some(line)) => {
                         if !same_document {
                             self.history.push(path, distance);
                         }
-                        self.source_line = Some(line);
                         (
                             PositionTarget::SourceLine(line),
                             PendingMovementPolicy::Replace,
                         )
                     }
                     PendingOperation::Open(None) if same_document => (
-                        pending_heading.unwrap_or(PositionTarget::Distance(distance)),
+                        pending_position.unwrap_or(PositionTarget::Distance(distance)),
                         PendingMovementPolicy::Carry,
                     ),
                     PendingOperation::Open(None) => {
@@ -313,10 +311,7 @@ impl App {
                         (PositionTarget::Top, PendingMovementPolicy::Replace)
                     }
                     PendingOperation::Reload => (
-                        self.source_line
-                            .map(PositionTarget::SourceLine)
-                            .or(pending_heading)
-                            .unwrap_or(PositionTarget::Distance(distance)),
+                        pending_position.unwrap_or(PositionTarget::Distance(distance)),
                         PendingMovementPolicy::Carry,
                     ),
                     PendingOperation::Heading(id) => {
@@ -348,15 +343,6 @@ impl App {
                 self.mermaid.replace_document();
                 self.search.replace_document();
             }
-        }
-    }
-
-    pub fn refresh_source_line(&mut self) {
-        if let Some(line) = self.source_line {
-            self.request_position(
-                PositionTarget::SourceLine(line),
-                PendingMovementPolicy::Replace,
-            );
         }
     }
 

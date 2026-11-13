@@ -71,7 +71,7 @@ U-03では、たとえば`target target`で検索語`target`を確定し、更�
 | ID | 対象 | 期待する振る舞い |
 |---|---|---|
 | D-01 | 操作の分類 | 初回・別ファイル・再読み込み・見出し・履歴で、読み込みの要否、位置方針、履歴の扱いを区別する |
-| D-02 | 再読み込みの距離 | 外部行指定がない場合、開始時240、成功時の置換直前480なら、復元要求は480。開始時の距離へ戻さない |
+| D-02 | 再読み込みの距離 | 未適用の位置要求がない場合、開始時240、成功時の置換直前480なら、復元要求は480。開始時の距離へ戻さない |
 | D-03 | 読み込み失敗 | 文書・履歴を変更せず、新しい文書への位置移動を要求しない |
 | D-04 | 位置要求の世代 | 本文解析・レイアウト待ちの間に別文書へ切り替わった場合、古い位置要求を失効させる |
 | D-05 | 入力元とモード | 外部操作はSearch・Commandでも受け付け、モードの変更や入力の確定・取消を要求しない |
@@ -123,7 +123,7 @@ U-03では、たとえば`target target`で検索語`target`を確定し、更�
 |---|---|
 | `src/cli.rs`内tests | 行なし／行あり、1・大きな正数、0・負数・非整数・表現範囲超過・値欠落・重複、空白／日本語／`--`、ヘルプ、他サブコマンドでの`--line`拒否 |
 | `src/infra/ipc/tests.rs` | 単一openの行指定なし／ありの往復、有無フラグ不正、0・u64欠損・余剰・不正パス・未知opcode・非対応プロトコル版の拒否 |
-| `src/app/operation_tests.rs` | `open_classifies_by_resolved_key_and_reload_uses_replacement_time_distance`を同一openの未読・状態保持と明示reloadの距離復元に分離。確認／読み込み段階、行付き同一／別／初回、失敗、逆順完了、最新serial、A→B→A、元の行番号保持を追加。同一キーの後続リンク読み込み採用後に、旧Reloadの成功・失敗が本文・世代・位置・履歴・エラーを変更せず応答を完了すること、未読CLI確認ならReloadを維持すること、後続Reloadは先行リンク採用で失効しないことを確認 |
+| `src/app/operation_tests.rs` | `open_classifies_by_resolved_key_and_reload_uses_replacement_time_distance`を同一openの未読・状態保持と明示reloadの距離復元に分離。確認／読み込み段階、行付き同一／別／初回、失敗、逆順完了、最新serial、A→B→A、未適用行の保持・完了後の破棄・同一行の新serialを確認。同一キーの後続リンク読み込み採用後に、旧Reloadの成功・失敗が本文・世代・位置・履歴・エラーを変更せず応答を完了すること、未読CLI確認ならReloadを維持すること、後続Reloadは先行リンク採用で失効しないことを確認 |
 | `src/app.rs`内tests | `open always reads`を前提にしたヘルパーを確認／読み込みの明示結果に対応させる。再読み込みを試すテストは`Reload`を使い、Openを再読み込み代用にしない。要求IDごとの完了、検索・Mermaidの状態保持を維持 |
 | `src/core/source_position.rs`内tests | LF／CRLF／BOM除去後／日本語、空・末尾改行・末尾空行、範囲超過、空行の最近傍と同距離、ブロック境界、UTF-8境界。パーサーに依存しない範囲計算を値で検証 |
 
@@ -133,14 +133,14 @@ U-03では、たとえば`target target`で検索語`target`を確定し、更�
 |---|---|
 | `src/infra/document.rs`内tests | 実ファイルの同一性確認と本文読み込み。表示後に不正UTF-8へ変更し、別表記のCLI openが本文を読まず成功する一方、Reloadは失敗すること。削除・確認失敗では表示保持。既存ツリー検査も回帰確認 |
 | `src/ui/tests/external.rs` | 同一openの既存再読み込み期待を未読・Entity／世代／位置保持に変更。行付き移動、可視範囲内の不動、Search／Command／ツリーフォーカス／パネル維持、既存の未適用スクロール順序 |
-| `src/ui/tests/source_lines.rs`、`src/ui/tests.rs` | 本物のTextViewで段落・入れ子リスト・表・長いコード・画像・Mermaid・空行・空文書・末尾超過を表示。長いブロック内の対象行、同じ文字列の反復、古いEntity／世代／serial拒否、幅と寸法変更後の再適用。テスト登録を追加 |
-| `src/ui/tests/operations.rs` | 保存と行指定の順序表を決定的に再現し、監視再読み込みが連続openで失効しないこと、更新後の実表示位置、指定なしの距離復元の維持を確認。`real_notify_save_and_same_file_source_line_preserve_both_arrival_orders`では実ファイル・canonical同一性・notify worker・app・TextViewを接続し、通知配送と読込結果配送だけを制御する。保存通知→同一行指定→読込完了、および行指定→保存更新を実行し、最新本文・行指定・監視維持と対応ブロックの可視性を確認する。`real_save_uses_reload_distance_and_preserves_search_command_input`は行指定なしの回帰として残す |
+| `src/ui/tests/source_lines.rs`、`src/ui/tests.rs` | 本物のTextViewで段落・入れ子リスト・表・長いコード・画像・Mermaid・空行・空文書・末尾超過を表示。長いブロック内の対象行、同じ文字列の反復、古いEntity／世代／serial拒否、完了後にブロックをまたいで手動スクロールでき、同じ行の新要求は適用され、リサイズ・再読み込み・画像寸法変更で完了済み指定が復活しないこと。未適用行と後続相対移動が非同期本文置換をまたぐこと。テスト登録を追加 |
+| `src/ui/tests/operations.rs` | 保存と行指定の順序表を決定的に再現し、監視再読み込みが連続openで失効しないこと、更新後の実表示位置、指定なしの距離復元の維持を確認。`real_notify_save_and_same_file_source_line_preserve_both_arrival_orders`では実ファイル・canonical同一性・notify worker・app・TextViewを接続し、通知配送と読込結果配送だけを制御する。保存通知→同一行指定→読込完了では未適用行を引き継ぎ、行指定の適用完了→保存更新では置換直前の距離を復元する。最新本文・監視維持と対応位置を確認する。`real_save_uses_reload_distance_and_preserves_search_command_input`は行指定なしの回帰として残す |
 | `src/ui/tests/headings.rs`、`history.rs` | 行移動待ち中のリンク・履歴の距離取得、後続操作との受付順、同一openで履歴が増えないこと。見出し機能自体は維持 |
 | `src/ui/tests/production.rs` | 実Pipe→Viewer→実ファイル→TextViewの接続。確認だけの応答、段階をまたぐ応答、要求ID衝突、逆順完了、切断時の応答先解放、行指定付き起動後の表示 |
 | `src/infra/instance.rs`内tests、`scripts/probe-production.ps1` | 操作型変更への対応。必要なプロセス検証で行付きopenの未起動からの起動とGUIを閉じた後の再起動、終了コードを追加 |
 | `src/ui/source_preview/tests.rs`、`src/ui/tests/source_preview.rs` | 索引共通化時に末尾行・CRLF・日本語・折り返し・既存強調が変わらないことを確認 |
 
-単体では時刻・完了順・キー・世代を入力し、UIの可視性は実レイアウトで確認します。TextView内のテキストでは、viewport内でマウス選択した実ソース範囲と指定行の範囲の交差を確認し、反復する同じ文章でも別の出現を成功にしません。折り返しで長いソース行の全文を表示できることは要求しません。表はセルが選択を所有するため、可視行内の選択で補います。画像・Mermaidでは対応ブロックの実測boundsとviewportの交差を確認し、PNGによる実寸法変更後も再適用を確認します。`reveal_range`の呼び出し回数だけでは表示の成功を検証した扱いにしません。ファイル・Pipeのテストは一意な一時領域／namespaceを使用して後始末します。実IME・OSフォーカス・DPI・画像の遅延ロードはWindows実機で補います。
+単体では時刻・完了順・キー・世代を入力し、UIの可視性は実レイアウトで確認します。TextView内のテキストでは、viewport内でマウス選択した実ソース範囲と指定行の範囲の交差を確認し、反復する同じ文章でも別の出現を成功にしません。折り返しで長いソース行の全文を表示できることは要求しません。表はセルが選択を所有するため、可視行内の選択で補います。画像・Mermaidでは対応ブロックの実測boundsとviewportの交差を確認し、PNGによる実寸法変更後も、完了済み指定が復活しないことを確認します。`reveal_range`の呼び出し回数だけでは表示の成功を検証した扱いにしません。ファイル・Pipeのテストは一意な一時領域／namespaceを使用して後始末します。実IME・OSフォーカス・DPI・画像の遅延ロードはWindows実機で補います。
 
 ### 行移動APIの先行検証
 
