@@ -9,7 +9,6 @@ pub(super) async fn run(
     sender: mpsc::Sender<stdio::Result<Incoming>>,
     mut stopped: watch::Receiver<bool>,
     disconnected: Arc<Notify>,
-    #[cfg(test)] active: Arc<std::sync::atomic::AtomicUsize>,
 ) {
     let mut tasks = JoinSet::new();
     let mut next_id = 0u64;
@@ -44,11 +43,7 @@ pub(super) async fn run(
                 next_id = id;
                 let peer = Arc::new(Peer { id: ConnectionId(id), alive: AtomicBool::new(true), disconnected: disconnected.clone() });
                 let incoming = sender.clone();
-                #[cfg(test)]
-                let count = Active::new(active.clone());
                 tasks.spawn(async move {
-                    #[cfg(test)]
-                    let _count = count;
                     let _ = serve(pipe, incoming, peer).await;
                 });
             }
@@ -58,20 +53,4 @@ pub(super) async fn run(
     // partial I/O), then reap their completion before letting the runtime end.
     drop(next);
     tasks.shutdown().await;
-}
-
-#[cfg(test)]
-struct Active(Arc<std::sync::atomic::AtomicUsize>);
-#[cfg(test)]
-impl Active {
-    fn new(count: Arc<std::sync::atomic::AtomicUsize>) -> Self {
-        count.fetch_add(1, Ordering::SeqCst);
-        Self(count)
-    }
-}
-#[cfg(test)]
-impl Drop for Active {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
-    }
 }

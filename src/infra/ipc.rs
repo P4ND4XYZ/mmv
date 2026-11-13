@@ -95,8 +95,6 @@ pub struct PipeServer {
     disconnected: Arc<Notify>,
     stop: watch::Sender<bool>,
     worker: Option<JoinHandle<()>>,
-    #[cfg(test)]
-    active: Arc<std::sync::atomic::AtomicUsize>,
 }
 impl PipeServer {
     /// Ready means the dedicated current_thread runtime AND the first secure
@@ -109,10 +107,6 @@ impl PipeServer {
         let disconnected = Arc::new(Notify::new());
         let worker_disconnected = disconnected.clone();
         let (ready, ready_rx) = std_mpsc::sync_channel(1);
-        #[cfg(test)]
-        let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        #[cfg(test)]
-        let worker_active = active.clone();
         let worker = thread::Builder::new()
             .name("mmv-pipe-runtime".into())
             .spawn(move || {
@@ -137,16 +131,7 @@ impl PipeServer {
                     if ready.send(Ok(())).is_err() {
                         return;
                     }
-                    service::run(
-                        namespace,
-                        first,
-                        sender,
-                        stopped,
-                        worker_disconnected,
-                        #[cfg(test)]
-                        worker_active,
-                    )
-                    .await;
+                    service::run(namespace, first, sender, stopped, worker_disconnected).await;
                 });
             })?;
         match ready_rx.recv() {
@@ -155,8 +140,6 @@ impl PipeServer {
                 disconnected,
                 stop,
                 worker: Some(worker),
-                #[cfg(test)]
-                active,
             }),
             result => {
                 let _ = worker.join();

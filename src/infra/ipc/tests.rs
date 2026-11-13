@@ -1,10 +1,7 @@
 use super::*;
 use crate::app::{ExternalOperation, ExternalRequestId, ScrollDirection};
 use std::{os::windows::io::AsRawHandle, time::Duration};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    time::timeout,
-};
+use tokio::{io::AsyncWriteExt, time::timeout};
 
 fn request(id: &str) -> Request {
     Request {
@@ -31,7 +28,7 @@ async fn receive(server: &mut PipeServer) -> Incoming {
 async fn wait_until(mut predicate: impl FnMut() -> bool) {
     timeout(Duration::from_secs(3), async {
         while !predicate() {
-            tokio::time::sleep(Duration::from_millis(2)).await;
+            tokio::task::yield_now().await;
         }
     })
     .await
@@ -47,6 +44,48 @@ fn respond(incoming: Incoming, outcome: Result<(), String>) -> stdio::Result<()>
         id: incoming.request.id,
         outcome,
     })
+}
+fn assert_closed_error(error: stdio::Error) {
+    assert!(
+        matches!(
+            error.kind(),
+            stdio::ErrorKind::UnexpectedEof | stdio::ErrorKind::BrokenPipe
+        ),
+        "expected peer closure, got {error:?}"
+    );
+}
+async fn assert_closed(client: &mut PipeClient) {
+    assert_closed_error(
+        io::read_exact(&mut client.pipe, &mut [0], stage())
+            .await
+            .unwrap_err(),
+    );
+}
+async fn peer_disconnected(reply: &Reply, notifications: &Notify) {
+    timeout(Duration::from_secs(3), async {
+        // Notifications coalesce and may include earlier peers. Liveness, not
+        // the number of permits, identifies this particular departure.
+        while reply.is_alive() {
+            notifications.notified().await;
+        }
+    })
+    .await
+    .expect("peer did not disconnect before test deadline");
+}
+async fn round_trip(server: &mut PipeServer, namespace: &Namespace, id: &str) {
+    let client = PipeClient::connect(namespace, stage()).await.unwrap();
+    let expected = request(id);
+    let worker = tokio::spawn(client.request(expected.clone(), stage()));
+    let incoming = receive(server).await;
+    assert_eq!(incoming.request, expected);
+    respond(incoming, Ok(())).unwrap();
+    assert_eq!(
+        worker.await.unwrap().unwrap(),
+        Response {
+            id: expected.id,
+            outcome: Ok(())
+        }
+    );
 }
 
 #[test]
@@ -201,13 +240,17 @@ async fn silent_client_does_not_block_accept_and_disconnect_releases_reply_waite
     let mut client = PipeClient::connect(&namespace, stage()).await.unwrap();
     send_raw(&mut client, "disconnected").await;
     let incoming = receive(&mut server).await;
-    wait_until(|| server.active.load(Ordering::SeqCst) == 2).await;
     drop(client);
-    wait_until(|| server.active.load(Ordering::SeqCst) == 1).await;
-    assert!(!incoming.reply.is_alive());
-    assert!(respond(incoming, Ok(())).is_err());
-    drop(silent);
-    wait_until(|| server.active.load(Ordering::SeqCst) == 0).await;
+    peer_disconnected(&incoming.reply, &server.disconnect_notifications()).await;
+    assert_eq!(
+        respond(incoming, Ok(())).unwrap_err().kind(),
+        stdio::ErrorKind::BrokenPipe
+    );
+    let worker = tokio::spawn(silent.request(request("formerly-silent"), stage()));
+    let incoming = receive(&mut server).await;
+    assert_eq!(incoming.request.id.0, "formerly-silent");
+    respond(incoming, Ok(())).unwrap();
+    assert_eq!(worker.await.unwrap().unwrap().outcome, Ok(()));
 }
 
 // Start serve only after a complete request (and its invalid tail) is readable.
@@ -241,7 +284,7 @@ async fn already_readable_extra_byte_is_rejected_before_dispatch() {
         "invalid request reached dispatcher"
     );
     assert!(!peer.alive.load(Ordering::Acquire));
-    assert!(io::read_frame(&mut client.pipe, stage()).await.is_err());
+    assert_closed(&mut client).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -297,9 +340,12 @@ async fn extra_data_during_response_wait_closes_connection_and_notifies_without_
     )
     .await
     .unwrap();
-    wait_until(|| !incoming.reply.is_alive()).await;
-    assert!(respond(incoming, Ok(())).is_err());
-    assert!(io::read_frame(&mut client.pipe, stage()).await.is_err());
+    assert!(!incoming.reply.is_alive());
+    assert_eq!(
+        respond(incoming, Ok(())).unwrap_err().kind(),
+        stdio::ErrorKind::BrokenPipe
+    );
+    assert_closed(&mut client).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -319,7 +365,7 @@ async fn real_pipe_rejects_bad_boundaries_and_truncated_requests_without_dispatc
         if bytes.len() >= 4 && u32::from_le_bytes(bytes[..4].try_into().unwrap()) == 9 {
             drop(client);
         } else {
-            assert!(io::read_frame(&mut client.pipe, stage()).await.is_err());
+            assert_closed(&mut client).await;
         }
     }
     let mut client = PipeClient::connect(&namespace, stage()).await.unwrap();
@@ -342,17 +388,20 @@ async fn timeout_closes_only_client_wait_and_never_resends_or_cancels_app_operat
         worker.await.unwrap().unwrap_err().kind(),
         stdio::ErrorKind::TimedOut
     );
-    wait_until(|| server.active.load(Ordering::SeqCst) == 0).await;
-    assert!(respond(incoming, Ok(())).is_err());
+    peer_disconnected(&incoming.reply, &server.disconnect_notifications()).await;
+    assert_eq!(
+        respond(incoming, Ok(())).unwrap_err().kind(),
+        stdio::ErrorKind::BrokenPipe
+    );
     assert!(server.incoming.as_mut().unwrap().try_recv().is_err());
-    assert!(PipeClient::connect(&namespace, stage()).await.is_ok());
+    round_trip(&mut server, &namespace, "after-timeout").await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn shutdown_cancels_pending_accept_reads_and_app_response_waits_and_joins() {
     let namespace = Namespace::isolated();
     let mut server = PipeServer::bind(&namespace).unwrap();
-    let silent = PipeClient::connect(&namespace, stage()).await.unwrap();
+    let mut silent = PipeClient::connect(&namespace, stage()).await.unwrap();
     let mut client = PipeClient::connect(&namespace, stage()).await.unwrap();
     send_raw(&mut client, "waiting").await;
     let incoming = receive(&mut server).await;
@@ -360,9 +409,13 @@ async fn shutdown_cancels_pending_accept_reads_and_app_response_waits_and_joins(
     server.shutdown();
     server.shutdown();
     assert!(start.elapsed() < Duration::from_secs(2));
-    assert_eq!(server.active.load(Ordering::SeqCst), 0);
-    assert!(respond(incoming, Ok(())).is_err());
-    drop((silent, client));
+    assert!(!incoming.reply.is_alive());
+    assert_eq!(
+        respond(incoming, Ok(())).unwrap_err().kind(),
+        stdio::ErrorKind::BrokenPipe
+    );
+    assert_closed(&mut silent).await;
+    assert_closed(&mut client).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -444,7 +497,14 @@ async fn preaccept_disconnect_and_cancelled_idle_accept_are_rearmed_deterministi
     drop(pipe);
     // Tokio's connect future is cancellation-safe, and the service replaces a
     // pre-disconnected instance without ever relinquishing the secure pipe name.
-    assert!(short().until(replacement.connect()).await.is_err());
+    assert_eq!(
+        short()
+            .until(replacement.connect())
+            .await
+            .unwrap_err()
+            .kind(),
+        stdio::ErrorKind::TimedOut
+    );
     let worker = tokio::spawn(async move {
         replacement.connect().await.unwrap();
         let mut replacement = replacement;
@@ -487,7 +547,7 @@ async fn partial_read_timeout_closes_connection_without_restarting_frame() {
         stdio::ErrorKind::TimedOut
     );
     drop(pipe);
-    assert!(client.pipe.read_u8().await.is_err());
+    assert_closed(&mut client).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -499,11 +559,10 @@ async fn shutdown_releases_response_receipt_wait_without_flush() {
     respond(receive(&mut server).await, Ok(())).unwrap();
     let payload = io::read_frame(&mut client.pipe, stage()).await.unwrap();
     assert_eq!(Response::decode(&payload).unwrap().outcome, Ok(()));
-    assert_eq!(server.active.load(Ordering::SeqCst), 1);
     let start = Instant::now();
     server.shutdown();
     assert!(start.elapsed() < Duration::from_secs(2));
-    assert_eq!(server.active.load(Ordering::SeqCst), 0);
+    assert_closed(&mut client).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -586,7 +645,7 @@ async fn reply_id_mismatch_does_not_complete_another_request() {
             .kind(),
         stdio::ErrorKind::InvalidData
     );
-    assert!(worker.await.unwrap().is_err());
+    assert_closed_error(worker.await.unwrap().unwrap_err());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -601,12 +660,15 @@ async fn full_request_queue_rejects_new_request_and_disconnect_notification_is_n
         send_raw(&mut client, &format!("queued-{index}")).await;
         wait_until(|| server.incoming.as_ref().unwrap().len() == index + 1).await;
         drop(client);
-        wait_until(|| server.active.load(Ordering::SeqCst) == 0).await;
+        // Consume each departure before creating another peer; the final one
+        // must wake us even while the request queue is completely full.
+        timeout(Duration::from_secs(3), notifications.notified())
+            .await
+            .unwrap();
     }
     let mut rejected = PipeClient::connect(&namespace, stage()).await.unwrap();
     send_raw(&mut rejected, "rejected").await;
-    assert!(io::read_frame(&mut rejected.pipe, stage()).await.is_err());
-    wait_until(|| server.active.load(Ordering::SeqCst) == 0).await;
+    assert_closed(&mut rejected).await;
     assert_eq!(server.incoming.as_ref().unwrap().len(), CAPACITY);
     timeout(Duration::from_secs(1), notifications.notified())
         .await
@@ -617,48 +679,112 @@ async fn full_request_queue_rejects_new_request_and_disconnect_notification_is_n
         assert!(!incoming.reply.is_alive());
     }
     assert!(server.incoming.as_mut().unwrap().try_recv().is_err());
-    let mut next = PipeClient::connect(&namespace, stage()).await.unwrap();
-    send_raw(&mut next, "next").await;
-    assert_eq!(receive(&mut server).await.request.id.0, "next");
+    round_trip(&mut server, &namespace, "next").await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn connection_limit_rejects_without_spawning_waiters_and_shutdown_reaps_all() {
+async fn connection_limit_rejects_overflow_and_reuses_disconnected_capacity() {
     let namespace = Namespace::isolated();
     let mut server = PipeServer::bind(&namespace).unwrap();
+    let notifications = server.disconnect_notifications();
     let mut clients = Vec::new();
-    for _ in 0..CAPACITY {
-        clients.push(PipeClient::connect(&namespace, stage()).await.unwrap());
+    let mut accepted = Vec::new();
+    for index in 0..CAPACITY {
+        let mut client = PipeClient::connect(&namespace, stage()).await.unwrap();
+        let id = format!("live-{index}");
+        send_raw(&mut client, &id).await;
+        let incoming = receive(&mut server).await;
+        assert_eq!(incoming.request.id.0, id);
+        clients.push(client);
+        accepted.push(incoming);
     }
-    wait_until(|| server.active.load(Ordering::SeqCst) == CAPACITY).await;
+    assert!(accepted.iter().all(|incoming| incoming.reply.is_alive()));
     let mut excess = PipeClient::connect(&namespace, stage()).await.unwrap();
-    assert!(io::read_frame(&mut excess.pipe, stage()).await.is_err());
-    assert_eq!(server.active.load(Ordering::SeqCst), CAPACITY);
+    // Reject before the 5-second request-read timeout; an admitted silent
+    // connection timing out must not be mistaken for capacity rejection.
+    timeout(Duration::from_secs(2), assert_closed(&mut excess))
+        .await
+        .expect("overflow connection was not promptly rejected");
+    assert!(server.incoming.as_mut().unwrap().try_recv().is_err());
+
+    drop(clients.pop().unwrap());
+    let departed = accepted.pop().unwrap();
+    peer_disconnected(&departed.reply, &notifications).await;
+    assert_eq!(
+        respond(departed, Ok(())).unwrap_err().kind(),
+        stdio::ErrorKind::BrokenPipe
+    );
+
+    timeout(Duration::from_secs(3), async {
+        loop {
+            // Departure is published before JoinSet reaping. A connection may
+            // still be rejected in that interval; only dispatch AND a complete
+            // response prove that the released capacity is reusable.
+            let client = PipeClient::connect(&namespace, stage()).await.unwrap();
+            let response = client.request(request("replacement"), stage());
+            tokio::pin!(response);
+            tokio::select! {
+                incoming = receive(&mut server) => {
+                    assert_eq!(incoming.request.id.0, "replacement");
+                    respond(incoming, Ok(())).unwrap();
+                    let response = response.await.unwrap();
+                    assert_eq!(response.id.0, "replacement");
+                    assert_eq!(response.outcome, Ok(()));
+                    break;
+                }
+                result = &mut response => {
+                    assert_closed_error(result.unwrap_err());
+                }
+            }
+        }
+    })
+    .await
+    .expect("released connection capacity was not reusable");
+    assert!(accepted.iter().all(|incoming| incoming.reply.is_alive()));
     server.shutdown();
-    assert_eq!(server.active.load(Ordering::SeqCst), 0);
-    drop(clients);
+    for incoming in accepted {
+        assert!(!incoming.reply.is_alive());
+        assert_eq!(
+            respond(incoming, Ok(())).unwrap_err().kind(),
+            stdio::ErrorKind::BrokenPipe
+        );
+    }
+    for client in &mut clients {
+        assert_closed(client).await;
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn completion_disconnect_race_never_leaves_a_reply_or_connection_task() {
+async fn completion_disconnect_race_notifies_and_keeps_accepting_requests() {
     let namespace = Namespace::isolated();
     let mut server = PipeServer::bind(&namespace).unwrap();
-    for iteration in 0..32 {
+    let notifications = server.disconnect_notifications();
+    for iteration in 0..CAPACITY * 2 {
         let mut client = PipeClient::connect(&namespace, stage()).await.unwrap();
         send_raw(&mut client, "colliding-external-id").await;
         let incoming = receive(&mut server).await;
         if iteration % 2 == 0 {
             drop(client);
-            wait_until(|| !incoming.reply.is_alive()).await;
-            assert!(respond(incoming, Ok(())).is_err());
+            timeout(Duration::from_secs(3), notifications.notified())
+                .await
+                .unwrap();
+            assert!(!incoming.reply.is_alive());
+            assert_eq!(
+                respond(incoming, Ok(())).unwrap_err().kind(),
+                stdio::ErrorKind::BrokenPipe
+            );
         } else {
-            // A completion and peer departure can be ready on the same runtime
-            // turn. Either send result is legal; neither may retain a worker.
+            // Either completion or departure may win. Consume exactly this
+            // peer's notification before the next iteration, avoiding stale
+            // permits and coalescing across different connections.
             let _ = respond(incoming, Ok(()));
             drop(client);
+            timeout(Duration::from_secs(3), notifications.notified())
+                .await
+                .unwrap();
         }
-        wait_until(|| server.active.load(Ordering::SeqCst) == 0).await;
     }
+    round_trip(&mut server, &namespace, "after-race").await;
 }
 
 #[test]
