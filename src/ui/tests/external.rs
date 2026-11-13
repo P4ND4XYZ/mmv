@@ -175,13 +175,29 @@ fn external_open_and_history_wait_for_reads_and_keep_search_command_and_focus(
         let original = view.read_with(cx, |viewer, _| viewer.path.clone());
         let other = original.with_file_name("external 日本語.md");
         for (operation, target, distance) in [
-            (ExternalOperation::Open(other.clone()), other.clone(), 0.),
+            (
+                ExternalOperation::Open {
+                    path: other.clone(),
+                    line: None,
+                },
+                other.clone(),
+                0.,
+            ),
             (ExternalOperation::Back, original.clone(), 480.),
             (ExternalOperation::Forward, other.clone(), 480.),
-            (ExternalOperation::Open(other.clone()), other.clone(), 480.),
+            (
+                ExternalOperation::Open {
+                    path: other.clone(),
+                    line: None,
+                },
+                other.clone(),
+                480.,
+            ),
         ] {
             let id = ExternalRequestId(format!("{operation:?}"));
             let previous = view.read_with(cx, |viewer, _| viewer.path.clone());
+            let same_open =
+                matches!(operation, ExternalOperation::Open { .. }) && previous == target;
             let result = cx.update(|cx| {
                 view.update(cx, |viewer, cx| {
                     viewer
@@ -214,7 +230,7 @@ fn external_open_and_history_wait_for_reads_and_keep_search_command_and_focus(
             let completion = completions.borrow_mut().pop().unwrap();
             assert_eq!(completion.response_to, Some(id));
             assert_eq!(completion.outcome, Ok(()));
-            assert!(completion.adopted);
+            assert_eq!(completion.adopted, !same_open);
             cx.update_window(window, |_, window, cx| {
                 view.read_with(cx, |viewer, cx| {
                     assert_eq!(viewer.path, target);
@@ -251,7 +267,10 @@ fn external_open_and_history_wait_for_reads_and_keep_search_command_and_focus(
         cx.update(|cx| {
             view.update(cx, |viewer, cx| {
                 let OperationResult::Pending(request) = viewer.request_external(
-                    ExternalOperation::Open(original.with_file_name("missing.md")),
+                    ExternalOperation::Open {
+                        path: original.with_file_name("missing.md"),
+                        line: None,
+                    },
                     ExternalRequestId("failed".into()),
                     cx,
                 ) else {
@@ -294,7 +313,10 @@ fn external_bottom_after_adoption_is_not_overwritten_by_pending_top(cx: &mut Tes
     cx.update(|cx| {
         view.update(cx, |viewer, cx| {
             let OperationResult::Pending(request) = viewer.request_external(
-                ExternalOperation::Open(viewer.path.with_file_name("before-layout.md")),
+                ExternalOperation::Open {
+                    path: viewer.path.with_file_name("before-layout.md"),
+                    line: None,
+                },
                 ExternalRequestId("open-before-layout".into()),
                 cx,
             ) else {
@@ -359,11 +381,21 @@ fn movements_before_layout_follow_top_and_distance_and_are_consumed_once(cx: &mu
                 } else {
                     viewer.path.with_file_name("new.md")
                 };
-                let OperationResult::Pending(request) = viewer.request_external(
-                    ExternalOperation::Open(path),
-                    ExternalRequestId("read".into()),
-                    cx,
-                ) else {
+                let result = if reload {
+                    viewer.request_operation(
+                        DocumentOperation::Reload,
+                        OperationOrigin::External,
+                        Some(ExternalRequestId("read".into())),
+                        cx,
+                    )
+                } else {
+                    viewer.request_external(
+                        ExternalOperation::Open { path, line: None },
+                        ExternalRequestId("read".into()),
+                        cx,
+                    )
+                };
+                let OperationResult::Pending(request) = result else {
                     panic!("read required");
                 };
                 viewer.complete(super::success(request, source.clone()), cx);
@@ -501,7 +533,10 @@ fn newer_document_and_same_generation_heading_supersede_unapplied_movements(
         cx.update(|cx| {
             view.update(cx, |viewer, cx| {
                 let OperationResult::Pending(request) = viewer.request_external(
-                    ExternalOperation::Open(viewer.path.with_file_name("first.md")),
+                    ExternalOperation::Open {
+                        path: viewer.path.with_file_name("first.md"),
+                        line: None,
+                    },
                     ExternalRequestId("first".into()),
                     cx,
                 ) else {
@@ -520,7 +555,10 @@ fn newer_document_and_same_generation_heading_supersede_unapplied_movements(
                 );
                 if navigation == 0 {
                     let OperationResult::Pending(request) = viewer.request_external(
-                        ExternalOperation::Open(viewer.path.with_file_name("second.md")),
+                        ExternalOperation::Open {
+                            path: viewer.path.with_file_name("second.md"),
+                            line: None,
+                        },
                         ExternalRequestId("second".into()),
                         cx,
                     ) else {
@@ -606,7 +644,10 @@ fn replacement_keeps_unapplied_movement(
     cx.update(|cx| {
         view.update(cx, |viewer, cx| {
             let OperationResult::Pending(request) = viewer.request_external(
-                ExternalOperation::Open(viewer.path.with_file_name("before-reload.md")),
+                ExternalOperation::Open {
+                    path: viewer.path.with_file_name("before-reload.md"),
+                    line: None,
+                },
                 ExternalRequestId("initial".into()),
                 cx,
             ) else {
@@ -630,7 +671,7 @@ fn replacement_keeps_unapplied_movement(
                     viewer.path.clone()
                 };
                 viewer.request_external(
-                    ExternalOperation::Open(path),
+                    ExternalOperation::Open { path, line: None },
                     ExternalRequestId("replacement".into()),
                     cx,
                 );

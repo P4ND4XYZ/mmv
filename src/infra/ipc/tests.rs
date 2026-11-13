@@ -73,12 +73,19 @@ fn fixed_stage_deadlines_use_supplied_time_without_retry_extension() {
 #[test]
 fn protocol_round_trips_every_public_operation_and_failure_reason() {
     let mut operations = vec![
-        ExternalOperation::Open(r"C:\日本語 space\memo.md".into()),
+        ExternalOperation::Open {
+            path: r"C:\日本語 space\memo.md".into(),
+            line: None,
+        },
         ExternalOperation::Top,
         ExternalOperation::Bottom,
         ExternalOperation::Back,
         ExternalOperation::Forward,
     ];
+    operations.push(ExternalOperation::Open {
+        path: r"C:\日本語 space\memo.md".into(),
+        line: std::num::NonZeroU64::new(u64::MAX),
+    });
     for direction in [
         ScrollDirection::Down,
         ScrollDirection::Up,
@@ -113,13 +120,13 @@ fn protocol_round_trips_every_public_operation_and_failure_reason() {
 #[test]
 fn protocol_rejects_versions_operations_trailing_bytes_and_invalid_fields() {
     let encoded = request("a").encode().unwrap();
-    assert_eq!(&encoded[..], &[9, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, b'a', 7]);
+    assert_eq!(&encoded[..], &[9, 0, 0, 0, 2, 0, 1, 1, 0, 0, 0, b'a', 7]);
     for bytes in [
         vec![],
-        vec![2, 0, 1],
-        vec![1, 0, 3],
-        vec![1, 0, 1, 255, 255, 255, 255],
-        vec![1, 0, 1, 1, 0, 0, 0, 0xff, 7],
+        vec![1, 0, 1],
+        vec![2, 0, 3],
+        vec![2, 0, 1, 255, 255, 255, 255],
+        vec![2, 0, 1, 1, 0, 0, 0, 0xff, 7],
     ] {
         assert!(Request::decode(&bytes).is_err());
     }
@@ -135,7 +142,10 @@ fn protocol_rejects_versions_operations_trailing_bytes_and_invalid_fields() {
     assert!(
         Request {
             id: ExternalRequestId("a".into()),
-            operation: ExternalOperation::Open("relative.md".into())
+            operation: ExternalOperation::Open {
+                path: "relative.md".into(),
+                line: None
+            }
         }
         .encode()
         .is_err()
@@ -149,7 +159,40 @@ fn protocol_rejects_versions_operations_trailing_bytes_and_invalid_fields() {
         .encode()
         .is_err()
     );
-    assert!(Response::decode(&[1, 0, 2, 1, 0, 0, 0, b'a', 2]).is_err());
+    assert!(Response::decode(&[2, 0, 2, 1, 0, 0, 0, b'a', 2]).is_err());
+}
+
+#[test]
+fn open_rejects_invalid_line_flags_zero_truncation_extra_data_and_old_versions() {
+    let original = Request {
+        id: ExternalRequestId("line".into()),
+        operation: ExternalOperation::Open {
+            path: r"C:\memo.md".into(),
+            line: std::num::NonZeroU64::new(42),
+        },
+    }
+    .encode()
+    .unwrap();
+    let payload = &original[4..];
+    for flag in [2, 255] {
+        let mut bytes = payload.to_vec();
+        let ix = bytes.len() - 9;
+        bytes[ix] = flag;
+        assert!(Request::decode(&bytes).is_err());
+    }
+    let mut zero = payload.to_vec();
+    let ix = zero.len() - 8;
+    zero[ix..].fill(0);
+    assert!(Request::decode(&zero).is_err());
+    for missing in 1..=8 {
+        assert!(Request::decode(&payload[..payload.len() - missing]).is_err());
+    }
+    let mut extra = payload.to_vec();
+    extra.push(0);
+    assert!(Request::decode(&extra).is_err());
+    let mut old = payload.to_vec();
+    old[0] = 1;
+    assert!(Request::decode(&old).is_err());
 }
 
 #[tokio::test(flavor = "current_thread")]

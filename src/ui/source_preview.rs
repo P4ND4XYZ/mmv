@@ -13,21 +13,7 @@ pub(super) struct SourceSnapshot {
 
 impl SourceSnapshot {
     pub fn new(source: Arc<String>, generation: Generation) -> Self {
-        let mut start = 0;
-        let mut lines = Vec::new();
-        for line in source.split_inclusive('\n') {
-            let content = line.strip_suffix('\n').unwrap_or(line);
-            let content = if line.ends_with('\n') {
-                content.strip_suffix('\r').unwrap_or(content)
-            } else {
-                content
-            };
-            lines.push(start..start + content.len());
-            start += line.len();
-        }
-        if source.is_empty() || source.ends_with('\n') {
-            lines.push(source.len()..source.len());
-        }
+        let lines = crate::core::source_position::SourceLines::new(&source).lines;
         Self {
             source,
             generation,

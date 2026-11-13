@@ -59,6 +59,8 @@ pub(super) struct DocumentView {
     pane_width: Option<Pixels>,
     resize_distance: Option<f32>,
     heading_reveal: Option<(PositionRequest, u64)>,
+    source_reveal: Option<(PositionRequest, u64, f32, u8)>,
+    dimensions: Option<(Size<Pixels>, Vec<Option<Pixels>>)>,
     movements: VecDeque<MovementIntent>,
     started: Instant,
     first_paint: Arc<AtomicBool>,
@@ -71,6 +73,7 @@ pub(super) struct DocumentAnalysis {
     pub candidates: Vec<crate::core::links::LinkCandidate>,
     pub source: Arc<super::source_preview::SourceSnapshot>,
     headings: BTreeMap<String, HeadingLocation>,
+    source_lines: crate::core::source_position::SourceLines,
 }
 
 struct LinkRanges(Arc<Mutex<Vec<std::ops::Range<usize>>>>);
@@ -117,6 +120,8 @@ impl DocumentView {
             pane_width: None,
             resize_distance: None,
             heading_reveal: None,
+            source_reveal: None,
+            dimensions: None,
             movements: VecDeque::new(),
             started,
             first_paint: Arc::new(AtomicBool::new(false)),
@@ -133,6 +138,8 @@ impl DocumentView {
         self.pane_width = None;
         self.resize_distance = None;
         self.heading_reveal = None;
+        self.source_reveal = None;
+        self.dimensions = None;
         match pending_movements {
             PendingMovementPolicy::Carry => {
                 for intent in &mut self.movements {
@@ -273,6 +280,7 @@ impl Viewer {
         }
         self.document.analysis = Some(DocumentAnalysis {
             generation: document.generation,
+            source_lines: crate::core::source_position::SourceLines::new(&document.source),
             blocks: blocks
                 .iter()
                 .map(|block| block.span().map(|span| span.start..span.end))
@@ -334,6 +342,14 @@ impl Viewer {
             .retain(|intent| intent.generation == generation);
         if self.document.movements.is_empty()
             || self.app.position_request().is_some()
+            || self.read_orders.values().any(|(order, line)| {
+                *line
+                    && self
+                        .document
+                        .movements
+                        .front()
+                        .is_some_and(|intent| intent.order > *order)
+            })
             || self.document.text.read(cx).rendered_text().source() != document.source.as_str()
             || !self.document.layout_ready(cx)
         {
@@ -383,8 +399,10 @@ impl Viewer {
         {
             return;
         }
-        if matches!(request.target, PositionTarget::Heading(_))
-            && let Err(error) = self.analyze_document(cx)
+        if matches!(
+            request.target,
+            PositionTarget::Heading(_) | PositionTarget::SourceLine(_)
+        ) && let Err(error) = self.analyze_document(cx)
         {
             self.display_error = Some(error);
             return;
@@ -412,6 +430,77 @@ impl Viewer {
             PositionTarget::Top => list.set_offset_from_scrollbar(point(px(0.), px(0.))),
             PositionTarget::Distance(distance) => {
                 list.set_offset_from_scrollbar(point(px(0.), -px(distance.max(0.))))
+            }
+            PositionTarget::SourceLine(line) => {
+                if let Some((revealed, layout, distance, stable)) = &mut self.document.source_reveal
+                    && revealed == request
+                {
+                    if *layout == self.document.layout_serial {
+                        return;
+                    }
+                    *layout = self.document.layout_serial;
+                    let now = -f32::from(list.scroll_px_offset_for_scrollbar().y);
+                    *stable = if (now - *distance).abs() < 0.5 {
+                        *stable + 1
+                    } else {
+                        0
+                    };
+                    *distance = now;
+                    // A range is accepted before its nested line is laid out.
+                    // Wait for measured, stable layouts rather than one frame.
+                    if *stable < 3 {
+                        cx.notify();
+                        return;
+                    }
+                    self.document.source_reveal = None;
+                } else {
+                    let analysis = self.document.analysis.as_ref().expect("current analysis");
+                    if let Some(mut source) = analysis.source_lines.range(*line) {
+                        let body = &self.app.document().unwrap().source;
+                        if source.is_empty() && !body.is_empty() {
+                            let ending = if body[source.start..].starts_with("\r\n") {
+                                2
+                            } else {
+                                1
+                            };
+                            source.end = (source.start + ending).min(body.len());
+                        }
+                        if source.is_empty() && self.app.document().unwrap().source.is_empty() {
+                            list.set_offset_from_scrollbar(point(px(0.), px(0.)));
+                        } else if !source.is_empty()
+                            && let Some(range) =
+                                text.read(cx).rendered_text().range_for_source(source)
+                        {
+                            text.update(cx, |text, cx| {
+                                text.reveal_range(range.start..range.start, cx)
+                            })
+                            .expect("current source range");
+                            self.document.source_reveal = Some((
+                                request.clone(),
+                                self.document.layout_serial,
+                                self.document.distance(cx),
+                                0,
+                            ));
+                            cx.notify();
+                            return;
+                        } else if let Some(ix) =
+                            analysis.source_lines.nearest_block(*line, &analysis.blocks)
+                        {
+                            let viewport = list.viewport_bounds();
+                            if list.bounds_for_item(ix).is_none_or(|bounds| {
+                                bounds.bottom() <= viewport.top()
+                                    || bounds.top() >= viewport.bottom()
+                            }) {
+                                list.scroll_to(ListOffset {
+                                    item_ix: ix,
+                                    offset_in_item: px(0.),
+                                });
+                            }
+                        }
+                    } else {
+                        list.scroll_to_end();
+                    }
+                }
             }
             PositionTarget::Heading(id) => {
                 if let Some(heading) = self
@@ -482,8 +571,11 @@ impl Viewer {
             .is_some_and(|width| width != window_width)
             && self.app.position_request().is_none()
         {
-            let distance = self.document.distance(cx);
-            self.document.resize_distance.get_or_insert(distance);
+            self.app.refresh_source_line();
+            if self.app.position_request().is_none() {
+                let distance = self.document.distance(cx);
+                self.document.resize_distance.get_or_insert(distance);
+            }
         }
         self.document.pane_width = Some(window_width);
         let ready = self.app.document().is_some_and(|doc| {
@@ -614,6 +706,31 @@ impl Viewer {
                                         return;
                                     }
                                     this.document.layout_serial += 1;
+                                    let list = text.read(cx).list_state();
+                                    let dimensions = (
+                                        list.viewport_bounds().size,
+                                        (0..list.item_count())
+                                            .map(|ix| {
+                                                list.bounds_for_item(ix)
+                                                    .map(|bounds| bounds.size.height)
+                                            })
+                                            .collect(),
+                                    );
+                                    if this
+                                        .document
+                                        .dimensions
+                                        .as_ref()
+                                        .is_some_and(|old| old != &dimensions)
+                                    {
+                                        this.document.source_reveal = None;
+                                        if this.app.position_request().is_none() {
+                                            this.app.refresh_source_line();
+                                            if this.app.position_request().is_some() {
+                                                cx.notify();
+                                            }
+                                        }
+                                    }
+                                    this.document.dimensions = Some(dimensions);
                                     if this.document.layout_ready(cx)
                                         && let Some(distance) = this.document.resize_distance.take()
                                     {

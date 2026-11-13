@@ -233,11 +233,12 @@ fn tree_open_revalidates_replaced_ancestor_and_leaf_junctions() {
         };
         fs::rename(&replaced, fixture.0.join("original")).unwrap();
         let junction = Junction::new(replaced, &target);
-        let result = crate::infra::read_document(request);
+        let crate::app::ReadResponse::Resolved { key, .. } = crate::infra::read_document(request)
+        else {
+            panic!("tree identity preflight");
+        };
         assert!(
-            result
-                .content
-                .err()
+            key.err()
                 .unwrap()
                 .starts_with("Tree target is not a regular accessible file")
         );

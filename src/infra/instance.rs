@@ -124,7 +124,7 @@ async fn connect_with(
     if gui_is_alive(namespace)? {
         return PipeClient::connect(namespace, Deadline::connection(start)).await;
     }
-    if !matches!(operation, ExternalOperation::Open(_)) {
+    if !matches!(operation, ExternalOperation::Open { .. }) {
         return Err(io::Error::new(
             io::ErrorKind::NotConnected,
             "GUI is not running",
@@ -225,7 +225,10 @@ mod tests {
                 barrier.wait();
                 connect_with(
                     &namespace,
-                    &ExternalOperation::Open(r"C:\test.md".into()),
+                    &ExternalOperation::Open {
+                        path: r"C:\test.md".into(),
+                        line: None,
+                    },
                     || {
                         spawned.fetch_add(1, Ordering::SeqCst);
                         let (ready, rx) = mpsc::channel();
@@ -272,7 +275,10 @@ mod tests {
         let start = Instant::now();
         let error = connect_with(
             &namespace,
-            &ExternalOperation::Open(r"C:\test.md".into()),
+            &ExternalOperation::Open {
+                path: r"C:\test.md".into(),
+                line: None,
+            },
             || panic!("live GUI must not spawn"),
         )
         .err()

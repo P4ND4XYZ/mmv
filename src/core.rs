@@ -1,4 +1,5 @@
 pub mod links;
+pub mod source_position;
 
 use std::{
     collections::HashSet,

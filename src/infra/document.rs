@@ -1,60 +1,65 @@
-use crate::app::{DocumentKey, LoadedDocument, ReadRequest, ReadResult};
+use crate::app::{DocumentKey, LoadedDocument, ReadPhase, ReadRequest, ReadResponse, ReadResult};
 
-pub fn read_document(request: ReadRequest) -> ReadResult {
-    let content = (|| {
-        if let Some(tree) = &request.tree {
-            let parent = request.path.parent().ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid tree file path")
-            })?;
-            super::file_tree::check_directory_path(&tree.root, parent)?;
-            if !request.path.strip_prefix(&tree.root).is_ok_and(|relative| {
-                relative
-                    .components()
-                    .all(|part| matches!(part, std::path::Component::Normal(_)))
-            }) {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "invalid tree file path",
-                ));
-            }
-            let metadata = std::fs::symlink_metadata(&request.path)?;
-            if !metadata.is_file() || super::file_tree::reparse(&metadata) {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "tree target is not a regular non-reparse file",
-                ));
-            }
-        }
-        let key = DocumentKey(std::fs::canonicalize(&request.path)?);
-        // Identity, not spelling: aliases of the displayed file must not be read.
-        if request
-            .tree
-            .as_ref()
-            .is_some_and(|tree| tree.current.as_ref() == Some(&key))
-        {
-            return Ok(LoadedDocument {
-                key,
-                source: String::new(),
-            });
-        }
-        let source = std::fs::read_to_string(&request.path)?;
-        Ok::<_, std::io::Error>(LoadedDocument {
+pub fn read_document(request: ReadRequest) -> ReadResponse {
+    let key = resolve_key(&request).map_err(|error| report_read_error(&request, error));
+    if request.phase == ReadPhase::Resolve {
+        return ReadResponse::Resolved { request, key };
+    }
+    let content = key.and_then(|key| {
+        let source = std::fs::read_to_string(&request.path)
+            .map_err(|error| report_read_error(&request, error))?;
+        Ok(LoadedDocument {
             key,
             source: source
                 .strip_prefix('\u{feff}')
                 .unwrap_or(&source)
                 .to_owned(),
         })
-    })()
-    .map_err(|error| {
-        super::logging::log_document_failure(&request.path, &error.to_string());
-        format!(
-            "{}: {}",
-            read_error_message(&error, request.tree.is_some()),
-            request.path.display()
-        )
     });
-    ReadResult { request, content }
+    ReadResponse::Loaded(ReadResult { request, content })
+}
+
+fn resolve_key(request: &ReadRequest) -> std::io::Result<DocumentKey> {
+    if let Some(tree) = &request.tree {
+        let parent = request.path.parent().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid tree file path")
+        })?;
+        super::file_tree::check_directory_path(&tree.root, parent)?;
+        if !request.path.strip_prefix(&tree.root).is_ok_and(|relative| {
+            relative
+                .components()
+                .all(|part| matches!(part, std::path::Component::Normal(_)))
+        }) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid tree file path",
+            ));
+        }
+        let metadata = std::fs::symlink_metadata(&request.path)?;
+        if !metadata.is_file() || super::file_tree::reparse(&metadata) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "tree target is not a regular non-reparse file",
+            ));
+        }
+    }
+    let metadata = std::fs::metadata(&request.path)?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "target is not a regular file",
+        ));
+    }
+    Ok(DocumentKey(std::fs::canonicalize(&request.path)?))
+}
+
+fn report_read_error(request: &ReadRequest, error: std::io::Error) -> String {
+    super::logging::log_document_failure(&request.path, &error.to_string());
+    format!(
+        "{}: {}",
+        read_error_message(&error, request.tree.is_some()),
+        request.path.display()
+    )
 }
 
 fn read_error_message(error: &std::io::Error, tree: bool) -> &'static str {
@@ -75,6 +80,20 @@ fn read_error_message(error: &std::io::Error, tree: bool) -> &'static str {
 mod tests {
     use super::*;
     use crate::app::App;
+
+    fn loaded(response: ReadResponse) -> ReadResult {
+        match response {
+            ReadResponse::Loaded(result) => result,
+            _ => panic!("expected loaded result"),
+        }
+    }
+
+    fn failed(response: ReadResponse) -> String {
+        match response {
+            ReadResponse::Loaded(result) => result.content.err().unwrap(),
+            ReadResponse::Resolved { key, .. } => key.err().unwrap(),
+        }
+    }
 
     fn tree_read(app: &mut App, path: std::path::PathBuf, root: std::path::PathBuf) -> ReadRequest {
         match app.operate(
@@ -140,7 +159,7 @@ mod tests {
                 std::fs::create_dir(&path).unwrap();
             }
             let request = tree_read(&mut app, path.clone(), root.clone());
-            let error = read_document(request).content.err().unwrap();
+            let error = failed(read_document(request));
             assert!(error.starts_with(if directory {
                 "Tree target is not a regular accessible file"
             } else {
@@ -156,13 +175,78 @@ mod tests {
         ] {
             let request = tree_read(&mut app, path, root.clone());
             assert!(
-                read_document(request)
-                    .content
-                    .err()
-                    .unwrap()
+                failed(read_document(request))
                     .starts_with("Tree target is not a regular accessible file")
             );
         }
+        std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn external_alias_open_resolves_without_reading_but_explicit_reload_reads() {
+        use crate::app::{DocumentOperation, OperationOrigin, OperationResult, ReadResolution};
+        let root = std::env::temp_dir().join(format!(
+            "mmv-external-unread-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("日本語.MD");
+        std::fs::write(&path, "original").unwrap();
+        let mut app = App::default();
+        let request = app.open(path.clone());
+        app.complete(read_document(request)).unwrap();
+        let generation = app.document().unwrap().generation;
+        std::fs::write(&path, [0xff]).unwrap();
+        let OperationResult::Pending(request) = app.operate(
+            DocumentOperation::ExternalOpen {
+                path: std::fs::canonicalize(&root)
+                    .unwrap()
+                    .join(".")
+                    .join("日本語.MD"),
+                line: std::num::NonZeroU64::new(30),
+            },
+            OperationOrigin::External,
+            0.,
+            None,
+        ) else {
+            panic!();
+        };
+        let ReadResponse::Resolved { request, key } = read_document(request) else {
+            panic!("must only resolve identity");
+        };
+        let Some(ReadResolution::Complete(completion)) = app.resolve_at(request, key, 0.) else {
+            panic!("must not read changed invalid UTF-8");
+        };
+        assert_eq!(completion.outcome, Ok(()));
+        assert!(!completion.adopted);
+        assert_eq!(app.document().unwrap().generation, generation);
+        assert_eq!(app.document().unwrap().source.as_str(), "original");
+        let OperationResult::Pending(request) = app.operate(
+            DocumentOperation::Reload,
+            OperationOrigin::Keyboard,
+            0.,
+            None,
+        ) else {
+            panic!();
+        };
+        assert!(failed(read_document(request)).starts_with("File is not valid UTF-8"));
+        std::fs::remove_file(&path).unwrap();
+        let OperationResult::Pending(request) = app.operate(
+            DocumentOperation::ExternalOpen { path, line: None },
+            OperationOrigin::External,
+            0.,
+            None,
+        ) else {
+            panic!();
+        };
+        assert!(
+            app.complete(read_document(request))
+                .unwrap()
+                .outcome
+                .is_err()
+        );
+        assert_eq!(app.document().unwrap().generation, generation);
         std::fs::remove_dir(root).unwrap();
     }
 
@@ -213,11 +297,11 @@ mod tests {
         let mut app = App::default();
         for source in ["# 日本語\r\n本文", "\u{feff}# 日本語\r\n本文"] {
             std::fs::write(&path, source).unwrap();
-            let loaded = read_document(app.open(path.clone()));
-            assert_eq!(loaded.content.unwrap().source, "# 日本語\r\n本文");
+            let result = loaded(read_document(app.open(path.clone())));
+            assert_eq!(result.content.unwrap().source, "# 日本語\r\n本文");
         }
         std::fs::write(&path, [0xff, 0xfe]).unwrap();
-        let invalid = read_document(app.open(path.clone()));
+        let invalid = loaded(read_document(app.open(path.clone())));
         std::fs::remove_file(&path).unwrap();
         assert!(
             invalid
@@ -226,7 +310,7 @@ mod tests {
                 .unwrap()
                 .contains(&path.display().to_string())
         );
-        let missing = read_document(app.open(path));
+        let missing = loaded(read_document(app.open(path)));
         assert!(missing.content.is_err());
     }
 

@@ -28,13 +28,20 @@ pub struct ReadRequest {
     pub response_to: Option<ExternalRequestId>,
     pub origin: OperationOrigin,
     pub tree: Option<TreeOpen>,
+    pub phase: ReadPhase,
+    pub skip_same: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadPhase {
+    Resolve,
+    Load,
 }
 
 /// Tree-only preflight and identity check, performed by infra before any read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TreeOpen {
     pub root: PathBuf,
-    pub current: Option<DocumentKey>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,9 +56,19 @@ pub enum OperationOrigin {
 pub enum DocumentOperation {
     Initial(PathBuf),
     Open(PathBuf),
-    TreeOpen { path: PathBuf, root: PathBuf },
+    ExternalOpen {
+        path: PathBuf,
+        line: Option<std::num::NonZeroU64>,
+    },
+    TreeOpen {
+        path: PathBuf,
+        root: PathBuf,
+    },
     Reload,
-    Heading { path: Option<PathBuf>, id: String },
+    Heading {
+        path: Option<PathBuf>,
+        id: String,
+    },
     Back,
     Forward,
 }
@@ -79,6 +96,7 @@ pub enum PositionTarget {
     Top,
     Distance(f32),
     Heading(String),
+    SourceLine(std::num::NonZeroU64),
 }
 
 /// Whether a new position continues or supersedes UI movement intent that has
@@ -109,6 +127,26 @@ pub struct ReadResult {
     pub content: Result<LoadedDocument, String>,
 }
 
+/// Identity-only results never fabricate an empty source document.
+pub enum ReadResponse {
+    Resolved {
+        request: ReadRequest,
+        key: Result<DocumentKey, String>,
+    },
+    Loaded(ReadResult),
+}
+
+impl From<ReadResult> for ReadResponse {
+    fn from(result: ReadResult) -> Self {
+        Self::Loaded(result)
+    }
+}
+
+pub enum ReadResolution {
+    Continue(ReadRequest),
+    Complete(ReadCompletion),
+}
+
 /// Completion of one outstanding read, independently of display adoption.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReadCompletion {
@@ -116,6 +154,7 @@ pub struct ReadCompletion {
     pub response_to: Option<ExternalRequestId>,
     pub outcome: Result<(), String>,
     pub adopted: bool,
+    pub current: bool,
     /// A current tree request succeeded, including an unchanged document.
     pub tree_open_succeeded: bool,
 }
@@ -131,8 +170,10 @@ pub struct Document {
 pub(super) struct DocumentState {
     next_request: u64,
     next_generation: u64,
-    outstanding: BTreeMap<ReadRequestId, ReadRequest>,
+    outstanding: BTreeMap<ReadRequestId, (ReadRequest, Option<u64>)>,
     pending: Option<ReadRequestId>,
+    reload: Option<ReadRequestId>,
+    period: u64,
     pub current: Option<Document>,
     pub error: Option<String>,
 }
@@ -144,6 +185,8 @@ impl DocumentState {
         response_to: Option<ExternalRequestId>,
         origin: OperationOrigin,
         tree: Option<TreeOpen>,
+        skip_same: bool,
+        reload: bool,
     ) -> ReadRequest {
         self.next_request += 1;
         let request = ReadRequest {
@@ -152,38 +195,69 @@ impl DocumentState {
             response_to,
             origin,
             tree,
+            phase: if skip_same {
+                ReadPhase::Resolve
+            } else {
+                ReadPhase::Load
+            },
+            skip_same,
         };
-        self.outstanding.insert(request.id, request.clone());
-        self.pending = Some(request.id);
+        self.outstanding
+            .insert(request.id, (request.clone(), reload.then_some(self.period)));
+        if reload {
+            self.reload = Some(request.id);
+        } else {
+            self.pending = Some(request.id);
+        }
         self.error = None;
         request
     }
 
     /// Unknown, altered, and already completed requests produce no second completion.
     pub fn complete(&mut self, result: ReadResult) -> Option<ReadCompletion> {
-        let request = self.outstanding.get(&result.request.id)?;
+        let (request, _) = self.outstanding.get(&result.request.id)?;
         if request != &result.request {
             return None;
         }
-        let request = self.outstanding.remove(&result.request.id)?;
-        let current = self.pending == Some(request.id);
+        let (request, period) = self.outstanding.remove(&result.request.id)?;
+        let current = self.pending == Some(request.id)
+            || (self.reload == Some(request.id) && period == Some(self.period));
         let mut completion = ReadCompletion {
             request_id: request.id,
             response_to: request.response_to,
             outcome: result.content.as_ref().map(|_| ()).map_err(Clone::clone),
             adopted: false,
+            current,
             tree_open_succeeded: current && request.tree.is_some() && result.content.is_ok(),
         };
         if current {
-            self.pending = None;
+            if self.pending == Some(request.id) {
+                self.pending = None;
+            }
+            if self.reload == Some(request.id) {
+                self.reload = None;
+            }
             match result.content {
                 Ok(loaded)
-                    if request.tree.is_some()
+                    if request.skip_same
                         && self
                             .current
                             .as_ref()
                             .is_some_and(|doc| doc.key == loaded.key) => {}
                 Ok(loaded) => {
+                    // A newer actual body adoption supersedes older reloads.
+                    // Identity-only same-file opens above leave them intact.
+                    if self.reload.is_some_and(|reload| reload < request.id) {
+                        self.reload = None;
+                    }
+                    if self
+                        .current
+                        .as_ref()
+                        .is_none_or(|doc| doc.key != loaded.key)
+                    {
+                        self.period += 1;
+                        self.reload = None;
+                    }
                     self.next_generation += 1;
                     self.current = Some(Document {
                         generation: Generation(self.next_generation),
@@ -199,6 +273,44 @@ impl DocumentState {
         Some(completion)
     }
 
+    pub fn resolve(
+        &mut self,
+        request: ReadRequest,
+        key: Result<DocumentKey, String>,
+    ) -> Option<ReadResolution> {
+        let (saved, _) = self.outstanding.get(&request.id)?;
+        if saved != &request || request.phase != ReadPhase::Resolve {
+            return None;
+        }
+        match key {
+            Ok(key) if self.current.as_ref().is_none_or(|doc| doc.key != key) => {
+                let mut next = request;
+                next.phase = ReadPhase::Load;
+                self.outstanding.get_mut(&next.id)?.0 = next.clone();
+                Some(ReadResolution::Continue(next))
+            }
+            result => {
+                let (request, _) = self.outstanding.remove(&request.id)?;
+                let current = self.pending == Some(request.id);
+                if current {
+                    self.pending = None;
+                    if let Err(error) = &result {
+                        self.error = Some(error.clone());
+                    }
+                }
+                let tree_open_succeeded = current && request.tree.is_some() && result.is_ok();
+                Some(ReadResolution::Complete(ReadCompletion {
+                    request_id: request.id,
+                    response_to: request.response_to,
+                    outcome: result.map(|_| ()),
+                    adopted: false,
+                    current,
+                    tree_open_succeeded,
+                }))
+            }
+        }
+    }
+
     /// A newer synchronous navigation supersedes display adoption, not read responses.
     pub fn supersede(&mut self) {
         self.pending = None;
@@ -206,7 +318,12 @@ impl DocumentState {
     }
 
     pub fn is_loading(&self) -> bool {
-        self.pending.is_some()
+        self.reload.is_some()
+            || self.pending.is_some_and(|id| {
+                self.outstanding
+                    .get(&id)
+                    .is_some_and(|(request, _)| request.phase == ReadPhase::Load)
+            })
     }
 
     pub fn clear_error(&mut self) {

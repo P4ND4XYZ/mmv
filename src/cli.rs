@@ -27,6 +27,9 @@ enum Command {
     /// Open one UTF-8 Markdown file
     Open {
         file: std::path::PathBuf,
+        /// Reveal a saved source line (1-based)
+        #[arg(long)]
+        line: Option<std::num::NonZeroU64>,
     },
     /// Scroll by a line, half page, or page
     Scroll {
@@ -87,9 +90,10 @@ where
     let args = Args::try_parse_from(args).map_err(CliOutput::from)?;
     let command = args.command.unwrap_or_else(|| Command::Open {
         file: args.file.expect("clap requires FILE or a command"),
+        line: None,
     });
     Ok(match command {
-        Command::Open { file } => {
+        Command::Open { file, line } => {
             let path = if file.is_absolute() {
                 file
             } else {
@@ -103,7 +107,7 @@ where
                 )));
             }
             let path = std::path::absolute(path).map_err(|error| execution_output(Err(error)))?;
-            ExternalOperation::Open(path)
+            ExternalOperation::Open { path, line }
         }
         Command::Scroll { direction } => ExternalOperation::Scroll(match direction {
             Direction::Down => ScrollDirection::Down,
@@ -153,7 +157,13 @@ mod tests {
         for file in ["notes/日本語 memo.md", "missing.md", "./notes/file.md"] {
             let explicit = parse_from(["mmv", "open", file], cwd()).unwrap();
             assert_eq!(explicit, parse_from(["mmv", file], cwd()).unwrap());
-            assert_eq!(explicit, ExternalOperation::Open(cwd().join(file)));
+            assert_eq!(
+                explicit,
+                ExternalOperation::Open {
+                    path: cwd().join(file),
+                    line: None
+                }
+            );
         }
         let absolute = cwd().join("absolute 日本語.md");
         assert_eq!(
@@ -162,7 +172,45 @@ mod tests {
                 &cwd().join("other")
             )
             .unwrap(),
-            ExternalOperation::Open(absolute)
+            ExternalOperation::Open {
+                path: absolute,
+                line: None
+            }
+        );
+    }
+
+    #[test]
+    fn source_lines_are_positive_u64_and_only_accepted_by_explicit_open() {
+        for value in ["1", "20", "18446744073709551615"] {
+            assert_eq!(
+                parse_from(["mmv", "open", "日本語 memo.md", "--line", value], cwd()).unwrap(),
+                ExternalOperation::Open {
+                    path: cwd().join("日本語 memo.md"),
+                    line: Some(value.parse().unwrap())
+                }
+            );
+        }
+        for value in ["0", "-1", "1.5", "abc", "18446744073709551616"] {
+            assert_eq!(
+                parse_from(["mmv", "open", "a.md", "--line", value], cwd())
+                    .unwrap_err()
+                    .exit_code,
+                2
+            );
+        }
+        for args in [
+            vec!["mmv", "open", "a.md", "--line"],
+            vec!["mmv", "open", "a.md", "--line", "1", "--line", "2"],
+            vec!["mmv", "top", "--line", "1"],
+            vec!["mmv", "a.md", "--line", "1"],
+        ] {
+            assert_eq!(parse_from(args, cwd()).unwrap_err().exit_code, 2);
+        }
+        assert!(
+            parse_from(["mmv", "open", "--help"], cwd())
+                .unwrap_err()
+                .stdout
+                .contains("--line")
         );
     }
 
@@ -196,12 +244,18 @@ mod tests {
         for name in ["open", "scroll", "top", "bottom", "back", "forward", "help"] {
             assert_eq!(
                 parse_from(["mmv", "open", name], cwd()).unwrap(),
-                ExternalOperation::Open(cwd().join(name))
+                ExternalOperation::Open {
+                    path: cwd().join(name),
+                    line: None
+                }
             );
         }
         assert_eq!(
             parse_from(["mmv", "open", "--", "--help"], cwd()).unwrap(),
-            ExternalOperation::Open(cwd().join("--help"))
+            ExternalOperation::Open {
+                path: cwd().join("--help"),
+                line: None
+            }
         );
     }
 

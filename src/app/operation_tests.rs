@@ -99,6 +99,9 @@ fn automatic_notifications_defer_without_cancelling_switch_and_retry_after_failu
         let mut app = loaded();
         let a = app.watch_target().unwrap().clone();
         let b = read(&mut app, DocumentOperation::Open("b.md".into()));
+        let ReadResolution::Continue(b) = resolve(&mut app, b, "canonical-b") else {
+            panic!("B load");
+        };
         assert!(app.watch_changed(&a).is_none());
         assert!(app.watch_changed(&a).is_none());
         if succeeds {
@@ -153,6 +156,229 @@ fn saves_during_read_collapse_to_one_trailing_reload_even_after_failure() {
         app.rendered(generation, "edit edit old");
         assert_eq!(app.matches(), &[0..4, 5..9]);
     }
+}
+
+fn external_open(app: &mut App, path: &str, line: Option<u64>) -> ReadRequest {
+    read(
+        app,
+        DocumentOperation::ExternalOpen {
+            path: path.into(),
+            line: line.map(|value| std::num::NonZeroU64::new(value).unwrap()),
+        },
+    )
+}
+
+fn resolve(app: &mut App, request: ReadRequest, key: &str) -> ReadResolution {
+    app.resolve_at(request, Ok(DocumentKey(key.into())), 480.)
+        .unwrap()
+}
+
+#[test]
+fn same_external_identity_keeps_body_search_history_watch_and_input_without_reading() {
+    let mut app = loaded();
+    app.begin_search();
+    app.preview_search("edit".into());
+    let generation = app.document().unwrap().generation;
+    app.rendered(generation, "target edit target");
+    let source = app.document().unwrap().source.clone();
+    let history = app.history.entries.clone();
+    let watch = app.watch_target().cloned();
+    let old_position = app.position_request().cloned();
+    let request = external_open(&mut app, "alias.md", None);
+    assert_eq!(request.phase, ReadPhase::Resolve);
+    assert!(!app.is_loading());
+    let ReadResolution::Complete(completion) = resolve(&mut app, request, "canonical-a") else {
+        panic!("same identity must not read");
+    };
+    assert_eq!(completion.outcome, Ok(()));
+    assert!(!completion.adopted);
+    assert_eq!(app.position_request(), old_position.as_ref());
+    assert!(std::sync::Arc::ptr_eq(
+        &source,
+        &app.document().unwrap().source
+    ));
+    assert_eq!(app.document().unwrap().generation, generation);
+    assert_eq!(app.history.entries, history);
+    assert_eq!(app.watch_target(), watch.as_ref());
+    assert_eq!(app.matches().len(), 1);
+    assert_eq!(app.matches()[0], 7..11);
+    assert_eq!(app.mode, Mode::Search);
+}
+
+#[test]
+fn source_line_open_does_not_cancel_inflight_reload_or_restore_an_old_navigation() {
+    let mut app = loaded();
+    let generation = app.document().unwrap().generation;
+    let watch = app.watch_target().unwrap().clone();
+    let reload = app.watch_changed(&watch).unwrap();
+    let b = external_open(&mut app, "b.md", Some(10));
+    let ReadResolution::Continue(b) = resolve(&mut app, b, "canonical-b") else {
+        panic!("load B");
+    };
+    let a = external_open(&mut app, "alias-a.md", Some(20));
+    assert!(matches!(
+        resolve(&mut app, a, "canonical-a"),
+        ReadResolution::Complete(_)
+    ));
+    assert_eq!(
+        target(&app),
+        PositionTarget::SourceLine(std::num::NonZeroU64::new(20).unwrap())
+    );
+    assert!(app.is_loading());
+    assert!(finish(&mut app, reload, "canonical-a", 900.).adopted);
+    assert_ne!(app.document().unwrap().generation, generation);
+    assert_eq!(
+        target(&app),
+        PositionTarget::SourceLine(std::num::NonZeroU64::new(20).unwrap())
+    );
+    assert!(!finish(&mut app, b, "canonical-b", 900.).adopted);
+    assert_eq!(
+        app.document().unwrap().key,
+        DocumentKey("canonical-a".into())
+    );
+    assert_eq!(app.history.entries.len(), 1);
+}
+
+#[test]
+fn newer_same_key_body_read_rejects_older_reload_success_and_failure_but_completes_reply() {
+    for succeeds in [false, true] {
+        let mut app = loaded();
+        let reload = pending(app.operate(
+            DocumentOperation::Reload,
+            OperationOrigin::External,
+            0.,
+            Some(ExternalRequestId("old-reload".into())),
+        ));
+        let link = pending(app.operate(
+            DocumentOperation::Open("a.md".into()),
+            OperationOrigin::Link,
+            0.,
+            None,
+        ));
+        assert!(
+            app.complete(ReadResult {
+                request: link,
+                content: Ok(LoadedDocument {
+                    key: DocumentKey("canonical-a".into()),
+                    source: "newer-link-body".into()
+                })
+            })
+            .unwrap()
+            .adopted
+        );
+        let generation = app.document().unwrap().generation;
+        let position = app.position_request().cloned();
+        let history = app.history.entries.clone();
+        let completion = app
+            .complete(ReadResult {
+                request: reload.clone(),
+                content: if succeeds {
+                    Ok(LoadedDocument {
+                        key: DocumentKey("canonical-a".into()),
+                        source: "older-reload-body".into(),
+                    })
+                } else {
+                    Err("older reload failed".into())
+                },
+            })
+            .unwrap();
+        assert!(!completion.current);
+        assert!(!completion.adopted);
+        assert_eq!(
+            completion.response_to,
+            Some(ExternalRequestId("old-reload".into()))
+        );
+        assert_eq!(completion.outcome.is_ok(), succeeds);
+        assert_eq!(app.document().unwrap().source.as_str(), "newer-link-body");
+        assert_eq!(app.document().unwrap().generation, generation);
+        assert_eq!(app.position_request(), position.as_ref());
+        assert_eq!(app.history.entries, history);
+        assert!(app.error().is_none());
+        assert!(
+            app.complete(ReadResult {
+                request: reload,
+                content: Err("duplicate".into())
+            })
+            .is_none()
+        );
+    }
+}
+
+#[test]
+fn unread_same_key_cli_open_keeps_reload_and_an_older_body_read_keeps_a_newer_reload() {
+    for line in [None, Some(20)] {
+        let mut app = loaded();
+        let reload = read(&mut app, DocumentOperation::Reload);
+        let request = external_open(&mut app, "alias-a.md", line);
+        assert!(matches!(
+            resolve(&mut app, request, "canonical-a"),
+            ReadResolution::Complete(_)
+        ));
+        assert!(finish(&mut app, reload, "canonical-a", 480.).adopted);
+    }
+    let mut app = loaded();
+    let link = pending(app.operate(
+        DocumentOperation::Open("a.md".into()),
+        OperationOrigin::Link,
+        0.,
+        None,
+    ));
+    let reload = read(&mut app, DocumentOperation::Reload);
+    assert!(finish(&mut app, link, "canonical-a", 0.).adopted);
+    assert!(finish(&mut app, reload, "canonical-a", 0.).adopted);
+}
+
+#[test]
+fn original_source_line_survives_ack_reload_and_failure_but_not_successful_switch() {
+    let mut app = loaded();
+    let a = external_open(&mut app, "a.md", Some(u64::MAX));
+    resolve(&mut app, a, "canonical-a");
+    let old = app.position_request().unwrap().clone();
+    app.acknowledge_position(&old);
+    let reload = read(&mut app, DocumentOperation::Reload);
+    let a = external_open(&mut app, "a.md", None);
+    resolve(&mut app, a, "canonical-a");
+    finish(&mut app, reload, "canonical-a", 100.);
+    assert_eq!(
+        target(&app),
+        PositionTarget::SourceLine(std::num::NonZeroU64::new(u64::MAX).unwrap())
+    );
+    let failed = external_open(&mut app, "missing.md", Some(1));
+    assert!(matches!(
+        app.resolve_at(failed, Err("missing".into()), 0.),
+        Some(ReadResolution::Complete(_))
+    ));
+    assert_eq!(app.source_line.map(|line| line.get()), Some(u64::MAX));
+    let b = external_open(&mut app, "b.md", None);
+    let ReadResolution::Continue(b) = resolve(&mut app, b, "canonical-b") else {
+        panic!();
+    };
+    finish(&mut app, b, "canonical-b", 0.);
+    assert_eq!(app.source_line, None);
+    let a = external_open(&mut app, "a.md", None);
+    let ReadResolution::Continue(a) = resolve(&mut app, a, "canonical-a") else {
+        panic!();
+    };
+    finish(&mut app, a, "canonical-a", 0.);
+    assert_eq!(app.source_line, None);
+    assert_eq!(target(&app), PositionTarget::Top);
+}
+
+#[test]
+fn stale_resolutions_still_read_and_reply_but_never_apply_their_source_line() {
+    let mut app = loaded();
+    let old = external_open(&mut app, "b.md", Some(10));
+    let latest = external_open(&mut app, "a.md", Some(20));
+    resolve(&mut app, latest, "canonical-a");
+    let ReadResolution::Continue(old) = resolve(&mut app, old, "canonical-b") else {
+        panic!();
+    };
+    let completion = fail(&mut app, old);
+    assert_eq!(completion.outcome, Err("missing".into()));
+    assert!(!completion.adopted);
+    assert!(!completion.current);
+    assert_eq!(app.source_line.map(|line| line.get()), Some(20));
+    assert!(app.error().is_none());
 }
 
 fn read(app: &mut App, operation: DocumentOperation) -> ReadRequest {
@@ -218,6 +444,10 @@ fn unavailable_operations_preserve_state_and_pending_reads_and_return_external_i
                 240.,
                 Some(ExternalRequestId("pending-read".into())),
             ));
+            let ReadResolution::Continue(request) = resolve(&mut app, request, "pending-key")
+            else {
+                panic!("pending load");
+            };
             let document = app
                 .document()
                 .map(|doc| (doc.generation, doc.path.clone(), doc.source.clone()));
@@ -372,17 +602,13 @@ fn open_classifies_by_resolved_key_and_reload_uses_replacement_time_distance() {
     let old = app.position_request().unwrap().clone();
     assert_eq!(old.pending_movements, PendingMovementPolicy::Replace);
 
-    // Different spelling but equal infra identity is a reload, not a navigation.
+    // Different spelling with the same identity preserves the existing body.
     let request = read(&mut app, DocumentOperation::Open("./A.md".into()));
     assert_eq!(app.position_request(), Some(&old));
-    finish(&mut app, request, "canonical-a", 480.);
-    assert_eq!(target(&app), PositionTarget::Distance(480.));
-    assert_eq!(
-        app.position_request().unwrap().pending_movements,
-        PendingMovementPolicy::Carry
-    );
+    assert!(!finish(&mut app, request, "canonical-a", 480.).adopted);
+    assert_eq!(app.position_request(), Some(&old));
     assert_eq!(app.history.entries.len(), 1);
-    assert!(!app.acknowledge_position(&old));
+    assert!(app.acknowledge_position(&old));
 
     let request = read(&mut app, DocumentOperation::Reload);
     finish(&mut app, request, "canonical-a", 720.);
@@ -489,15 +715,19 @@ fn reload_before_heading_layout_preserves_intent_until_acknowledged() {
         );
         finish(&mut app, request, "canonical-a", 0.);
         assert_eq!(target(&app), PositionTarget::Heading("使い方".into()));
-        assert_eq!(
-            app.position_request().unwrap().pending_movements,
-            PendingMovementPolicy::Carry
-        );
-        assert_ne!(
-            app.position_request().unwrap().generation,
-            heading.generation
-        );
-        assert!(!app.acknowledge_position(&heading));
+        if open_same_key {
+            assert_eq!(app.position_request(), Some(&heading));
+        } else {
+            assert_eq!(
+                app.position_request().unwrap().pending_movements,
+                PendingMovementPolicy::Carry
+            );
+            assert_ne!(
+                app.position_request().unwrap().generation,
+                heading.generation
+            );
+            assert!(!app.acknowledge_position(&heading));
+        }
         assert_eq!(app.history.entries, history);
         let heading = app.position_request().unwrap().clone();
         app.acknowledge_position(&heading);

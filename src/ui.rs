@@ -19,7 +19,7 @@ use gpui_kit::{prelude::*, *};
 use crate::app::{
     self, DiagramRequest, DiagramResult, DocumentKey, DocumentOperation, ExternalOperation,
     ExternalRequestId, LinkTarget, OperationError, OperationOrigin, OperationResult,
-    PendingMovementPolicy, ReadCompletion, ReadRequest, ReadResult, WatchTarget, resolve_link,
+    PendingMovementPolicy, ReadCompletion, ReadRequest, WatchTarget, resolve_link,
 };
 use document::{DocumentView, Movement};
 use input::Prompt;
@@ -49,6 +49,8 @@ pub struct Viewer {
     deferred_links: std::collections::VecDeque<DeferredLink>,
     next_operation_order: u64,
     latest_navigation_order: u64,
+    read_orders: std::collections::BTreeMap<app::ReadRequestId, (u64, bool)>,
+    position_reads: Vec<ReadRequest>,
 }
 
 struct DeferredLink {
@@ -113,6 +115,8 @@ impl Viewer {
             deferred_links: Default::default(),
             next_operation_order: 0,
             latest_navigation_order: 0,
+            read_orders: Default::default(),
+            position_reads: Vec::new(),
         }
     }
 
@@ -147,10 +151,12 @@ impl Viewer {
         cx: &mut Context<Self>,
     ) -> OperationResult {
         let operation = match operation {
-            ExternalOperation::Open(path) if self.app.document().is_none() => {
+            ExternalOperation::Open { path, line: None } if self.app.document().is_none() => {
                 DocumentOperation::Initial(path)
             }
-            ExternalOperation::Open(path) => DocumentOperation::Open(path),
+            ExternalOperation::Open { path, line } => {
+                DocumentOperation::ExternalOpen { path, line }
+            }
             ExternalOperation::Back => DocumentOperation::Back,
             ExternalOperation::Forward => DocumentOperation::Forward,
             movement => {
@@ -218,7 +224,20 @@ impl Viewer {
         // Reload carries the current position intent across generations. Other
         // accepted operations supersede older clicks at acceptance, not adoption.
         let supersedes_links = !matches!(operation, DocumentOperation::Reload);
+        let waits_for_line = matches!(
+            operation,
+            DocumentOperation::ExternalOpen { line: Some(_), .. }
+        );
         self.settle_position(cx);
+        let waits_for_position = matches!(
+            operation,
+            DocumentOperation::Back | DocumentOperation::Forward
+        ) && self.app.position_request().is_some_and(|request| {
+            matches!(
+                request.target,
+                app::PositionTarget::Heading(_) | app::PositionTarget::SourceLine(_)
+            )
+        });
         let previous_position = self.app.position_request().map(|request| request.serial);
         let distance = self.departure_distance(cx);
         let result = self.app.operate(operation, origin, distance, response_to);
@@ -245,7 +264,17 @@ impl Viewer {
                 .retain(|link| link.order > self.latest_navigation_order);
         }
         if let OperationResult::Pending(request) = &result {
-            cx.emit(request.clone());
+            if supersedes_links {
+                for (_, line) in self.read_orders.values_mut() {
+                    *line = false;
+                }
+            }
+            self.read_orders.insert(request.id, (order, waits_for_line));
+            if waits_for_position {
+                self.position_reads.push(request.clone());
+            } else {
+                cx.emit(request.clone());
+            }
         }
         cx.notify();
         result
@@ -270,10 +299,12 @@ impl Viewer {
         cx: &mut Context<Self>,
     ) {
         self.settle_position(cx);
-        if self
-            .app
-            .position_request()
-            .is_some_and(|request| matches!(request.target, app::PositionTarget::Heading(_)))
+        if self.app.position_request().is_some_and(|request| {
+            matches!(
+                request.target,
+                app::PositionTarget::Heading(_) | app::PositionTarget::SourceLine(_)
+            )
+        }) || self.read_orders.values().any(|(_, line)| *line)
         {
             self.deferred_links.push_back(DeferredLink {
                 target,
@@ -327,13 +358,42 @@ impl Viewer {
         }
     }
 
-    pub fn complete(&mut self, result: ReadResult, cx: &mut Context<Self>) {
+    pub fn complete(&mut self, result: impl Into<app::ReadResponse>, cx: &mut Context<Self>) {
         let previous_watch = self.app.watch_target().cloned();
         self.settle_position(cx);
         let distance = self.departure_distance(cx);
-        let Some(completion) = self.app.complete_at(result, distance) else {
+        let previous_position = self.app.position_request().map(|request| request.serial);
+        let completion = match result.into() {
+            app::ReadResponse::Loaded(result) => self.app.complete_at(result, distance),
+            app::ReadResponse::Resolved { request, key } => {
+                match self.app.resolve_at(request, key, distance) {
+                    Some(app::ReadResolution::Continue(request)) => {
+                        cx.emit(request);
+                        if let Some(reload) = self.app.take_automatic_reload() {
+                            cx.emit(reload);
+                        }
+                        cx.notify();
+                        return;
+                    }
+                    Some(app::ReadResolution::Complete(completion)) => Some(completion),
+                    None => None,
+                }
+            }
+        };
+        let Some(completion) = completion else {
             return;
         };
+        let order = self
+            .read_orders
+            .remove(&completion.request_id)
+            .map(|(order, _)| order)
+            .unwrap_or(self.latest_navigation_order);
+        if self.app.position_request().is_some_and(|request| {
+            Some(request.serial) != previous_position
+                && request.pending_movements == PendingMovementPolicy::Replace
+        }) {
+            self.document.supersede_movements(order);
+        }
         self.focus_body_after_tree_open |= completion.tree_open_succeeded;
         if completion.adopted {
             let panel_closed = self.link_panel.take().is_some();
@@ -448,7 +508,13 @@ impl Render for Viewer {
                     .document()
                     .is_some_and(|document| document.key == link.document)
         });
+        if self.app.position_request().is_none() {
+            for request in std::mem::take(&mut self.position_reads) {
+                cx.emit(request);
+            }
+        }
         if self.app.position_request().is_none()
+            && !self.read_orders.values().any(|(_, line)| *line)
             && let Some(link) = self.deferred_links.pop_front()
         {
             self.follow_link(link.target, link.order, window, cx);

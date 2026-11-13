@@ -11,7 +11,7 @@ use std::{
 };
 
 pub(super) const MAX_FRAME: usize = 65536;
-const VERSION: u16 = 1;
+const VERSION: u16 = 2;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Request {
     pub id: ExternalRequestId,
@@ -56,7 +56,7 @@ impl Request {
     pub(super) fn encode(&self) -> io::Result<Vec<u8>> {
         let mut out = prefix(&self.id, 1)?;
         let opcode = match &self.operation {
-            ExternalOperation::Open(_) => 0,
+            ExternalOperation::Open { .. } => 0,
             ExternalOperation::Scroll(direction) => match direction {
                 ScrollDirection::Down => 1,
                 ScrollDirection::Up => 2,
@@ -71,7 +71,7 @@ impl Request {
             ExternalOperation::Forward => 10,
         };
         out.push(opcode);
-        if let ExternalOperation::Open(path) = &self.operation {
+        if let ExternalOperation::Open { path, line } = &self.operation {
             if !path.is_absolute() {
                 return Err(invalid("open requires an absolute CLI path"));
             }
@@ -81,6 +81,10 @@ impl Request {
             }
             let bytes: Vec<u8> = units.iter().flat_map(|u| u.to_le_bytes()).collect();
             field(&mut out, &bytes)?;
+            out.push(u8::from(line.is_some()));
+            if let Some(line) = line {
+                out.extend_from_slice(&line.get().to_le_bytes());
+            }
         }
         frame(out)
     }
@@ -102,7 +106,17 @@ impl Request {
                 if !path.is_absolute() || units.contains(&0) {
                     return Err(invalid("invalid absolute path"));
                 }
-                ExternalOperation::Open(path)
+                let line = match input.byte()? {
+                    0 => None,
+                    1 => Some(
+                        std::num::NonZeroU64::new(u64::from_le_bytes(
+                            input.take(8)?.try_into().unwrap(),
+                        ))
+                        .ok_or_else(|| invalid("source line must be positive"))?,
+                    ),
+                    _ => return Err(invalid("invalid source line presence flag")),
+                };
+                ExternalOperation::Open { path, line }
             }
             1 => ExternalOperation::Scroll(ScrollDirection::Down),
             2 => ExternalOperation::Scroll(ScrollDirection::Up),
@@ -143,7 +157,7 @@ impl Response {
 struct Decoder<'a>(&'a [u8]);
 impl<'a> Decoder<'a> {
     fn new(payload: &'a [u8], kind: u8) -> io::Result<(Self, ExternalRequestId)> {
-        if payload.len() > MAX_FRAME || payload.get(..3) != Some(&[1, 0, kind]) {
+        if payload.len() > MAX_FRAME || payload.get(..3) != Some(&[VERSION as u8, 0, kind]) {
             return Err(invalid("unsupported protocol version or message kind"));
         }
         let mut input = Self(&payload[3..]);

@@ -10,7 +10,8 @@ pub use crate::core::{ImageLocation, LinkTarget, resolve_image, resolve_link};
 pub use document::{
     Document, DocumentKey, DocumentOperation, ExternalRequestId, Generation, LoadedDocument,
     OperationError, OperationOrigin, OperationResult, PendingMovementPolicy, PositionRequest,
-    PositionTarget, ReadCompletion, ReadRequest, ReadRequestId, ReadResult, WatchTarget,
+    PositionTarget, ReadCompletion, ReadPhase, ReadRequest, ReadRequestId, ReadResolution,
+    ReadResponse, ReadResult, WatchTarget,
 };
 #[cfg(test)]
 pub use mermaid::{Diagram, DiagramStatus};
@@ -25,7 +26,10 @@ use search::SearchState;
 /// Public operations shared by CLI parsing and UI delivery; no GPUI or I/O types.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExternalOperation {
-    Open(PathBuf),
+    Open {
+        path: PathBuf,
+        line: Option<std::num::NonZeroU64>,
+    },
     Scroll(ScrollDirection),
     Top,
     Bottom,
@@ -68,7 +72,8 @@ pub struct App {
     search: SearchState,
     mermaid: MermaidState,
     history: History,
-    pending_operation: Option<(document::ReadRequestId, PendingOperation)>,
+    pending_operations: BTreeMap<ReadRequestId, PendingOperation>,
+    source_line: Option<std::num::NonZeroU64>,
     position: Option<PositionRequest>,
     next_position: u64,
     watch_target: Option<WatchTarget>,
@@ -78,7 +83,7 @@ pub struct App {
 }
 
 enum PendingOperation {
-    Open,
+    Open(Option<std::num::NonZeroU64>),
     Reload,
     Heading(String),
     History { index: usize, distance: f32 },
@@ -123,6 +128,8 @@ impl App {
         self.open_request(path, None)
     }
 
+    /// Fixture read through the unchanged link path. External-open tests use
+    /// operate/resolve_at explicitly to exercise identity and load separately.
     #[cfg(test)]
     pub fn open_request(
         &mut self,
@@ -131,12 +138,12 @@ impl App {
     ) -> ReadRequest {
         match self.operate(
             DocumentOperation::Open(path),
-            OperationOrigin::External,
+            OperationOrigin::Link,
             0.,
             response_to,
         ) {
             OperationResult::Pending(request) => request,
-            OperationResult::Complete { .. } => panic!("open always reads"),
+            OperationResult::Complete { .. } => panic!("fixture link open always reads"),
         }
     }
 
@@ -155,16 +162,22 @@ impl App {
             outcome,
         };
         let tree = match &operation {
-            DocumentOperation::TreeOpen { root, .. } => Some(document::TreeOpen {
-                root: root.clone(),
-                current: self.document().map(|doc| doc.key.clone()),
-            }),
+            DocumentOperation::TreeOpen { root, .. } => {
+                Some(document::TreeOpen { root: root.clone() })
+            }
             _ => None,
         };
+        let skip_same = matches!(
+            &operation,
+            DocumentOperation::ExternalOpen { .. } | DocumentOperation::TreeOpen { .. }
+        ) || (matches!(&operation, DocumentOperation::Open(_))
+            && origin == OperationOrigin::External);
+        let reload = matches!(&operation, DocumentOperation::Reload);
         let (path, pending) = match operation {
             DocumentOperation::Initial(path)
             | DocumentOperation::Open(path)
-            | DocumentOperation::TreeOpen { path, .. } => (path, PendingOperation::Open),
+            | DocumentOperation::TreeOpen { path, .. } => (path, PendingOperation::Open(None)),
+            DocumentOperation::ExternalOpen { path, line } => (path, PendingOperation::Open(line)),
             DocumentOperation::Reload => {
                 let Some(document) = self.document() else {
                     return complete(Err(OperationError::DocumentUnavailable));
@@ -177,7 +190,6 @@ impl App {
                 };
                 let path = document.path.clone();
                 self.document.supersede();
-                self.pending_operation = None;
                 self.history.push(path, distance);
                 self.request_position(PositionTarget::Heading(id), PendingMovementPolicy::Replace);
                 return complete(Ok(()));
@@ -204,14 +216,42 @@ impl App {
                 )
             }
         };
-        let request = self.document.open(path, response_to, origin, tree);
-        self.pending_operation = Some((request.id, pending));
+        let request = self
+            .document
+            .open(path, response_to, origin, tree, skip_same, reload);
+        self.pending_operations.insert(request.id, pending);
         OperationResult::Pending(request)
     }
 
     #[cfg(test)]
-    pub fn complete(&mut self, result: ReadResult) -> Option<ReadCompletion> {
-        self.complete_at(result, 0.)
+    pub fn complete(&mut self, result: impl Into<ReadResponse>) -> Option<ReadCompletion> {
+        match result.into() {
+            ReadResponse::Loaded(result) => self.complete_at(result, 0.),
+            ReadResponse::Resolved { request, key } => match self.resolve_at(request, key, 0.)? {
+                ReadResolution::Complete(completion) => Some(completion),
+                ReadResolution::Continue(_) => {
+                    panic!("identity resolution requires a load continuation")
+                }
+            },
+        }
+    }
+
+    pub fn resolve_at(
+        &mut self,
+        request: ReadRequest,
+        key: Result<DocumentKey, String>,
+        distance: f32,
+    ) -> Option<ReadResolution> {
+        let resolution = self.document.resolve(request, key)?;
+        if let ReadResolution::Complete(completion) = &resolution {
+            self.finish_operation(
+                completion,
+                self.document().map(|doc| doc.key.clone()),
+                None,
+                distance,
+            );
+        }
+        Some(resolution)
     }
 
     /// Capture the departure distance immediately before replacing the displayed body.
@@ -224,27 +264,59 @@ impl App {
             matches!(request.target, PositionTarget::Heading(_)).then(|| request.target.clone())
         });
         let completion = self.document.complete(result)?;
-        if self
-            .pending_operation
-            .as_ref()
-            .is_some_and(|(id, _)| *id == completion.request_id)
-        {
-            let (_, operation) = self.pending_operation.take().expect("matching operation");
+        self.finish_operation(&completion, previous_key, pending_heading, distance);
+        Some(completion)
+    }
+
+    fn finish_operation(
+        &mut self,
+        completion: &ReadCompletion,
+        previous_key: Option<DocumentKey>,
+        pending_heading: Option<PositionTarget>,
+        distance: f32,
+    ) {
+        if let Some(operation) = self.pending_operations.remove(&completion.request_id) {
+            if completion.current && completion.outcome.is_ok() && !completion.adopted {
+                if let PendingOperation::Open(Some(line)) = operation {
+                    self.source_line = Some(line);
+                    self.request_position(
+                        PositionTarget::SourceLine(line),
+                        PendingMovementPolicy::Replace,
+                    );
+                }
+                return;
+            }
             if completion.adopted {
                 let document = self.document().expect("adopted document");
                 let same_document = previous_key.as_ref() == Some(&document.key);
                 let path = document.path.clone();
+                if !same_document {
+                    self.source_line = None;
+                }
                 let (target, pending_movements) = match operation {
-                    PendingOperation::Open if same_document => (
+                    PendingOperation::Open(Some(line)) => {
+                        if !same_document {
+                            self.history.push(path, distance);
+                        }
+                        self.source_line = Some(line);
+                        (
+                            PositionTarget::SourceLine(line),
+                            PendingMovementPolicy::Replace,
+                        )
+                    }
+                    PendingOperation::Open(None) if same_document => (
                         pending_heading.unwrap_or(PositionTarget::Distance(distance)),
                         PendingMovementPolicy::Carry,
                     ),
-                    PendingOperation::Open => {
+                    PendingOperation::Open(None) => {
                         self.history.push(path, distance);
                         (PositionTarget::Top, PendingMovementPolicy::Replace)
                     }
                     PendingOperation::Reload => (
-                        pending_heading.unwrap_or(PositionTarget::Distance(distance)),
+                        self.source_line
+                            .map(PositionTarget::SourceLine)
+                            .or(pending_heading)
+                            .unwrap_or(PositionTarget::Distance(distance)),
                         PendingMovementPolicy::Carry,
                     ),
                     PendingOperation::Heading(id) => {
@@ -277,7 +349,15 @@ impl App {
                 self.search.replace_document();
             }
         }
-        Some(completion)
+    }
+
+    pub fn refresh_source_line(&mut self) {
+        if let Some(line) = self.source_line {
+            self.request_position(
+                PositionTarget::SourceLine(line),
+                PendingMovementPolicy::Replace,
+            );
+        }
     }
 
     pub fn watch_target(&self) -> Option<&WatchTarget> {

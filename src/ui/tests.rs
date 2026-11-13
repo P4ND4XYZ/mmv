@@ -12,6 +12,7 @@ mod phase_one;
 mod production;
 mod selection_panel;
 mod selection_panel_lifecycle;
+mod source_lines;
 mod source_preview;
 mod theme;
 
@@ -657,7 +658,10 @@ mod pipe_notifications {
             let result = client.request(
                 infra::Request {
                     id: ExternalRequestId("same-external-id".into()),
-                    operation: ExternalOperation::Open(r"C:\fixtures\never-finishes.md".into()),
+                    operation: ExternalOperation::Open {
+                        path: r"C:\fixtures\never-finishes.md".into(),
+                        line: None,
+                    },
                 },
                 infra::test_support::deadline(Duration::from_millis(150)),
             );

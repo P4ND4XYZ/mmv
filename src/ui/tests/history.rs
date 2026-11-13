@@ -64,9 +64,12 @@ impl Session {
         let (window, view) = super::open(cx, fixture());
         cx.update(|cx| {
             view.update(cx, |viewer, cx| {
-                let OperationResult::Pending(request) =
-                    viewer.request_document(files.0.join("a.md"), None, cx)
-                else {
+                let OperationResult::Pending(request) = viewer.request_operation(
+                    DocumentOperation::Initial(files.0.join("a.md")),
+                    OperationOrigin::External,
+                    None,
+                    cx,
+                ) else {
                     panic!("initial real file read")
                 };
                 viewer.complete(crate::infra::read_document(request), cx);

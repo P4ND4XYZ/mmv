@@ -84,14 +84,20 @@ fn production_pipe_reverse_completions_with_colliding_external_ids_and_disconnec
     let path = view.read_with(cx, |view, _| view.path.clone());
     let (a, a_rx) = request(
         &namespace,
-        ExternalOperation::Open(path.with_file_name("a.md")),
+        ExternalOperation::Open {
+            path: path.with_file_name("a.md"),
+            line: None,
+        },
         "collision",
         false,
     );
     pump_until(cx, || reads.borrow().len() == 1);
     let (b, b_rx) = request(
         &namespace,
-        ExternalOperation::Open(path.with_file_name("b.md")),
+        ExternalOperation::Open {
+            path: path.with_file_name("b.md"),
+            line: None,
+        },
         "collision",
         false,
     );
@@ -129,7 +135,10 @@ fn production_pipe_reverse_completions_with_colliding_external_ids_and_disconnec
 
     let (gone, gone_rx) = request(
         &namespace,
-        ExternalOperation::Open(path.with_file_name("late.md")),
+        ExternalOperation::Open {
+            path: path.with_file_name("late.md"),
+            line: None,
+        },
         "gone",
         true,
     );
@@ -154,7 +163,10 @@ fn production_pipe_reverse_completions_with_colliding_external_ids_and_disconnec
     next.join().unwrap();
     let (held, held_rx) = request(
         &namespace,
-        ExternalOperation::Open(path.with_file_name("held.md")),
+        ExternalOperation::Open {
+            path: path.with_file_name("held.md"),
+            line: None,
+        },
         "shutdown",
         false,
     );
@@ -219,10 +231,26 @@ fn production_pipe_reads_real_files_and_preserves_prompt_composition_and_focus(
         .unwrap();
         let mode = view.read_with(cx, |view, _| view.app.mode.clone());
         for (operation, success) in [
-            (ExternalOperation::Open(path.clone()), true),
+            (
+                ExternalOperation::Open {
+                    path: path.clone(),
+                    line: std::num::NonZeroU64::new(150),
+                },
+                true,
+            ),
+            (
+                ExternalOperation::Open {
+                    path: path.clone(),
+                    line: std::num::NonZeroU64::new(175),
+                },
+                true,
+            ),
             (ExternalOperation::Bottom, true),
             (
-                ExternalOperation::Open(path.with_file_name("missing.md")),
+                ExternalOperation::Open {
+                    path: path.with_file_name("missing.md"),
+                    line: None,
+                },
                 false,
             ),
             (ExternalOperation::Top, true),

@@ -481,8 +481,12 @@ fn production_watch_connection_catches_up_a_save_before_registration(cx: &mut Te
     frame(cx, window);
     let stale_result = cx.update(|cx| {
         view.update(cx, |viewer, cx| {
-            let OperationResult::Pending(request) = viewer.request_document(path.clone(), None, cx)
-            else {
+            let OperationResult::Pending(request) = viewer.request_operation(
+                DocumentOperation::Initial(path.clone()),
+                OperationOrigin::External,
+                None,
+                cx,
+            ) else {
                 panic!("read required")
             };
             crate::infra::read_document(request)
@@ -560,6 +564,154 @@ fn production_watch_connection_catches_up_a_save_before_registration(cx: &mut Te
 }
 
 #[gpui_kit::test]
+fn real_notify_save_and_same_file_source_line_preserve_both_arrival_orders(
+    cx: &mut TestAppContext,
+) {
+    use crate::app::{ExternalOperation, PositionTarget};
+    use std::time::Duration;
+
+    struct SavedFile(PathBuf);
+    impl Drop for SavedFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    // Real file, canonical identity, notify worker, app and TextView. Only
+    // dispatch/read-result delivery is controlled to make the order explicit.
+    for save_first in [true, false] {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let file = SavedFile(std::env::temp_dir().join(format!(
+            "mmv-source-line-save-{}-{}.md",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        )));
+        let old_source = (0..240)
+            .map(|ix| format!("old paragraph {ix}\n\n"))
+            .collect::<String>();
+        let new_source = (0..240)
+            .map(|ix| format!("new paragraph {ix}\n\n"))
+            .collect::<String>();
+        std::fs::write(&file.0, &old_source).unwrap();
+        let (window, view) = super::open(cx, String::new());
+        cx.update(|cx| {
+            view.update(cx, |viewer, cx| {
+                let OperationResult::Pending(request) = viewer.request_operation(
+                    DocumentOperation::Initial(file.0.clone()),
+                    OperationOrigin::External,
+                    None,
+                    cx,
+                ) else {
+                    panic!("initial read");
+                };
+                viewer.complete(crate::infra::read_document(request), cx);
+            })
+        });
+        frame(cx, window);
+        let target = view.read_with(cx, |viewer, _| viewer.app.watch_target().unwrap().clone());
+        let (watch, notices) = crate::infra::FileWatch::new();
+        watch.set_target(target.clone());
+        let crate::infra::WatchNotice::Ready(actual, ready) =
+            notices.recv_timeout(Duration::from_secs(5)).unwrap()
+        else {
+            panic!("watch ready");
+        };
+        assert_eq!(actual, target);
+        ready.unwrap();
+        let requests = Rc::new(RefCell::new(Vec::<ReadRequest>::new()));
+        let captured = requests.clone();
+        let _subscription = cx.update(|cx| {
+            cx.subscribe(&view, move |_, request: &ReadRequest, _| {
+                captured.borrow_mut().push(request.clone())
+            })
+        });
+        let open_line = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                view.update(cx, |viewer, cx| {
+                    let generation = viewer.app.document().unwrap().generation;
+                    let text = viewer.document.text.clone();
+                    let OperationResult::Pending(request) = viewer.request_external(
+                        ExternalOperation::Open {
+                            path: file.0.clone(),
+                            line: std::num::NonZeroU64::new(241),
+                        },
+                        ExternalRequestId("save-line".into()),
+                        cx,
+                    ) else {
+                        panic!("identity check");
+                    };
+                    viewer.complete(crate::infra::read_document(request), cx);
+                    assert_eq!(viewer.app.document().unwrap().generation, generation);
+                    assert_eq!(viewer.document.text, text);
+                })
+            });
+        };
+        if !save_first {
+            open_line(cx);
+            for _ in 0..6 {
+                frame(cx, window);
+            }
+        }
+        std::fs::write(&file.0, &new_source).unwrap();
+        let crate::infra::WatchNotice::Changed(actual) =
+            notices.recv_timeout(Duration::from_secs(5)).unwrap()
+        else {
+            panic!("actual save notification");
+        };
+        cx.update(|cx| view.update(cx, |viewer, cx| viewer.watch_changed(&actual, cx)));
+        let reload = {
+            let mut requests = requests.borrow_mut();
+            let ix = requests
+                .iter()
+                .position(|request| request.origin == OperationOrigin::Automatic)
+                .expect("save must start reload");
+            requests.remove(ix)
+        };
+        let result = crate::infra::read_document(reload);
+        if save_first {
+            open_line(cx);
+            view.read_with(cx, |viewer, _| {
+                assert!(
+                    viewer.app.is_loading(),
+                    "line confirmation must not cancel saved body"
+                )
+            });
+        }
+        cx.update(|cx| {
+            view.update(cx, |viewer, cx| {
+                viewer.complete(result, cx);
+                assert_eq!(viewer.app.document().unwrap().source.as_str(), new_source);
+                assert_eq!(
+                    viewer.app.position_request().unwrap().target,
+                    PositionTarget::SourceLine(std::num::NonZeroU64::new(241).unwrap())
+                );
+                assert_eq!(viewer.app.watch_target(), Some(&target));
+            })
+        });
+        for _ in 0..8 {
+            frame(cx, window);
+        }
+        view.read_with(cx, |viewer, cx| {
+            let list = viewer.document.text.read(cx).list_state();
+            // Paragraph 120 is source line 241 (one blank line per paragraph).
+            let bounds = list.bounds_for_item(120).unwrap();
+            let viewport = list.viewport_bounds();
+            assert!(
+                bounds.bottom() > viewport.top() && bounds.top() < viewport.bottom(),
+                "save_first={save_first}: {bounds:?} / {viewport:?}"
+            );
+            assert!(viewer.app.position_request().is_none());
+        });
+        let worker = watch.stop();
+        let (done, stopped) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            worker.join().unwrap();
+            let _ = done.send(());
+        });
+        stopped.recv_timeout(Duration::from_secs(5)).unwrap();
+    }
+}
+
+#[gpui_kit::test]
 fn real_save_uses_reload_distance_and_preserves_search_command_input(cx: &mut TestAppContext) {
     use std::time::Duration;
     let dir = std::env::temp_dir().join(format!("mmv-ui-watch-{}", std::process::id()));
@@ -569,8 +721,12 @@ fn real_save_uses_reload_distance_and_preserves_search_command_input(cx: &mut Te
     let (window, view) = super::open(cx, fixture());
     cx.update(|cx| {
         view.update(cx, |viewer, cx| {
-            let OperationResult::Pending(request) = viewer.request_document(path.clone(), None, cx)
-            else {
+            let OperationResult::Pending(request) = viewer.request_operation(
+                DocumentOperation::Initial(path.clone()),
+                OperationOrigin::External,
+                None,
+                cx,
+            ) else {
                 panic!("read required")
             };
             viewer.complete(crate::infra::read_document(request), cx);
@@ -709,8 +865,9 @@ fn external_replacement_keeps_search_and_command_input_entity_text_and_focus(
         scroll(cx, &view, 480.);
         cx.update(|cx| {
             view.update(cx, |viewer, cx| {
-                let result = viewer.request_document(
-                    viewer.path.clone(),
+                let result = viewer.request_operation(
+                    DocumentOperation::Reload,
+                    OperationOrigin::External,
                     Some(ExternalRequestId("open".into())),
                     cx,
                 );
