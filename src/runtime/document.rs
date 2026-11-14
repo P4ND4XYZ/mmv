@@ -5,11 +5,13 @@ pub(crate) fn connect_document_reads(view: &gpui_kit::Entity<ui::Viewer>, cx: &m
         let request = request.clone();
         let result = cx
             .background_executor()
-            .spawn(async move { infra::read_document(request) });
+            .spawn(async move { infra::read_document_classified(request) });
         let view = view.downgrade();
         cx.spawn(async move |cx| {
             let result = result.await;
-            let _ = view.update(cx, |view, cx| view.complete(result, cx));
+            let _ = view.update(cx, |view, cx| {
+                view.complete_classified(result.0, result.1, cx)
+            });
         })
         .detach();
     })

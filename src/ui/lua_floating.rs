@@ -125,7 +125,7 @@ impl Viewer {
         match context.ui_key(self.lua.lua(), &key) {
             Ok(true) => {
                 cx.stop_propagation();
-                self.pump_lua();
+                self.pump_lua(cx);
                 self.sync_lua_focus(window, cx);
                 cx.notify();
             }
@@ -135,7 +135,7 @@ impl Viewer {
                     None,
                     crate::lua::ErrorInfo::new(error, crate::lua::Phase::Event, None),
                 );
-                self.pump_lua();
+                self.pump_lua(cx);
                 cx.stop_propagation();
                 cx.notify();
             }
@@ -192,7 +192,7 @@ impl Viewer {
                                     .lua
                                     .context()
                                     .close_owner(owner, CloseReason::OutsideClick);
-                                this.pump_lua();
+                                this.pump_lua(cx);
                                 this.sync_lua_focus(window, cx);
                                 cx.notify();
                             }
@@ -334,7 +334,7 @@ fn render_node(
                             .lua
                             .context()
                             .activate_button(this.lua.lua(), owner, identity);
-                        this.pump_lua();
+                        this.pump_lua(cx);
                         this.sync_lua_focus(window, cx);
                         cx.stop_propagation();
                         cx.notify();

@@ -184,6 +184,7 @@ pub(super) struct State {
     pub callbacks: BTreeMap<CallbackId, Callback>,
     pub owners: BTreeMap<OwnerId, Owner>,
     pub pending: VecDeque<Pending>,
+    pub replaced: Vec<CallbackId>,
     pub outputs: VecDeque<HostOutput>,
     pub frames: Vec<Frame>,
     pub next_id: u64,
@@ -199,6 +200,7 @@ impl Default for State {
             callbacks: Default::default(),
             owners: Default::default(),
             pending: Default::default(),
+            replaced: Default::default(),
             outputs: Default::default(),
             frames: Vec::new(),
             next_id: 0,
@@ -278,10 +280,17 @@ impl LuaContext {
         Ok(true)
     }
 
+    pub(crate) fn has_callback(&self, callback: CallbackId) -> bool {
+        self.shared.borrow().callbacks.contains_key(&callback)
+    }
+
     fn release_callbacks(state: &mut State, owner: OwnerId) {
         state
             .callbacks
             .retain(|_, callback| callback.scope.owner != Some(owner));
+        state
+            .replaced
+            .retain(|callback| state.callbacks.contains_key(callback));
         state.pending.retain(|pending| match pending {
             Pending::Normal { callback, .. } => state.callbacks.contains_key(callback),
             // Keep error reports: after close they must go to host fallback.
@@ -339,6 +348,7 @@ impl LuaContext {
         let mut state = self.shared.borrow_mut();
         let removed = state.callbacks.remove(&callback).is_some();
         state.keys.retain(|_, registered| *registered != callback);
+        state.replaced.retain(|registered| *registered != callback);
         state.pending.retain(
             |pending| !matches!(pending, Pending::Normal { callback: id, .. } if *id == callback),
         );

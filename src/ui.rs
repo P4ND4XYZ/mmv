@@ -5,6 +5,7 @@ mod input;
 mod links;
 mod lua;
 mod lua_floating;
+mod lua_navigation;
 mod mermaid;
 pub(crate) mod pane;
 mod search;
@@ -43,10 +44,13 @@ pub struct Viewer {
     focus_body_after_tree_open: bool,
     message: Option<String>,
     message_is_error: bool,
+    message_level: Option<(String, crate::config::Group)>,
     display_error: Option<String>,
     config: crate::config::Config,
     lua: crate::lua::LuaRuntime,
     floating_ui: lua_floating::FloatingUi,
+    lua_navigation: lua_navigation::NavigationState,
+    browser_launcher: crate::infra::browser::BrowserLauncher,
     _lua_keys: Subscription,
     _lua_closed: Subscription,
     _lua_quit: Subscription,
@@ -135,14 +139,14 @@ impl Viewer {
         let viewer = cx.weak_entity();
         let lua_closed = cx.on_window_closed(move |cx, closed| {
             if closed == host_window.window_id() {
-                let _ = viewer.update(cx, |this, _| this.shutdown_lua());
+                let _ = viewer.update(cx, |this, cx| this.shutdown_lua(cx));
             }
         });
-        let lua_quit = cx.on_app_quit(|this, _| {
-            this.shutdown_lua();
+        let lua_quit = cx.on_app_quit(|this, cx| {
+            this.shutdown_lua(cx);
             async {}
         });
-        cx.on_release(|this, _| this.shutdown_lua()).detach();
+        cx.on_release(|this, _| this.release_lua()).detach();
         Self {
             app: app::App::default(),
             path,
@@ -155,10 +159,13 @@ impl Viewer {
             focus_body_after_tree_open: false,
             message: None,
             message_is_error: false,
+            message_level: None,
             display_error: None,
             config,
             lua,
             floating_ui: Default::default(),
+            lua_navigation: Default::default(),
+            browser_launcher: Box::new(crate::infra::browser::launch),
             _lua_keys: lua_keys,
             _lua_closed: lua_closed,
             _lua_quit: lua_quit,
@@ -224,6 +231,7 @@ impl Viewer {
                     };
                     self.next_operation_order += 1;
                     self.latest_navigation_order = self.next_operation_order;
+                    self.supersede_lua_navigation(self.next_operation_order);
                     self.deferred_links.clear();
                     self.queue_movement(movement, self.next_operation_order, cx);
                     Ok(())
@@ -313,6 +321,7 @@ impl Viewer {
                     }
             )
         {
+            self.supersede_lua_navigation(order);
             self.latest_navigation_order = self.latest_navigation_order.max(order);
             self.deferred_links
                 .retain(|link| link.order > self.latest_navigation_order);
@@ -461,6 +470,7 @@ impl Viewer {
         }) {
             self.document.supersede_movements(order);
         }
+        self.lua_read_completed(&completion);
         self.focus_body_after_tree_open |= completion.tree_open_succeeded;
         if completion.adopted {
             let panel_closed = self.link_panel.take().is_some();
@@ -484,6 +494,7 @@ impl Viewer {
             self.message_is_error = false;
             self.document.replace(generation, pending_movements, cx);
             self.display_error = None;
+            self.publish_lua_document(cx);
             self.accept_rendered_text(generation, cx);
         }
         if self.app.watch_target() != previous_watch.as_ref()
@@ -496,6 +507,7 @@ impl Viewer {
             cx.emit(request);
         }
         self.start_next_diagram(cx);
+        self.pump_lua(cx);
         cx.notify();
     }
 
@@ -523,6 +535,11 @@ impl Viewer {
         if self.app.error().is_some() || self.display_error.is_some() {
             Some(Group::Error)
         } else if self.message.is_some() {
+            if let Some((message, level)) = &self.message_level
+                && self.message.as_ref() == Some(message)
+            {
+                return Some(*level);
+            }
             Some(if self.message_is_error {
                 Group::Error
             } else {
@@ -557,7 +574,8 @@ impl Viewer {
 
 impl Render for Viewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.pump_lua();
+        self.pump_lua(cx);
+        self.advance_lua_navigation(cx);
         if std::mem::take(&mut self.focus_body_after_tree_open)
             && self.tree.visible
             && self.tree.focus.is_focused(window)

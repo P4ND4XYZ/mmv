@@ -1,3 +1,4 @@
+pub(crate) mod browser;
 mod config;
 mod document;
 pub mod file_tree;
@@ -73,7 +74,9 @@ pub use {
 };
 
 pub use config::load_config;
+#[cfg(test)]
 pub use document::read_document;
+pub(crate) use document::{ReadFailureKind, read_document_classified};
 pub use logging::{log_config_failure, log_diagram_failure, log_document_failure};
 pub use mermaid::{cleanup_mermaid_scratch, generate_diagram};
 pub use watch::{FileWatch, WatchNotice};

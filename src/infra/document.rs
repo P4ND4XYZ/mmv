@@ -1,13 +1,58 @@
 use crate::app::{DocumentKey, LoadedDocument, ReadPhase, ReadRequest, ReadResponse, ReadResult};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReadFailureKind {
+    NotFound,
+    AccessDenied,
+    InvalidUtf8,
+    Other,
+}
+
+impl ReadFailureKind {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::NotFound => "file_not_found",
+            Self::AccessDenied => "access_denied",
+            Self::InvalidUtf8 => "invalid_utf8",
+            Self::Other => "read_failed",
+        }
+    }
+
+    fn classify(error: &std::io::Error) -> Self {
+        use std::io::ErrorKind;
+        if matches!(error.raw_os_error(), Some(32 | 33)) {
+            return Self::AccessDenied;
+        }
+        match error.kind() {
+            ErrorKind::NotFound => Self::NotFound,
+            ErrorKind::PermissionDenied | ErrorKind::WouldBlock => Self::AccessDenied,
+            ErrorKind::InvalidData => Self::InvalidUtf8,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// Existing response-only fixtures; production preserves the classification.
+#[cfg(test)]
 pub fn read_document(request: ReadRequest) -> ReadResponse {
-    let key = resolve_key(&request).map_err(|error| report_read_error(&request, error));
+    read_document_classified(request).0
+}
+
+/// Preserve typed I/O classification alongside the existing app response.
+pub(crate) fn read_document_classified(
+    request: ReadRequest,
+) -> (ReadResponse, Option<ReadFailureKind>) {
+    let mut failure = None;
+    let mut report = |error: std::io::Error| {
+        failure = Some(ReadFailureKind::classify(&error));
+        report_read_error(&request, error)
+    };
+    let key = resolve_key(&request).map_err(&mut report);
     if request.phase == ReadPhase::Resolve {
-        return ReadResponse::Resolved { request, key };
+        return (ReadResponse::Resolved { request, key }, failure);
     }
     let content = key.and_then(|key| {
-        let source = std::fs::read_to_string(&request.path)
-            .map_err(|error| report_read_error(&request, error))?;
+        let source = std::fs::read_to_string(&request.path).map_err(&mut report)?;
         Ok(LoadedDocument {
             key,
             source: source
@@ -16,7 +61,10 @@ pub fn read_document(request: ReadRequest) -> ReadResponse {
                 .to_owned(),
         })
     });
-    ReadResponse::Loaded(ReadResult { request, content })
+    (
+        ReadResponse::Loaded(ReadResult { request, content }),
+        failure,
+    )
 }
 
 fn resolve_key(request: &ReadRequest) -> std::io::Result<DocumentKey> {

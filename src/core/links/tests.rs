@@ -100,6 +100,22 @@ fn ranking_uses_best_field_score_and_preserves_ids_after_filtering() {
 }
 
 #[test]
+fn public_fuzzy_uses_the_ranker_calculation_and_empty_query_is_uniform() {
+    let mut matcher = LinkMatcher::default();
+    assert_eq!(
+        matcher.fuzzy("", "日本語").unwrap(),
+        matcher.fuzzy("", "").unwrap()
+    );
+    assert_eq!(matcher.fuzzy("不存在", "design"), None);
+    let (score, ranges) = matcher.fuzzy("日本dsg", "日本語design").unwrap();
+    assert_eq!(ranges, [0..6, 9..10, 11..12, 13..14]);
+    let values = links(&[("日本語design", "#other")]);
+    let ranked = matcher.rank(&values, "日本dsg");
+    assert_eq!(score, ranked[0].score);
+    assert_eq!(ranges, ranked[0].name_ranges);
+}
+
+#[test]
 fn literal_queries_do_not_enable_fzf_operators_or_word_reordering() {
     let values = links(&[
         ("^a$b!c'd|e\\f g", "#target"),

@@ -1,7 +1,11 @@
 //! Resident Lua VM. No mutable runtime borrow may cross a call into Lua.
 pub(crate) mod callbacks;
+pub(crate) mod document;
 pub(crate) mod host;
 pub(crate) mod keymap;
+pub(crate) mod matching;
+pub(crate) mod navigation;
+pub(crate) mod notify;
 pub(crate) mod readonly;
 pub(crate) mod state;
 pub(crate) mod ui;
@@ -40,6 +44,7 @@ pub(crate) struct LuaContext {
     shared: Rc<RefCell<callbacks::State>>,
     pub(crate) ui: Rc<RefCell<ui::UiState>>,
     pub(crate) readonly: readonly::ReadonlyTypes,
+    pub(crate) documents: Rc<RefCell<document::Documents>>,
 }
 
 pub(crate) struct LuaRuntime {
@@ -60,11 +65,16 @@ impl LuaRuntime {
             shared: Rc::new(RefCell::new(callbacks::State::default())),
             ui: Default::default(),
             readonly: Default::default(),
+            documents: Default::default(),
         };
         let api = lua.create_table()?;
         crate::config::lua::install(&lua, &api, &context)?;
         keymap::install(&lua, &api, &context)?;
         ui::install(&lua, &api, &context)?;
+        document::install(&lua, &api, &context)?;
+        matching::install(&lua, &api, &context)?;
+        navigation::install(&lua, &api, &context)?;
+        notify::install(&lua, &api, &context)?;
         install(&lua, &api, &context)?;
         lua.register_module("mmv", api)?;
         Ok(Self { lua, context })
@@ -154,6 +164,20 @@ impl LuaRuntime {
             self.context.flush_ui(&self.lua);
         }
         result
+    }
+
+    /// Leave unknown typed requests queued for their owning adapter.
+    pub(crate) fn take_request<T: 'static>(&self) -> Option<host::HostRequest> {
+        let mut state = self.context.shared.borrow_mut();
+        if !state.frames.is_empty()
+            || !matches!(state.outputs.front(), Some(HostOutput::Request(request)) if request.operation.is::<T>())
+        {
+            return None;
+        }
+        match state.outputs.pop_front() {
+            Some(HostOutput::Request(request)) => Some(request),
+            _ => unreachable!(),
+        }
     }
 
     pub(crate) fn take_output(&self) -> Option<HostOutput> {

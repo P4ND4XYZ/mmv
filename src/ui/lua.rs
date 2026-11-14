@@ -1,24 +1,64 @@
-use crate::lua::Pump;
+use crate::lua::{Pump, navigation::OpenRequest, notify::Notice};
+use gpui_kit::Context;
 
 use super::Viewer;
 
 impl Viewer {
-    pub(super) fn shutdown_lua(&mut self) {
+    /// Entity release has only App, not a live Viewer Context. Release owners
+    /// and finish close notifications, but never start new navigation at exit.
+    pub(super) fn release_lua(&mut self) {
         let _ = self.lua.context().shutdown_ui();
-        self.pump_lua();
+        loop {
+            match self.lua.pump_one() {
+                Pump::Dispatched => (),
+                Pump::HostPending => {
+                    if let Some(error) = self.lua.take_error() {
+                        crate::infra::log_document_failure(
+                            std::path::Path::new("[lua]"),
+                            &error.traceback,
+                        );
+                    } else if let Some(request) = self.lua.take_request::<OpenRequest>() {
+                        let request = request.operation.downcast::<OpenRequest>().unwrap();
+                        if let Some(callback) = request.delivery.callback {
+                            self.lua.context().cancel(callback);
+                        }
+                    } else if let Some(request) = self.lua.take_request::<Notice>() {
+                        self.show_lua_notice(*request.operation.downcast::<Notice>().unwrap());
+                    } else {
+                        break;
+                    }
+                }
+                Pump::Busy | Pump::Idle => break,
+            }
+        }
+    }
+
+    pub(super) fn shutdown_lua(&mut self, cx: &mut Context<Self>) {
+        let _ = self.lua.context().shutdown_ui();
+        self.pump_lua(cx);
     }
 
     /// Called only at an outer host boundary. C/E extend HostOutput handling;
     /// F enqueues keys after IME/mode/layer routing, then requests a host pump.
     /// There is no RefCell<LuaRuntime> borrow across Lua execution.
-    pub(super) fn pump_lua(&mut self) {
+    pub(super) fn pump_lua(&mut self, cx: &mut Context<Self>) {
         loop {
             match self.lua.pump_one() {
                 Pump::Dispatched => (),
                 Pump::HostPending => {
+                    if let Some(request) = self.lua.take_request::<OpenRequest>() {
+                        self.open_lua_navigation(
+                            *request.operation.downcast::<OpenRequest>().unwrap(),
+                            cx,
+                        );
+                        continue;
+                    }
+                    if let Some(request) = self.lua.take_request::<Notice>() {
+                        self.show_lua_notice(*request.operation.downcast::<Notice>().unwrap());
+                        cx.notify();
+                        continue;
+                    }
                     let Some(error) = self.lua.take_error() else {
-                        // A later adapter must consume/apply its typed request
-                        // before any further ordinary callbacks are dispatched.
                         break;
                     };
                     crate::infra::log_document_failure(
@@ -62,9 +102,9 @@ mod tests {
             .unwrap()
         });
         cx.run_until_parked();
-        view.update(cx, |view, _| {
+        view.update(cx, |view, cx| {
             assert!(view.lua.enqueue_key("x").unwrap());
-            view.pump_lua();
+            view.pump_lua(cx);
             assert_eq!(view.lua.lua().globals().get::<i64>("result").unwrap(), 41);
             assert!(view.lua.lua().globals().get::<bool>("same").unwrap());
         });

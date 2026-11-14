@@ -100,6 +100,18 @@ pub struct LinkMatcher {
 }
 
 impl LinkMatcher {
+    /// The same literal, case-insensitive calculation used by link ranking.
+    pub fn fuzzy(&mut self, query: &str, text: &str) -> Option<(u16, Vec<Range<usize>>)> {
+        let needle: Vec<char> = query
+            .chars()
+            .map(nucleo_matcher::chars::to_lower_case)
+            .collect();
+        self.matcher.config = Config::DEFAULT;
+        self.matcher.config.ignore_case = true;
+        self.matcher.config.normalize = false;
+        self.field(text, &needle)
+    }
+
     pub fn rank(&mut self, candidates: &[LinkCandidate], query: &str) -> Vec<LinkMatch> {
         // Use explicit codepoints on BOTH sides. Utf32Str::new segments into
         // first-codepoint graphemes; indexing those with char_indices would

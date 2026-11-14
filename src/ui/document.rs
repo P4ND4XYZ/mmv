@@ -493,6 +493,8 @@ impl Viewer {
                     ),
                     cx,
                 );
+            } else if self.lua_position_managed(request) {
+                self.lua_position_unavailable(request, error, cx);
             } else {
                 self.display_error = Some(error);
             }
@@ -517,12 +519,14 @@ impl Viewer {
             }
             self.document.heading_reveal = None;
             self.app.acknowledge_position(request);
+            self.lua_position_completed(request, None);
             cx.notify();
             return;
         }
         if !matches!(request.target, PositionTarget::SourceLine(_)) {
             self.document.cancel_source_reveal();
         }
+        let mut warning = None;
         match &request.target {
             PositionTarget::Top => list.set_offset_from_scrollbar(point(px(0.), px(0.))),
             PositionTarget::Distance(distance) => {
@@ -646,8 +650,21 @@ impl Viewer {
                     // Let TextView reveal the exact projected line within it.
                     if heading.nested {
                         let range = heading.range.clone();
-                        text.update(cx, |text, cx| text.reveal_range(range, cx))
-                            .expect("current heading range");
+                        if text
+                            .update(cx, |text, cx| text.reveal_range(range, cx))
+                            .is_err()
+                        {
+                            if !self.lua_position_unavailable(
+                                request,
+                                "Unable to apply document position".into(),
+                                cx,
+                            ) {
+                                self.display_error =
+                                    Some("Unable to apply document position".into());
+                            }
+                            cx.notify();
+                            return;
+                        }
                         self.document.heading_reveal =
                             Some((request.clone(), self.document.layout_serial));
                         cx.notify();
@@ -655,12 +672,18 @@ impl Viewer {
                     }
                 } else {
                     list.set_offset_from_scrollbar(point(px(0.), px(0.)));
-                    self.message_is_error = false;
-                    self.message = Some(format!("Heading not found: {id}"));
+                    let message = format!("Heading not found: {id}");
+                    if self.lua_position_managed(request) {
+                        warning = Some(("heading_not_found", message));
+                    } else {
+                        self.message_is_error = false;
+                        self.message = Some(message);
+                    }
                 }
             }
         }
         self.app.acknowledge_position(request);
+        self.lua_position_completed(request, warning);
         text.update(cx, |_, cx| cx.notify());
         cx.notify();
     }

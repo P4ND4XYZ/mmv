@@ -91,7 +91,7 @@ fn open_fixture(
 fn open_registered(view: &gpui_kit::Entity<super::super::Viewer>, cx: &mut TestAppContext) {
     view.update(cx, |v, cx| {
         assert!(v.lua.enqueue_key("x").unwrap());
-        v.pump_lua();
+        v.pump_lua(cx);
         cx.notify();
     });
     cx.run_until_parked();
@@ -129,7 +129,7 @@ fn lua_float_renders_clicks_keys_and_restores_real_focus(cx: &mut TestAppContext
     cx.run_until_parked();
     view.update(cx, |v, cx| {
         v.lua.enqueue_key("x").unwrap();
-        v.pump_lua();
+        v.pump_lua(cx);
         cx.notify();
     });
     cx.run_until_parked();
