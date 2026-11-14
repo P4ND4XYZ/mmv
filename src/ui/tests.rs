@@ -14,6 +14,8 @@ mod selection_panel;
 mod selection_panel_lifecycle;
 mod source_lines;
 mod source_preview;
+mod strict_reveal;
+mod strict_reveal_native;
 mod theme;
 
 use std::{cell::RefCell, path::PathBuf, rc::Rc, time::Instant};
