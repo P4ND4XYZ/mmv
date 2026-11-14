@@ -7,6 +7,7 @@ mod mermaid;
 pub(crate) mod pane;
 mod search;
 mod selection_panel;
+pub(crate) mod source_line_mapping;
 mod source_preview;
 mod status;
 mod theme;
@@ -51,6 +52,7 @@ pub struct Viewer {
     latest_navigation_order: u64,
     read_orders: std::collections::BTreeMap<app::ReadRequestId, (u64, bool)>,
     position_reads: Vec<ReadRequest>,
+    normalized_reads: std::collections::VecDeque<app::ReadResponse>,
 }
 
 struct DeferredLink {
@@ -117,6 +119,7 @@ impl Viewer {
             latest_navigation_order: 0,
             read_orders: Default::default(),
             position_reads: Vec::new(),
+            normalized_reads: Default::default(),
         }
     }
 
@@ -232,12 +235,13 @@ impl Viewer {
         let waits_for_position = matches!(
             operation,
             DocumentOperation::Back | DocumentOperation::Forward
-        ) && self.app.position_request().is_some_and(|request| {
-            matches!(
-                request.target,
-                app::PositionTarget::Heading(_) | app::PositionTarget::SourceLine(_)
-            )
-        });
+        ) && (self.document.normalization_pending()
+            || self.app.position_request().is_some_and(|request| {
+                matches!(
+                    request.target,
+                    app::PositionTarget::Heading(_) | app::PositionTarget::SourceLine(_)
+                )
+            }));
         let previous_position = self.app.position_request().map(|request| request.serial);
         let distance = self.departure_distance(cx);
         let result = self.app.operate(operation, origin, distance, response_to);
@@ -304,7 +308,8 @@ impl Viewer {
                 request.target,
                 app::PositionTarget::Heading(_) | app::PositionTarget::SourceLine(_)
             )
-        }) || self.read_orders.values().any(|(_, line)| *line)
+        }) || self.document.normalization_pending()
+            || self.read_orders.values().any(|(_, line)| *line)
         {
             self.deferred_links.push_back(DeferredLink {
                 target,
@@ -359,11 +364,23 @@ impl Viewer {
     }
 
     pub fn complete(&mut self, result: impl Into<app::ReadResponse>, cx: &mut Context<Self>) {
-        let previous_watch = self.app.watch_target().cloned();
+        let result = result.into();
         self.settle_position(cx);
+        // Identity-only same-file acceptance may register the next position
+        // while an anchor normalizes. Delaying it would let a later Back
+        // invalidate an already-resolved line intent before it is registered.
+        let same_file_resolution = matches!(&result,
+            app::ReadResponse::Resolved { request, key: Ok(key) }
+                if request.skip_same && self.app.document().is_some_and(|doc| doc.key == *key));
+        if self.document.normalization_pending() && !same_file_resolution {
+            self.normalized_reads.push_back(result);
+            cx.notify();
+            return;
+        }
+        let previous_watch = self.app.watch_target().cloned();
         let distance = self.departure_distance(cx);
         let previous_position = self.app.position_request().map(|request| request.serial);
-        let completion = match result.into() {
+        let completion = match result {
             app::ReadResponse::Loaded(result) => self.app.complete_at(result, distance),
             app::ReadResponse::Resolved { request, key } => {
                 match self.app.resolve_at(request, key, distance) {
@@ -508,12 +525,19 @@ impl Render for Viewer {
                     .document()
                     .is_some_and(|document| document.key == link.document)
         });
-        if self.app.position_request().is_none() {
+        while !self.document.normalization_pending() {
+            let Some(response) = self.normalized_reads.pop_front() else {
+                break;
+            };
+            self.complete(response, cx);
+        }
+        if self.app.position_request().is_none() && !self.document.normalization_pending() {
             for request in std::mem::take(&mut self.position_reads) {
                 cx.emit(request);
             }
         }
         if self.app.position_request().is_none()
+            && !self.document.normalization_pending()
             && !self.read_orders.values().any(|(_, line)| *line)
             && let Some(link) = self.deferred_links.pop_front()
         {

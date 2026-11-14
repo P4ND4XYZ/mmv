@@ -18,7 +18,7 @@ use gpui_kit::{
 };
 use gpui_kit::{
     base::text::{
-        TextView,
+        RenderedText, TextRevealHandle, TextRevealId, TextRevealStatus, TextRevealTarget, TextView,
         editor_host::{BlockNode, parse_markdown},
     },
     component::text::{
@@ -59,14 +59,40 @@ pub(super) struct DocumentView {
     pane_width: Option<Pixels>,
     resize_distance: Option<f32>,
     heading_reveal: Option<(PositionRequest, u64)>,
-    source_reveal: Option<(PositionRequest, u64, f32, u8)>,
+    source_reveal: Option<SourceReveal>,
+    pub(super) source_outcome: Option<SourceLineOutcome>,
+    generation: Option<Generation>,
+    movement_revision: u64,
+    normalization: Option<Normalization>,
     movements: VecDeque<MovementIntent>,
     started: Instant,
     first_paint: Arc<AtomicBool>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct Normalization {
+    generation: Generation,
+    revision: u64,
+}
+
+struct SourceReveal {
+    request: PositionRequest,
+    text: Entity<TextViewState>,
+    handle: Option<TextRevealHandle>,
+    _waiter: Option<Task<()>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SourceLineOutcome {
+    Reveal(TextRevealStatus),
+    Mapping(super::source_line_mapping::SourceLineMapError),
+    PastEnd,
+}
+
 pub(super) struct DocumentAnalysis {
     pub generation: Generation,
+    snapshot: RenderedText,
+    parsed_blocks: Vec<BlockNode>,
     pub blocks: Vec<Option<std::ops::Range<usize>>>,
     pub links: Vec<std::ops::Range<usize>>,
     pub candidates: Vec<crate::core::links::LinkCandidate>,
@@ -120,6 +146,10 @@ impl DocumentView {
             resize_distance: None,
             heading_reveal: None,
             source_reveal: None,
+            source_outcome: None,
+            generation: None,
+            movement_revision: 0,
+            normalization: None,
             movements: VecDeque::new(),
             started,
             first_paint: Arc::new(AtomicBool::new(false)),
@@ -136,7 +166,13 @@ impl DocumentView {
         self.pane_width = None;
         self.resize_distance = None;
         self.heading_reveal = None;
-        self.source_reveal = None;
+        if let Some(reveal) = self.source_reveal.take()
+            && let Some(handle) = reveal.handle
+        {
+            handle.cancel();
+        }
+        self.generation = Some(generation);
+        self.normalization = None;
         match pending_movements {
             PendingMovementPolicy::Carry => {
                 for intent in &mut self.movements {
@@ -180,14 +216,50 @@ impl DocumentView {
         )
     }
 
+    pub(super) fn normalization_pending(&self) -> bool {
+        self.normalization.is_some()
+    }
+
+    pub fn anchor_changed(&mut self, cx: &mut Context<Viewer>) {
+        self.movement_revision = self
+            .movement_revision
+            .checked_add(1)
+            .expect("movement revision");
+        self.normalization = self.generation.map(|generation| Normalization {
+            generation,
+            revision: self.movement_revision,
+        });
+        cx.notify();
+    }
+
+    #[cfg(all(test, feature = "ui-tests"))]
+    pub(super) fn source_handle(&self) -> Option<TextRevealHandle> {
+        self.source_reveal.as_ref()?.handle.clone()
+    }
+
+    pub fn cancel_source_reveal(&self) {
+        if let Some(reveal) = &self.source_reveal
+            && let Some(handle) = &reveal.handle
+        {
+            handle.cancel();
+        }
+    }
+
     pub fn scroll(&mut self, lines: f32, pages: f32, cx: &mut Context<Viewer>) {
+        self.cancel_source_reveal();
         let list = self.text.read(cx).list_state();
+        let before = list.logical_scroll_top();
         list.scroll_by(px(FOOTER_LINE_HEIGHT * lines) + list.viewport_bounds().size.height * pages);
+        if list.logical_scroll_top() != before {
+            self.anchor_changed(cx);
+        }
         self.text.update(cx, |_, cx| cx.notify());
     }
 
     pub fn scroll_edge(&mut self, end: bool, cx: &mut Context<Viewer>) {
+        self.cancel_source_reveal();
         let list = self.text.read(cx).list_state();
+        let before = list.logical_scroll_top();
         if end {
             list.scroll_to_end();
         } else {
@@ -195,6 +267,9 @@ impl DocumentView {
                 item_ix: 0,
                 offset_in_item: px(0.),
             });
+        }
+        if list.logical_scroll_top() != before {
+            self.anchor_changed(cx);
         }
         self.text.update(cx, |_, cx| cx.notify());
     }
@@ -205,15 +280,12 @@ impl Viewer {
     /// heading labels come from TextView's plain rendered-text projection.
     pub(super) fn analyze_document(&mut self, cx: &gpui_kit::App) -> Result<(), String> {
         let document = self.app.document().ok_or("Document is loading")?;
-        if self
-            .document
-            .analysis
-            .as_ref()
-            .is_some_and(|analysis| analysis.generation == document.generation)
-        {
+        let snapshot = self.document.text.read(cx).rendered_text();
+        if self.document.analysis.as_ref().is_some_and(|analysis| {
+            analysis.generation == document.generation && analysis.snapshot == snapshot
+        }) {
             return Ok(());
         }
-        let snapshot = self.document.text.read(cx).rendered_text();
         if snapshot.source() != document.source.as_str() {
             return Err("Document is being analyzed".into());
         }
@@ -294,6 +366,8 @@ impl Viewer {
                 document.generation,
             )),
             headings,
+            snapshot,
+            parsed_blocks: blocks,
         });
         Ok(())
     }
@@ -339,6 +413,7 @@ impl Viewer {
             .retain(|intent| intent.generation == generation);
         if self.document.movements.is_empty()
             || self.app.position_request().is_some()
+            || self.document.normalization_pending()
             || self.read_orders.values().any(|(order, line)| {
                 *line
                     && self
@@ -401,12 +476,34 @@ impl Viewer {
             PositionTarget::Heading(_) | PositionTarget::SourceLine(_)
         ) && let Err(error) = self.analyze_document(cx)
         {
-            self.display_error = Some(error);
+            if matches!(request.target, PositionTarget::SourceLine(_)) {
+                self.document.cancel_source_reveal();
+                self.document.source_reveal = Some(SourceReveal {
+                    request: request.clone(),
+                    text: text.clone(),
+                    handle: None,
+                    _waiter: None,
+                });
+                self.finish_source_reveal(
+                    request,
+                    text,
+                    None,
+                    SourceLineOutcome::Mapping(
+                        super::source_line_mapping::SourceLineMapError::InvalidStructure,
+                    ),
+                    cx,
+                );
+            } else {
+                self.display_error = Some(error);
+            }
             return;
         }
         // None also means fully measured content that fits in the viewport.
         // An empty document needs only a positive viewport from this layout.
-        if !self.document.layout_ready(cx) {
+        if self.document.normalization_pending()
+            || (!matches!(request.target, PositionTarget::SourceLine(_))
+                && !self.document.layout_ready(cx))
+        {
             return;
         }
         let list = text.read(cx).list_state();
@@ -423,81 +520,116 @@ impl Viewer {
             cx.notify();
             return;
         }
+        if !matches!(request.target, PositionTarget::SourceLine(_)) {
+            self.document.cancel_source_reveal();
+        }
         match &request.target {
             PositionTarget::Top => list.set_offset_from_scrollbar(point(px(0.), px(0.))),
             PositionTarget::Distance(distance) => {
                 list.set_offset_from_scrollbar(point(px(0.), -px(distance.max(0.))))
             }
             PositionTarget::SourceLine(line) => {
-                if let Some((revealed, layout, distance, stable)) = &mut self.document.source_reveal
-                    && revealed == request
+                if self
+                    .document
+                    .source_reveal
+                    .as_ref()
+                    .is_some_and(|active| active.request == *request && active.text == *text)
                 {
-                    if *layout == self.document.layout_serial {
-                        return;
-                    }
-                    *layout = self.document.layout_serial;
-                    let now = -f32::from(list.scroll_px_offset_for_scrollbar().y);
-                    *stable = if (now - *distance).abs() < 0.5 {
-                        *stable + 1
-                    } else {
-                        0
-                    };
-                    *distance = now;
-                    // A range is accepted before its nested line is laid out.
-                    // Wait for measured, stable layouts rather than one frame.
-                    if *stable < 3 {
-                        cx.notify();
-                        return;
-                    }
-                    self.document.source_reveal = None;
-                } else {
-                    let analysis = self.document.analysis.as_ref().expect("current analysis");
-                    if let Some(mut source) = analysis.source_lines.range(*line) {
-                        let body = &self.app.document().unwrap().source;
-                        if source.is_empty() && !body.is_empty() {
-                            let ending = if body[source.start..].starts_with("\r\n") {
-                                2
-                            } else {
-                                1
-                            };
-                            source.end = (source.start + ending).min(body.len());
-                        }
-                        if source.is_empty() && self.app.document().unwrap().source.is_empty() {
-                            list.set_offset_from_scrollbar(point(px(0.), px(0.)));
-                        } else if !source.is_empty()
-                            && let Some(range) =
-                                text.read(cx).rendered_text().range_for_source(source)
-                        {
-                            text.update(cx, |text, cx| {
-                                text.reveal_range(range.start..range.start, cx)
-                            })
-                            .expect("current source range");
-                            self.document.source_reveal = Some((
-                                request.clone(),
-                                self.document.layout_serial,
-                                self.document.distance(cx),
-                                0,
-                            ));
-                            cx.notify();
-                            return;
-                        } else if let Some(ix) =
-                            analysis.source_lines.nearest_block(*line, &analysis.blocks)
-                        {
-                            let viewport = list.viewport_bounds();
-                            if list.bounds_for_item(ix).is_none_or(|bounds| {
-                                bounds.bottom() <= viewport.top()
-                                    || bounds.top() >= viewport.bottom()
-                            }) {
-                                list.scroll_to(ListOffset {
-                                    item_ix: ix,
-                                    offset_in_item: px(0.),
-                                });
-                            }
-                        }
-                    } else {
-                        list.scroll_to_end();
-                    }
+                    return;
                 }
+                let previous_handle = self
+                    .document
+                    .source_reveal
+                    .as_ref()
+                    .and_then(|active| active.handle.clone());
+                self.document.source_reveal = Some(SourceReveal {
+                    request: request.clone(),
+                    text: text.clone(),
+                    handle: None,
+                    _waiter: None,
+                });
+                let analysis = self.document.analysis.as_ref().expect("current analysis");
+                use super::source_line_mapping::{MappedLineTarget, map_source_line};
+                let mapped = match map_source_line(
+                    &analysis.source_lines,
+                    &analysis.parsed_blocks,
+                    &analysis.snapshot,
+                    *line,
+                ) {
+                    Ok(mapped) => mapped,
+                    Err(error) => {
+                        if let Some(handle) = previous_handle {
+                            handle.cancel();
+                        }
+                        self.finish_source_reveal(
+                            request,
+                            text,
+                            None,
+                            SourceLineOutcome::Mapping(error),
+                            cx,
+                        );
+                        return;
+                    }
+                };
+                let target = match mapped.target() {
+                    MappedLineTarget::RenderedPosition(at) => {
+                        TextRevealTarget::rendered_position(*at)
+                    }
+                    MappedLineTarget::CodePosition {
+                        source_span,
+                        offset,
+                    } => TextRevealTarget::code_position(source_span.clone(), *offset),
+                    MappedLineTarget::EmptyCode { source_span } => {
+                        TextRevealTarget::empty_code(source_span.clone())
+                    }
+                    MappedLineTarget::Noop => TextRevealTarget::noop(),
+                    MappedLineTarget::PastEnd => {
+                        if let Some(handle) = previous_handle {
+                            handle.cancel();
+                        }
+                        self.document.scroll_edge(true, cx);
+                        self.finish_source_reveal(
+                            request,
+                            text,
+                            None,
+                            SourceLineOutcome::PastEnd,
+                            cx,
+                        );
+                        return;
+                    }
+                };
+                let handle = text.update(cx, |state, cx| {
+                    state.request_line_reveal(mapped.snapshot(), target, cx)
+                });
+                let id = handle.id();
+                self.document.source_reveal.as_mut().unwrap().handle = Some(handle.clone());
+                let status = handle.status();
+                if status != TextRevealStatus::Pending {
+                    self.finish_source_reveal(
+                        request,
+                        text,
+                        Some(id),
+                        SourceLineOutcome::Reveal(status),
+                        cx,
+                    );
+                } else {
+                    let request = request.clone();
+                    let text = text.clone();
+                    let waiter = cx.spawn(async move |view, cx| {
+                        let status = handle.wait().await;
+                        let _ = view.update(cx, |this, cx| {
+                            this.finish_source_reveal(
+                                &request,
+                                &text,
+                                Some(id),
+                                SourceLineOutcome::Reveal(status),
+                                cx,
+                            );
+                        });
+                    });
+                    self.document.source_reveal.as_mut().unwrap()._waiter = Some(waiter);
+                }
+                return;
             }
             PositionTarget::Heading(id) => {
                 if let Some(heading) = self
@@ -530,6 +662,38 @@ impl Viewer {
         }
         self.app.acknowledge_position(request);
         text.update(cx, |_, cx| cx.notify());
+        cx.notify();
+    }
+
+    pub(super) fn finish_source_reveal(
+        &mut self,
+        request: &PositionRequest,
+        text: &Entity<TextViewState>,
+        id: Option<TextRevealId>,
+        outcome: SourceLineOutcome,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(
+            outcome,
+            SourceLineOutcome::Reveal(TextRevealStatus::Pending)
+        ) || self.app.position_request() != Some(request)
+            || self.document.text != *text
+            || !self
+                .app
+                .document()
+                .is_some_and(|doc| doc.generation == request.generation)
+            || !self.document.source_reveal.as_ref().is_some_and(|active| {
+                active.request == *request
+                    && active.text == *text
+                    && active.handle.as_ref().map(TextRevealHandle::id) == id
+            })
+        {
+            return;
+        }
+        self.document.source_outcome = Some(outcome);
+        self.document.source_reveal = None;
+        self.app.acknowledge_position(request);
+        self.apply_movements_after_layout(cx);
         cx.notify();
     }
 
@@ -567,6 +731,7 @@ impl Viewer {
             .pane_width
             .is_some_and(|width| width != window_width)
             && self.app.position_request().is_none()
+            && !self.document.normalization_pending()
         {
             let distance = self.document.distance(cx);
             self.document.resize_distance.get_or_insert(distance);
@@ -595,6 +760,7 @@ impl Viewer {
             });
         }
         let position = self.app.position_request().cloned();
+        let normalization = self.document.normalization.clone();
         let text = self.document.text.clone();
         let layout_view = cx.entity().downgrade();
         let first_paint = self.document.first_paint.clone();
@@ -687,19 +853,29 @@ impl Viewer {
                 body.child(
                     canvas(
                         |_, _, _| (),
-                        move |_, _, _, cx| {
+                        move |_, _, _window, cx| {
                             // This sibling paints after TextView's measure_all layout.
                             // Defer mutation out of paint, retaining the exact request
                             // and Entity: source equality alone cannot identify a generation.
                             let view = layout_view.clone();
                             let text = text.clone();
                             let position = position.clone();
+                            // List prepaint has normalized this anchor. The
+                            // paint-captured marker is checked after the frame,
+                            // never inferred from a serial read in this defer.
+                            let normalization = normalization.clone();
                             cx.defer(move |cx| {
                                 let _ = view.update(cx, |this, cx| {
                                     if this.document.text != text {
                                         return;
                                     }
                                     this.document.layout_serial += 1;
+                                    if normalization.is_some()
+                                        && this.document.normalization == normalization
+                                    {
+                                        this.document.normalization = None;
+                                        cx.notify();
+                                    }
                                     if this.document.layout_ready(cx)
                                         && let Some(distance) = this.document.resize_distance.take()
                                     {

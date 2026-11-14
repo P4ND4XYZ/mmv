@@ -26,5 +26,9 @@ ui-tests = ["gpui-kit/test-support"]
 [build-dependencies]
 embed-resource = "=3.0.12"
 
+# Immutable fork revision providing strict source-line reveal.
+[patch.crates-io]
+gpui-base = { git = "https://github.com/P4ND4XYZ/gpui-kit.git", rev = "1a2539f67f4dbceecb1885c02abd272dbda06e33" }
+
 [profile.dev]
 debug = "limited"

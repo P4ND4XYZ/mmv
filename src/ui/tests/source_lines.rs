@@ -1,13 +1,16 @@
 use super::*;
 
-fn frame(cx: &mut TestAppContext, window: gpui_kit::AnyWindowHandle) {
+pub(super) fn frame(cx: &mut TestAppContext, window: gpui_kit::AnyWindowHandle) {
     cx.run_until_parked();
-    cx.update_window(window, |_, window, cx| window.render_frame(cx))
-        .unwrap();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.simulate_next_frame(cx);
+    })
+    .unwrap();
     cx.run_until_parked();
 }
 
-fn navigate(
+pub(super) fn navigate(
     cx: &mut TestAppContext,
     view: &gpui_kit::Entity<Viewer>,
     line: u64,
@@ -190,7 +193,7 @@ fn completed_source_line_does_not_resurrect_after_resize_reload_or_old_callbacks
 }
 
 #[gpui_kit::test]
-fn repeated_text_uses_source_identity_and_blank_code_lines_reveal_nearby_text(
+fn repeated_text_uses_source_identity_and_blank_code_lines_reveal_the_actual_row(
     cx: &mut TestAppContext,
 ) {
     let row = "same repeated source words\n";
@@ -211,7 +214,9 @@ fn repeated_text_uses_source_identity_and_blank_code_lines_reveal_nearby_text(
         })
         .collect::<String>();
     let source = format!("```text\n{code}```");
-    let start = source.find("line 181").unwrap();
+    // The actual blank row may end exactly at the viewport bottom; the next
+    // body row need not be visible. The previous row must still be selectable.
+    let start = source.find("line 179").unwrap();
     let (window, view) = open(cx, source);
     frame(cx, window);
     navigate(cx, &view, 182);
@@ -219,6 +224,14 @@ fn repeated_text_uses_source_identity_and_blank_code_lines_reveal_nearby_text(
         frame(cx, window);
     }
     assert_visible_source(cx, window, &view, start..start + 8);
+    view.read_with(cx, |viewer, _| {
+        assert_eq!(
+            viewer.document.source_outcome,
+            Some(super::super::document::SourceLineOutcome::Reveal(
+                gpui_kit::base::text::TextRevealStatus::Shown
+            ))
+        )
+    });
 }
 
 #[gpui_kit::test]
@@ -541,8 +554,7 @@ fn completed_image_and_mermaid_targets_do_not_resurrect_after_dimension_changes(
             image.display()
         )
         + &"after\n\n".repeat(80);
-    let image_start = source.find("![image]").unwrap();
-    let diagram_start = source.find("```mermaid").unwrap();
+    // Opaque media must fail without a fallback scroll.
     let (window, view) = open(cx, String::new());
     let requests = Rc::new(RefCell::new(Vec::<DiagramRequest>::new()));
     let captured = requests.clone();
@@ -558,33 +570,26 @@ fn completed_image_and_mermaid_targets_do_not_resurrect_after_dimension_changes(
         })
     });
     frame(cx, window);
-    let visible = |cx: &TestAppContext, start| {
+    let failed_without_scroll = |cx: &TestAppContext| {
         view.read_with(cx, |viewer, cx| {
-            let analysis = viewer.document.analysis.as_ref().unwrap();
-            let ix = analysis
-                .blocks
-                .iter()
-                .position(|span| span.as_ref().is_some_and(|span| span.contains(&start)))
-                .unwrap();
-            let list = viewer.document.text.read(cx).list_state();
-            let bounds = list.bounds_for_item(ix).unwrap();
-            let viewport = list.viewport_bounds();
-            assert!(
-                bounds.bottom() > viewport.top() && bounds.top() < viewport.bottom(),
-                "{bounds:?} / {viewport:?}"
-            );
+            assert!(viewer.app.position_request().is_none());
+            assert!(matches!(
+                viewer.document.source_outcome,
+                Some(super::super::document::SourceLineOutcome::Mapping(_))
+            ));
+            assert_eq!(viewer.document.distance(cx), 0.);
         })
     };
     navigate(cx, &view, 161);
     for _ in 0..6 {
         frame(cx, window);
     }
-    visible(cx, image_start);
+    failed_without_scroll(cx);
     navigate(cx, &view, 164);
     for _ in 0..6 {
         frame(cx, window);
     }
-    visible(cx, diagram_start);
+    failed_without_scroll(cx);
     let request = requests.borrow_mut().pop().expect("diagram request");
     cx.update(|cx| {
         view.update(cx, |viewer, cx| {

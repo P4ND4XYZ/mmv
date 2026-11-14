@@ -58,8 +58,11 @@ use super::Viewer;
 
 fn frame(cx: &mut TestAppContext, window: AnyWindowHandle) {
     cx.run_until_parked();
-    cx.update_window(window, |_, window, cx| window.render_frame(cx))
-        .unwrap();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.simulate_next_frame(cx);
+    })
+    .unwrap();
     cx.run_until_parked();
 }
 

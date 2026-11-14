@@ -6,7 +6,7 @@
 
 [外部操作](../../requirements/features/external-control.md#ソース行の指定)と[ファイル表示と更新](../../requirements/features/file-viewing.md)を実現する構成を記します。合意した利用者向け契約は要件文書を正本とし、以下の内部型・待機方法は実装上の選択と区別します。
 
-同一DocumentKeyへのCLI openは本文を読み直しません。`mmv open FILE --line N`は保存済みソースの位置を指定します。未保存本文の受信、双方向同期、独自Markdown解析器、依存追加・更新は対象外です。
+同一DocumentKeyへのCLI openは本文を読み直しません。`mmv open FILE --line N`は保存済みソースの位置を指定します。未保存本文の受信、双方向同期、独自Markdown解析器は対象外です。strict revealを提供する`gpui-base`だけは、承認済みforkの不変Git SHA `1a2539f67f4dbceecb1885c02abd272dbda06e33`へ固定します。その他の依存更新やregistry/cacheの編集は行いません。
 
 ## 責務
 
@@ -15,8 +15,8 @@
 | cli | 明示的なopenだけに任意の`--line`を受け付け、パスと正のu64を検証する |
 | infra / IPC | 単一openを配送し、同一性確認と必要な本文読み込みをUIスレッド外で行う |
 | app | 確認後の現在のキーと比較し、継続読み込み・採用・履歴・未適用の行指定を決める |
-| core | UTF-8ソース行の索引と、ソース行距離による最近傍ブロックを計算する |
-| ui | 既存DocumentAnalysisの投影・ブロック範囲とTextViewの公開APIを接続する |
+| core | UTF-8ソース物理行の索引を提供する |
+| ui | DocumentAnalysisの共有ASTとsnapshotから実body行へ対応付け、TextViewのstrict API・終端状態・後続操作を接続する |
 | runtime | 各段階の要求と結果を配送し、最終完了まで元の応答先を保持する |
 
 ## CLIとIPC
@@ -66,20 +66,24 @@
 
 `core/source_position.rs`のSourceLinesはLF・CRLFとUTF-8境界を保ちます。末尾改行だけで外部行指定用の次行を増やさず、空文書は1行です。ソースプレビュー用には従来の末尾空行を残し、プレビューの表示契約を変えません。BOMは既存の読み込み段階で除去します。
 
-1. 最終行超過は末尾、空文書は先頭にする。
-2. 指定行を現在世代の`rendered_text().range_for_source`へ投影する。空行では改行の投影も試す。
-3. 投影できればその描画範囲の開始位置を`reveal_range`へ渡す。先にブロック先頭へ動かさないため、すでに見える位置を不要にスクロールしない。非常に長いソース行の全体を一画面へ収める意味ではない。
-4. 画像・Mermaidなど直接投影できない場合は既存解析のブロック範囲を使う。対象ブロックがviewportと交差していれば動かさず、画面外なら表示範囲へ入れる。
-5. 対応ブロックもない行はソース行距離が最も近いブロックを選び、同距離では後方を選ぶ。本文の文字列検索やソース行割合によるスクロールは使わない。
+1. `DocumentAnalysis`は描画と同じソース・Markdown extensionsで解析した`BlockNode`を再利用し、generationと`RenderedText`の同一性で無効化する。
+2. `map_source_line`は通常の文字・表の最初の実text cellをrendered byte positionへ、nestedを含むcodeをsource spanとcode-local offsetへ対応付ける。codeの空行も実際の行を選び、開始／終了fenceは最初／最後のbody行、空codeは実際の空block領域を対象にする。
+3. block間空行・表delimiter等は最も近い実body行へ対応付け、同距離なら後のbody行を選ぶ。本文の文字列検索や行割合、高さの推定は使わない。
+4. 対応したtargetを`TextRevealTarget`へ1対1変換し、`request_line_reveal`へ渡す。不可視の実renderer計測後、対象の全表示に必要な最小垂直移動だけを原子的に行う。既表示なら移動0、padding・予備移動・block fallbackはない。非常に長いソース行全体を一画面へ収める意味ではない。
+5. opaque画像・Mermaid・HTMLや不正構造などは内部の明示失敗にし、隣行／blockへ逃げない。空／空白だけの文書の`Noop`と、最終行超過を既存末尾方針へ渡す`PastEnd`は失敗と区別する。
 
 ## レイアウトと操作順
 
 適用前にPositionRequestの世代・serial、TextView Entity、ソース一致を検査します。古いcallbackは新しい要求をacknowledgeしません。
 
-上流の`reveal_range`はbest effortであり、成功値は受理だけを意味します。完了・内部破棄の通知は公開されていません。UIは測定済みのレイアウトを待ち、ソース行の要求では複数レイアウトでスクロール距離が安定するまで相対移動を保留します。この待機は上流からの可視性成功通知ではありません。描画が1秒を超えて停止する場合や不可視のまま8試行に達する場合など、上流は要求を破棄します。アプリは破棄と可視成功を判別せず、距離安定で保留を解除するため、対象行へ未到達のまま終わることがあります。未到達の検知・再試行は保証せず、同じ寸法で通常描画を再開しただけでは再適用しない場合があります。後続操作は解除時点の位置を基準に処理します。
+adapterはPositionRequest全体（serialを含む）・generation・TextView Entity・library ID/handle・weak Viewerの非同期waiterを保持します。返却直後の同期terminalも読み、`Shown`／`Failed`／`Cancelled`とmapping失敗をmatching finalizerへ渡します。一致した要求だけを解放し、内部outcomeを保持します。古いterminalは次の要求を消しません。queued movementだけでは再発行せず、同一行の新しい要求には新library IDを発行します。新しいGUI通知は設けません。
 
-完了後は本文幅・viewport・画像・Mermaidの寸法変更でも行指定を再発行しません。リサイズは既存の距離保持方針を使います。`bounds_for_item`は上端より前のブロックでNoneになるため、その配列の変化を寸法変更とみなして行指定を復活させる処理は設けません。未適用のrevealの安定待ちは維持し、単なるスクロールによるboundsの変化で待機状態を作り直しません。
+strict APIの計測は初回込み8attemptまたは開始から1秒の早い方で終端になります。frameがなくてもtimeoutのwaiterが解放します。成功は最終visible subtreeのpaint後の全矩形包含で判定し、距離の3安定layoutでは代用しません。対応する構成はscrollableかつ行数制限なしのMarkdownだけです。非scrollable／clamped構成は`UnsupportedGeometry`で失敗し、検索・見出しのlegacy APIは維持します。
+
+完了後は本文幅・viewport・画像・Mermaidの寸法変更でも行指定を再発行しません。リサイズは既存の距離保持方針を使います。`bounds_for_item`は上端より前のブロックでNoneになるため、その配列の変化を寸法変更とみなして行指定を復活させる処理は設けません。単なるスクロールによるboundsの変化で終端要求を作り直しません。
 
 UIは要求IDと受付順を対応付けます。同一ファイルの行指定の確認中に受けた相対移動は確認・位置適用の後へ保留し、行指定以前の移動だけを置き換えます。リンクは行／見出しの位置要求が保留されている間は待機し、解除時点の距離を取得して履歴へ渡します。戻る／進むの読み込み要求も、この位置要求の保留が解除されるまではUI側で配送を保留します。要求IDとCLI応答先は保持し、仮のゼロ距離を履歴へ保存しません。
+
+D1として、terminal後のqueued movementがListStateのanchorを変えた場合は、generation・TextView Entity・単調増加movement revisionに対応する正規化barrierを設けます。body Listの正規化済みprepaint後にpaintするcanvasがbarrierを捕捉し、frame後の`cx.defer`で一致したbarrierだけを解放します。古いframe／世代のcallbackや同じviewport寸法では正規化済みとみなしません。受理済みの相対移動を順序どおりまとめて適用し、履歴・read完了・リンク継続は最後の正規化後のlive distanceを取得します。barrier中に受理した操作も同じgateを通します。同一ファイルのidentity-only結果は新位置要求の登録だけを先に行い、後続Backによる取りこぼしを防ぎます。手動のprogrammatic scroll／edge／検索revealはstrictをcancelしてからanchorを変更し、取消しの非同期完了が正規化前に履歴を解放しないようにします。
 
 検証対象・ケース・コマンドと実機確認の境界は[テスト設計](../testing.md#cliの同一ファイルopenとソース行連携)へ集約します。

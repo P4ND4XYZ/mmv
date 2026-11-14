@@ -1,10 +1,11 @@
-use std::{num::NonZeroU64, ops::Range};
+use std::{num::NonZeroU64, ops::Range, sync::Arc};
 
 /// Original UTF-8 line spans. The final empty preview row is retained separately
 /// from the logical line count used by external source-line navigation.
 pub struct SourceLines {
     pub lines: Vec<Range<usize>>,
     count: usize,
+    source: Arc<str>,
 }
 
 impl SourceLines {
@@ -25,7 +26,21 @@ impl SourceLines {
         if source.is_empty() || source.ends_with('\n') {
             lines.push(source.len()..source.len());
         }
-        Self { lines, count }
+        Self {
+            lines,
+            count,
+            source: Arc::from(source),
+        }
+    }
+
+    /// Exact source identity, retained once when indexing the document, not per request.
+    pub fn matches_source(&self, source: &str) -> bool {
+        self.source.as_ref() == source
+    }
+
+    /// Number of saved physical lines, excluding the terminal preview row.
+    pub fn logical_count(&self) -> usize {
+        self.count
     }
 
     /// None means beyond the last saved source line, not a truncated usize.
@@ -88,6 +103,14 @@ mod tests {
         assert_eq!(SourceLines::new("").range(line(1)), Some(0..0));
         assert_eq!(SourceLines::new("a\n").range(line(2)), None);
         assert_eq!(SourceLines::new("a").range(line(1)), Some(0..1));
+    }
+
+    #[test]
+    fn source_identity_distinguishes_equal_length_documents() {
+        let index = SourceLines::new("one\r\n");
+        assert!(index.matches_source("one\r\n"));
+        assert!(!index.matches_source("two\r\n"));
+        assert_eq!(index.logical_count(), 1);
     }
 
     #[test]

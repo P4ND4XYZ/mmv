@@ -140,11 +140,15 @@ U-03では、たとえば`target target`で検索語`target`を確定し、更�
 | `src/infra/instance.rs`内tests、`scripts/probe-production.ps1` | 操作型変更への対応。必要なプロセス検証で行付きopenの未起動からの起動とGUIを閉じた後の再起動、終了コードを追加 |
 | `src/ui/source_preview/tests.rs`、`src/ui/tests/source_preview.rs` | 索引共通化時に末尾行・CRLF・日本語・折り返し・既存強調が変わらないことを確認 |
 
-単体では時刻・完了順・キー・世代を入力し、UIの可視性は実レイアウトで確認します。TextView内のテキストでは、viewport内でマウス選択した実ソース範囲と指定行の範囲の交差を確認し、反復する同じ文章でも別の出現を成功にしません。折り返しで長いソース行の全文を表示できることは要求しません。表はセルが選択を所有するため、可視行内の選択で補います。画像・Mermaidでは対応ブロックの実測boundsとviewportの交差を確認し、PNGによる実寸法変更後も、完了済み指定が復活しないことを確認します。`reveal_range`の呼び出し回数だけでは表示の成功を検証した扱いにしません。ファイル・Pipeのテストは一意な一時領域／namespaceを使用して後始末します。実IME・OSフォーカス・DPI・画像の遅延ロードはWindows実機で補います。
+単体では時刻・完了順・キー・世代を入力し、UIの可視性は実レイアウトで確認します。TextView内のテキストでは、viewport内でマウス選択した実ソース範囲と指定行の範囲の交差を確認し、反復する同じ文章でも別の出現を成功にしません。折り返しで長いソース行の全文を表示できることは要求しません。表はセルが選択を所有するため、可視行内の選択で補います。opaque画像・Mermaidでは明示失敗と無移動を確認し、PNGによる実寸法変更後も終端要求が復活しないことを確認します。strict handleの`Shown`と実paintされた対象rowの全包含を確認し、API受理やblockとの交差だけでは成功としません。ファイル・Pipeのテストは一意な一時領域／namespaceを使用して後始末します。実IME・OSフォーカス・DPI・画像の遅延ロードはWindows実機で補います。
 
-### 行移動APIの先行検証
+### strict行移動とadapterの検証
 
-GPUIで長い段落・長いコード・入れ子・表・画像・Mermaidの実際の可視位置と適用順を確認する。同一Entityのままの行移動、幅変更、空のコード行、末尾超過、最新serial、確認後の相対移動の順序、Search・Command・リンク選択パネルの保持を別々に検証する。`reveal_range`の受理と実可視性は区別する。通常描画のテスト成功を、描画停止後にも必ず到達する保証とは扱わない。描画遅延等で上流が要求を破棄した場合の検知・再試行・到達保証は現行の受け入れ基準に含めず、[外部操作の既知の制約](../requirements/features/external-control.md#ソース行の指定)に従う。
+`source_line_mapping`でfence・blank／empty code・nested・table・CRLF・最近傍bodyのtie・opaque・snapshot不一致を検証する。`source_line_terminal`では長いcodeへの直接到達、既表示0・部分欠けの最小補正、同一行の新ID・latest wins、queued movementだけでは再発行しないこと、取消し／no-frame timeoutによる解放を確認する。既存の検索・見出し・履歴・保存・入力保持テストも残す。
+
+D1ではstrict terminal後のEnd／overshooting PageDown、手動cancel直後のanchor変更、barrier中の新readを扱い、履歴へ保存された距離がcontent height等の未正規化値ではなく実layout後の距離であることを確認する。frame helperは`render_frame`に加え`simulate_next_frame`でpaint後callbackを配送する。安定距離のframe数は成功条件にしない。
+
+nativeケースは明示選択のignoredテストを別プロセスで実行する。`current_platform(false)`の実TextSystemを同じthreadで保持し、font一覧と非一様advanceを確認してoffscreen TestAppContextへ注入する。`MMV_PRIVATE_SOURCE_FIXTURE`がある場合は任意の`MMV_PRIVATE_SOURCE_LINE`（既定109）をmapping→Viewer adapter経由で要求し、`Shown`と実paint row全包含を確認する。本文・private pathはcode／公開ログへ埋め込まず、fixture欠如は未実施とする。Noopへの代替は認めない。Application::run・main・singleton・IPCや利用者のGUIは起動しない。このnative検証は可視OS GUI・実DPI・実IMEの確認とは区別する。
 
 ### 対象を絞った検証コマンド
 
@@ -154,7 +158,8 @@ GPUIで長い段落・長いコード・入れ子・表・画像・Mermaidの実
 cargo test --locked cli::
 cargo test --locked infra::document::
 cargo test --locked infra::ipc::
-cargo test --locked --features ui-tests ui::tests::source_lines::
+cargo test --locked --offline --features ui-tests --bin mmv -j2 source_line -- --test-threads=1
+cargo test --locked --offline --features ui-tests --bin mmv -j2 strict_reveal_native_backend_gate -- --ignored --exact ui::tests::strict_reveal_native::strict_reveal_native_backend_gate --test-threads=1 --nocapture
 cargo test --locked --features ui-tests ui::tests::external::
 cargo test --locked --features ui-tests ui::tests::operations::
 cargo test --locked --features ui-tests ui::tests::production::
@@ -200,7 +205,7 @@ cargo test --locked --features ui-tests real_ -- --ignored --nocapture
 
 フィルターは分割後のモジュール配置に合わせて調整します。単一ケースの修正後はそのケースと関連する最小範囲を先に確認し、広いチェックを毎回繰り返しません。
 
-既存の`#[test]`とGPUIのテスト基盤を使用し、このテスト計画のための依存追加・更新は行いません。時刻と非同期完了順は必要な境界で制御し、実時間のsleepや偶然の競合に頼らない単体テストにします。
+既存の`#[test]`とGPUIのテスト基盤を使用します。strict revealを提供する`gpui-base`だけは承認済みforkの不変Git SHAへ固定し、それ以外の依存追加・更新やregistry/cache編集は行いません。時刻と非同期完了順は必要な境界で制御し、実時間のsleepや偶然の競合に頼らない単体テストにします。
 
 実施結果は作業報告で、実行したコマンド、成功・失敗、既存の失敗、環境依存のスキップ、実機未確認を分けて伝えます。この設計文書へ実行履歴や進捗表を追加しません。
 
