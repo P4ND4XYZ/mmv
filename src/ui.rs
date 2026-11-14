@@ -7,6 +7,7 @@ mod mermaid;
 pub(crate) mod pane;
 mod search;
 mod selection_panel;
+pub(crate) mod source_line_mapping;
 mod source_preview;
 mod status;
 mod theme;
