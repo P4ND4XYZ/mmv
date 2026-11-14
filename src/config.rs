@@ -1,4 +1,4 @@
-mod lua;
+pub(crate) mod lua;
 
 use std::collections::BTreeMap;
 
@@ -85,8 +85,14 @@ impl Default for Config {
     }
 }
 
+#[cfg(test)]
 pub fn execute(source: &str, name: &str) -> Result<Config, String> {
-    lua::execute(source, name)
+    let (runtime, error) = crate::lua::LuaRuntime::initialize("", Some((source, name)))
+        .map_err(|error| error.to_string())?;
+    match error {
+        Some(error) => Err(error),
+        None => Ok(runtime.config()),
+    }
 }
 
 #[cfg(test)]

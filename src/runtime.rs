@@ -31,7 +31,7 @@ pub(crate) fn run_gui() -> std::io::Result<()> {
         infra::log_config_failure(error);
     }
     let config_notice = loaded.error.is_some();
-    let config = loaded.config;
+    let lua = loaded.runtime;
     let started = Instant::now();
     let startup_error = Rc::new(RefCell::new(None));
     let report_error = startup_error.clone();
@@ -66,10 +66,10 @@ pub(crate) fn run_gui() -> std::io::Result<()> {
                     window.zoom_window();
                     // No Initial read: the first external Open uses the shared app path.
                     cx.new(|cx| {
-                        ui::Viewer::with_config(
+                        ui::Viewer::with_lua(
                             PathBuf::new(),
                             started,
-                            config,
+                            lua,
                             config_notice,
                             window,
                             cx,

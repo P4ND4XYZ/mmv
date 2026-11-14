@@ -3,6 +3,7 @@ mod file_tree;
 mod floating_panel;
 mod input;
 mod links;
+mod lua;
 mod mermaid;
 pub(crate) mod pane;
 mod search;
@@ -43,6 +44,7 @@ pub struct Viewer {
     message_is_error: bool,
     display_error: Option<String>,
     config: crate::config::Config,
+    lua: crate::lua::LuaRuntime,
     palette: theme::Palette,
     config_notice: bool,
     // Links wait for an unresolved heading's layout so history records a
@@ -79,6 +81,7 @@ impl Viewer {
         Self::with_config(path, started, Default::default(), false, window, cx)
     }
 
+    #[cfg(all(test, feature = "ui-tests"))]
     pub fn with_config(
         path: PathBuf,
         started: Instant,
@@ -87,6 +90,25 @@ impl Viewer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        Self::with_lua(
+            path,
+            started,
+            crate::lua::LuaRuntime::from_config(config),
+            config_notice,
+            window,
+            cx,
+        )
+    }
+
+    pub(crate) fn with_lua(
+        path: PathBuf,
+        started: Instant,
+        lua: crate::lua::LuaRuntime,
+        config_notice: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let config = lua.config();
         let mode = match config.colorscheme {
             crate::config::ColorScheme::Dark => gpui_kit::component::ThemeMode::Dark,
             crate::config::ColorScheme::Light => gpui_kit::component::ThemeMode::Light,
@@ -112,6 +134,7 @@ impl Viewer {
             message_is_error: false,
             display_error: None,
             config,
+            lua,
             palette,
             config_notice,
             deferred_links: Default::default(),
@@ -507,6 +530,7 @@ impl Viewer {
 
 impl Render for Viewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.pump_lua();
         if std::mem::take(&mut self.focus_body_after_tree_open)
             && self.tree.visible
             && self.tree.focus.is_focused(window)

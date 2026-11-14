@@ -1,13 +1,10 @@
-use std::{cell::RefCell, rc::Rc};
-
 use mlua::{Lua, MultiValue, Table, Value};
+
+use crate::lua::LuaContext;
 
 use super::{Color, ColorScheme, Config, Group, Highlight, Position};
 
-pub(super) fn execute(source: &str, name: &str) -> Result<Config, String> {
-    let lua = Lua::new();
-    let state = Rc::new(RefCell::new((Config::default(), None::<String>)));
-    let api = lua.create_table().map_err(|e| e.to_string())?;
+pub(crate) fn install(lua: &Lua, api: &Table, context: &LuaContext) -> mlua::Result<()> {
     for (name, action) in [
         (
             "setup",
@@ -15,31 +12,12 @@ pub(super) fn execute(source: &str, name: &str) -> Result<Config, String> {
         ),
         ("set_hl", set_hl),
     ] {
-        let state = state.clone();
-        let callback = lua
-            .create_function(move |_, args: MultiValue| {
-                let mut state = state.borrow_mut();
-                match action(&mut state.0, args) {
-                    Ok(()) => Ok(()),
-                    Err(error) => {
-                        if state.1.is_none() {
-                            state.1 = Some(error.clone());
-                        }
-                        Err(mlua::Error::runtime(error))
-                    }
-                }
-            })
-            .map_err(|e| e.to_string())?;
-        api.set(name, callback).map_err(|e| e.to_string())?;
+        let context = context.clone();
+        let callback =
+            lua.create_function(move |_, args: MultiValue| context.update_config(args, action))?;
+        api.set(name, callback)?;
     }
-    lua.register_module("mmv", api).map_err(|e| e.to_string())?;
-    let result = lua.load(source).set_name(name).exec();
-    let state = state.borrow();
-    if let Some(error) = &state.1 {
-        return Err(error.clone());
-    }
-    result.map_err(|e| e.to_string())?;
-    Ok(state.0.clone())
+    Ok(())
 }
 
 fn string(value: Value, label: &str) -> Result<String, String> {

@@ -5,6 +5,11 @@ mod cli;
 mod config;
 mod core;
 mod infra;
+#[allow(
+    dead_code,
+    reason = "Shared Lua host/owner seams are connected by subsequent UI and navigation steps"
+)]
+mod lua;
 mod runtime;
 mod ui;
 
