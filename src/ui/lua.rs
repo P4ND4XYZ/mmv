@@ -3,6 +3,11 @@ use crate::lua::Pump;
 use super::Viewer;
 
 impl Viewer {
+    pub(super) fn shutdown_lua(&mut self) {
+        let _ = self.lua.context().shutdown_ui();
+        self.pump_lua();
+    }
+
     /// Called only at an outer host boundary. C/E extend HostOutput handling;
     /// F enqueues keys after IME/mode/layer routing, then requests a host pump.
     /// There is no RefCell<LuaRuntime> borrow across Lua execution.

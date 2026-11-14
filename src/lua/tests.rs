@@ -134,7 +134,7 @@ fn caught_non_registration_errors_are_not_sticky() {
             .context()
             .api(runtime.lua())
             .unwrap()
-            .get::<Value>("ui")
+            .get::<Value>("not_implemented")
             .unwrap()
             .is_nil()
     );

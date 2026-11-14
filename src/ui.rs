@@ -4,6 +4,7 @@ mod floating_panel;
 mod input;
 mod links;
 mod lua;
+mod lua_floating;
 mod mermaid;
 pub(crate) mod pane;
 mod search;
@@ -45,6 +46,10 @@ pub struct Viewer {
     display_error: Option<String>,
     config: crate::config::Config,
     lua: crate::lua::LuaRuntime,
+    floating_ui: lua_floating::FloatingUi,
+    _lua_keys: Subscription,
+    _lua_closed: Subscription,
+    _lua_quit: Subscription,
     palette: theme::Palette,
     config_notice: bool,
     // Links wait for an unresolved heading's layout so history records a
@@ -120,6 +125,24 @@ impl Viewer {
         let tree = file_tree::TreePane::new(config.tree.visible, cx);
         let body_focus = cx.focus_handle();
         body_focus.focus(window, cx);
+        let viewer = cx.weak_entity();
+        let host_window = window.window_handle();
+        let lua_keys = cx.intercept_keystrokes(move |event, window, cx| {
+            if window.window_handle() == host_window {
+                let _ = viewer.update(cx, |this, cx| this.lua_float_key(event, window, cx));
+            }
+        });
+        let viewer = cx.weak_entity();
+        let lua_closed = cx.on_window_closed(move |cx, closed| {
+            if closed == host_window.window_id() {
+                let _ = viewer.update(cx, |this, _| this.shutdown_lua());
+            }
+        });
+        let lua_quit = cx.on_app_quit(|this, _| {
+            this.shutdown_lua();
+            async {}
+        });
+        cx.on_release(|this, _| this.shutdown_lua()).detach();
         Self {
             app: app::App::default(),
             path,
@@ -135,6 +158,10 @@ impl Viewer {
             display_error: None,
             config,
             lua,
+            floating_ui: Default::default(),
+            _lua_keys: lua_keys,
+            _lua_closed: lua_closed,
+            _lua_quit: lua_quit,
             palette,
             config_notice,
             deferred_links: Default::default(),
@@ -597,6 +624,7 @@ impl Render for Viewer {
             .as_ref()
             .map(|selection| selection.overlay(&self.palette));
         let pane_keys = self.pane_keys_enabled(window, cx);
+        let lua_floats = self.render_lua_floats(window, cx);
         input::bind_root_actions(div(), cx)
             .relative()
             .key_context(if pane_keys {
@@ -614,5 +642,6 @@ impl Render for Viewer {
             .child(status_line)
             .child(command_line)
             .children(overlay)
+            .children(lua_floats)
     }
 }

@@ -2,6 +2,9 @@
 pub(crate) mod callbacks;
 pub(crate) mod host;
 pub(crate) mod keymap;
+pub(crate) mod readonly;
+pub(crate) mod state;
+pub(crate) mod ui;
 
 #[cfg(test)]
 mod tests;
@@ -35,6 +38,8 @@ pub(crate) enum Access {
 #[derive(Clone)]
 pub(crate) struct LuaContext {
     shared: Rc<RefCell<callbacks::State>>,
+    pub(crate) ui: Rc<RefCell<ui::UiState>>,
+    pub(crate) readonly: readonly::ReadonlyTypes,
 }
 
 pub(crate) struct LuaRuntime {
@@ -53,10 +58,13 @@ impl LuaRuntime {
         let lua = Lua::new();
         let context = LuaContext {
             shared: Rc::new(RefCell::new(callbacks::State::default())),
+            ui: Default::default(),
+            readonly: Default::default(),
         };
         let api = lua.create_table()?;
         crate::config::lua::install(&lua, &api, &context)?;
         keymap::install(&lua, &api, &context)?;
+        ui::install(&lua, &api, &context)?;
         install(&lua, &api, &context)?;
         lua.register_module("mmv", api)?;
         Ok(Self { lua, context })
@@ -140,7 +148,12 @@ impl LuaRuntime {
     /// Exactly one ordinary callback per step. Drain/apply host outputs before
     /// stepping again; resulting notifications are enqueued, never called inline.
     pub(crate) fn pump_one(&self) -> Pump {
-        self.context.pump_one(&self.lua)
+        self.context.flush_ui(&self.lua);
+        let result = self.context.pump_one(&self.lua);
+        if result == Pump::Dispatched {
+            self.context.flush_ui(&self.lua);
+        }
+        result
     }
 
     pub(crate) fn take_output(&self) -> Option<HostOutput> {

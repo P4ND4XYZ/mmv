@@ -253,6 +253,8 @@ impl LuaContext {
         let mut state = self.shared.borrow_mut();
         state.owners.remove(&owner);
         Self::release_callbacks(&mut state, owner);
+        drop(state);
+        self.ui.borrow_mut().remove(owner);
     }
 
     /// Cleanup is complete before on_close is enqueued. Running Lua is never
@@ -271,6 +273,8 @@ impl LuaContext {
         if let Some(function) = owner_state.on_close {
             state.pending.push_back(Pending::Close { function, reason });
         }
+        drop(state);
+        self.ui.borrow_mut().remove(owner);
         Ok(true)
     }
 
