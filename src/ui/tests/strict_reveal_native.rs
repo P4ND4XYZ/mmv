@@ -45,6 +45,7 @@ fn strict_reveal_native_backend_gate() {
     super::strict_reveal::geometry_gate(&mut cx);
     super::strict_reveal::strict_contract_cases(&mut cx);
     super::strict_reveal::strict_private_case(&mut cx);
+    super::source_line_terminal::private_native_adapter(&mut cx);
     super::strict_reveal::strict_partial_row_cases(&mut cx);
     super::strict_reveal::strict_native_complex_text(&mut cx);
     drop(cx);

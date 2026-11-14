@@ -47,6 +47,10 @@ impl Viewer {
             .current_match()
             .and_then(|ix| self.app.matches().get(ix))
             .cloned();
+        if reveal && target.is_some() {
+            self.document.cancel_source_reveal();
+            self.document.anchor_changed(cx);
+        }
         let result = self.document.text.update(cx, |text, cx| {
             text.set_range_highlights(highlights, cx)?;
             if let Some(target) = target.filter(|_| reveal) {
