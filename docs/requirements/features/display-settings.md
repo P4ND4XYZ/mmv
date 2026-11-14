@@ -23,7 +23,9 @@
 
 [ファイルツリー](file-tree.md)の起動時の表示／非表示は`tree.visible`で指定する。ルート判定マーカーは`tree.root_markers`で指定する。
 
-`require("mmv")`で設定APIを取得する。表示・配色とツリー設定を対象とし、キーマップや独自コマンドの登録APIは提供しない。
+`require("mmv")`で設定APIを取得する。この文書は表示・配色とツリー設定を扱う。キー登録とフローティングUIは[Lua公開API](lua-api.md)、利用の流れと範囲は[LuaによるフローティングUI](lua-floating-ui.md)を参照する。独自コマンドの登録APIは提供しない。
+
+`mmv.setup`・`mmv.set_hl`はinit専用で、要求受理時は`true`を返す。キー変更は実行フェーズでも可能とし、表示設定のホットリロードとは区別する。初期化で利用できるAPIと設定・登録の一括有効化は[Lua公開API](lua-api.md#初期化と設定の有効化)に従う。
 
 ```lua
 local mmv = require("mmv")

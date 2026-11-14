@@ -14,6 +14,7 @@ Windows向けの読み取り専用ビューアーを、GPUIとgpui-componentを�
 - [ファイル表示と更新](../requirements/features/file-viewing.md)、[本文検索](../requirements/features/search.md)
 - [画面と操作モード](../requirements/features/viewer-ui.md)、[スクロール](../requirements/features/navigation.md)
 - [リンクと履歴](../requirements/features/links-history.md)、[外部操作](../requirements/features/external-control.md)
+- [LuaによるフローティングUI](../requirements/features/lua-floating-ui.md)、[Lua公開API](../requirements/features/lua-api.md)
 - [Markdown描画](../requirements/features/markdown-rendering.md)、[Mermaid図](../requirements/features/mermaid.md)、[エラーログ](../requirements/features/logging.md)
 
 ## 検討中の設計案
@@ -56,7 +57,7 @@ mermaid-cliをバックグラウンドで実行し、PNGを生成してMarkdown�
 
 既存と同様に、`app`は`core`へ依存し、`ui`と`infra`は`app`の契約を使用します。起動・接続部分が各層を組み合わせます。必要な機能の追加に合わせてモジュールを分割し、先行してcrate全体を再構成しません。
 
-内部の分割方針と状態の所有者は[モジュール構成と責務境界](components/module-boundaries.md)、文書操作の契約は[文書操作と閲覧状態](components/document-operations.md)、起動と通信は[CLI・単一起動・外部操作](components/external-control.md)、リンク選択の技術選定とAPI制約は[共通の選択パネルとファジーマッチ](components/selection-panel.md)を参照してください。
+内部の分割方針と状態の所有者は[モジュール構成と責務境界](components/module-boundaries.md)、文書操作の契約は[文書操作と閲覧状態](components/document-operations.md)、起動と通信は[CLI・単一起動・外部操作](components/external-control.md)、現行リンク選択の構成と保持する保護規則は[共通の選択パネルとファジーマッチ](components/selection-panel.md)を参照してください。追加するLua APIの観測可能な契約は[Lua公開API](../requirements/features/lua-api.md)を正本とし、既存の固定SelectionPanelをそのまま公開するものではありません。Lua VMの配置・内部モジュール分割は、この公開契約から独立して扱います。
 
 ### 固定paneとツリーの構成案
 
