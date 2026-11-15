@@ -124,6 +124,13 @@ pub enum DocumentContent {
 }
 
 impl DocumentContent {
+    pub fn format(&self) -> crate::core::DocumentFormat {
+        match self {
+            Self::Markdown { .. } => crate::core::DocumentFormat::Markdown,
+            Self::Pdf { .. } => crate::core::DocumentFormat::Pdf,
+        }
+    }
+
     pub fn markdown_source(&self) -> Option<&Arc<String>> {
         match self {
             Self::Markdown { source } => Some(source),
@@ -259,7 +266,7 @@ impl DocumentState {
     /// Unknown, altered, and already completed requests produce no second completion.
     pub fn complete(&mut self, result: ReadResult) -> Option<ReadCompletion> {
         let (request, _) = self.outstanding.get(&result.request.id)?;
-        if request != &result.request {
+        if request != &result.request || request.phase != ReadPhase::Load {
             return None;
         }
         let (request, period) = self.outstanding.remove(&result.request.id)?;
@@ -352,6 +359,22 @@ impl DocumentState {
                 }))
             }
         }
+    }
+
+    /// Internal cancellation never completes an external response or changes UI state.
+    pub fn finish_internal(&mut self, request: &ReadRequest) -> bool {
+        let Some((saved, period)) = self.outstanding.get(&request.id) else {
+            return false;
+        };
+        if saved != request
+            || request.response_to.is_some()
+            || self.pending == Some(request.id)
+            || (self.reload == Some(request.id) && *period == Some(self.period))
+        {
+            return false;
+        }
+        self.outstanding.remove(&request.id);
+        true
     }
 
     /// A newer synchronous navigation supersedes display adoption, not read responses.

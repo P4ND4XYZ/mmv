@@ -223,7 +223,7 @@ fn external_open_and_history_wait_for_reads_and_keep_search_command_and_focus(
             view.read_with(cx, |viewer, _| assert_eq!(viewer.path, previous));
             cx.update(|cx| {
                 view.update(cx, |viewer, cx| {
-                    viewer.complete(super::success(request, source.clone()), cx)
+                    viewer.complete_fixture(super::success(request, source.clone()), cx)
                 })
             });
             frame(cx, window);
@@ -276,7 +276,7 @@ fn external_open_and_history_wait_for_reads_and_keep_search_command_and_focus(
                 ) else {
                     panic!("read required");
                 };
-                viewer.complete(
+                viewer.complete_fixture(
                     ReadResult {
                         request,
                         content: Err("file not found".into()),
@@ -322,7 +322,7 @@ fn external_bottom_after_adoption_is_not_overwritten_by_pending_top(cx: &mut Tes
             ) else {
                 panic!("read required");
             };
-            viewer.complete(super::success(request, source), cx);
+            viewer.complete_fixture(super::success(request, source), cx);
             assert_eq!(
                 viewer.app.position_request().unwrap().target,
                 crate::app::PositionTarget::Top
@@ -398,7 +398,7 @@ fn movements_before_layout_follow_top_and_distance_and_are_consumed_once(cx: &mu
                 let OperationResult::Pending(request) = result else {
                     panic!("read required");
                 };
-                viewer.complete(super::success(request, source.clone()), cx);
+                viewer.complete_fixture(super::success(request, source.clone()), cx);
                 assert!(viewer.app.position_request().is_some());
                 assert_eq!(
                     viewer.request_external(
@@ -486,7 +486,7 @@ fn relative_movements_wait_for_nested_heading_and_preserve_acceptance_order(
             ) else {
                 panic!("read required");
             };
-            viewer.complete(super::success(request, source), cx);
+            viewer.complete_fixture(super::success(request, source), cx);
             // Up, then down by two lines: clamping at the fresh document's top
             // would produce 40 rather than the required heading distance + 20.
             for direction in [
@@ -542,7 +542,7 @@ fn newer_document_and_same_generation_heading_supersede_unapplied_movements(
                 ) else {
                     panic!("read required");
                 };
-                viewer.complete(super::success(request, source.clone()), cx);
+                viewer.complete_fixture(super::success(request, source.clone()), cx);
                 viewer.request_external(
                     ExternalOperation::Bottom,
                     ExternalRequestId("old-bottom".into()),
@@ -564,7 +564,7 @@ fn newer_document_and_same_generation_heading_supersede_unapplied_movements(
                     ) else {
                         panic!("read required");
                     };
-                    viewer.complete(super::success(request, source.clone()), cx);
+                    viewer.complete_fixture(super::success(request, source.clone()), cx);
                 } else if navigation == 1 {
                     let OperationResult::Pending(request) = viewer.request_operation(
                         DocumentOperation::Heading {
@@ -577,7 +577,7 @@ fn newer_document_and_same_generation_heading_supersede_unapplied_movements(
                     ) else {
                         panic!("read required");
                     };
-                    viewer.complete(super::success(request, source.clone()), cx);
+                    viewer.complete_fixture(super::success(request, source.clone()), cx);
                 } else {
                     viewer.request_operation(
                         DocumentOperation::Heading {
@@ -624,7 +624,7 @@ fn replacement_keeps_unapplied_movement(
                 view.update(cx, |viewer, cx| {
                     assert!(viewer.app.position_request().is_some());
                     if fail {
-                        viewer.complete(
+                        viewer.complete_fixture(
                             ReadResult {
                                 request: request.clone(),
                                 content: Err("missing".into()),
@@ -632,7 +632,7 @@ fn replacement_keeps_unapplied_movement(
                             cx,
                         );
                     } else {
-                        viewer.complete(
+                        viewer.complete_fixture(
                             super::success(request.clone(), replacement_source.clone()),
                             cx,
                         );
@@ -653,7 +653,7 @@ fn replacement_keeps_unapplied_movement(
             ) else {
                 panic!("read required");
             };
-            viewer.complete(super::success(request, source.clone()), cx);
+            viewer.complete_fixture(super::success(request, source.clone()), cx);
             assert_eq!(
                 viewer.request_external(movement.clone(), ExternalRequestId("move".into()), cx),
                 OperationResult::Complete {

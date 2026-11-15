@@ -6,6 +6,7 @@ mod search;
 
 use std::{collections::BTreeMap, ops::Range, path::PathBuf};
 
+pub use crate::core::DocumentFormat;
 pub use crate::core::{ImageLocation, LinkTarget, resolve_image, resolve_link};
 pub use document::{
     Document, DocumentKey, DocumentOperation, ExternalRequestId, Generation, LoadedDocument,
@@ -16,7 +17,7 @@ pub use document::{
 #[cfg(test)]
 pub use mermaid::{Diagram, DiagramStatus};
 pub use mermaid::{DiagramRequest, DiagramResult};
-pub use search::SearchOutcome;
+pub use search::{SearchOutcome, UnsupportedSearch};
 
 use document::DocumentState;
 use history::History;
@@ -166,7 +167,7 @@ impl App {
             }
             _ => None,
         };
-        let skip_same = matches!(
+        let mut skip_same = matches!(
             &operation,
             DocumentOperation::ExternalOpen { .. } | DocumentOperation::TreeOpen { .. }
         ) || (matches!(&operation, DocumentOperation::Open(_))
@@ -181,6 +182,9 @@ impl App {
                 let Some(document) = self.document() else {
                     return complete(Err(OperationError::DocumentUnavailable));
                 };
+                if document.content.format() == DocumentFormat::Pdf {
+                    return complete(Ok(()));
+                }
                 (document.path.clone(), PendingOperation::Reload)
             }
             DocumentOperation::Heading { path: None, id } => {
@@ -215,6 +219,11 @@ impl App {
                 )
             }
         };
+        if matches!(pending, PendingOperation::Open(_))
+            && DocumentFormat::for_path(&path) == DocumentFormat::Pdf
+        {
+            skip_same = true;
+        }
         let request = self
             .document
             .open(path, response_to, origin, tree, skip_same, reload);
@@ -225,7 +234,22 @@ impl App {
     #[cfg(test)]
     pub fn complete(&mut self, result: impl Into<ReadResponse>) -> Option<ReadCompletion> {
         match result.into() {
-            ReadResponse::Loaded(result) => self.complete_at(result, 0.),
+            ReadResponse::Loaded(mut result) => {
+                // Legacy Markdown fixtures model the resolve and body delivery
+                // together; production terminals still require the Load phase.
+                if result.request.phase == ReadPhase::Resolve {
+                    let key = result
+                        .content
+                        .as_ref()
+                        .map(|doc| doc.key.clone())
+                        .map_err(Clone::clone);
+                    match self.resolve_at(result.request.clone(), key, 0.)? {
+                        ReadResolution::Continue(load) => result.request = load,
+                        ReadResolution::Complete(completion) => return Some(completion),
+                    }
+                }
+                self.complete_at(result, 0.)
+            }
             ReadResponse::Resolved { request, key } => match self.resolve_at(request, key, 0.)? {
                 ReadResolution::Complete(completion) => Some(completion),
                 ReadResolution::Continue(_) => {
@@ -241,6 +265,18 @@ impl App {
         key: Result<DocumentKey, String>,
         distance: f32,
     ) -> Option<ReadResolution> {
+        let key = key.and_then(|key| {
+            if DocumentFormat::for_path(&request.path) == DocumentFormat::Pdf
+                && matches!(
+                    self.pending_operations.get(&request.id),
+                    Some(PendingOperation::Open(Some(_)))
+                )
+            {
+                Err("Source line navigation is not supported for PDF".into())
+            } else {
+                Ok(key)
+            }
+        });
         let resolution = self.document.resolve(request, key)?;
         if let ReadResolution::Complete(completion) = &resolution {
             self.finish_operation(
@@ -251,6 +287,17 @@ impl App {
             );
         }
         Some(resolution)
+    }
+
+    /// No response, position/history processing, or current request mutation.
+    pub fn finish_internal(&mut self, request: &ReadRequest) -> bool {
+        if !self.pending_operations.contains_key(&request.id)
+            || !self.document.finish_internal(request)
+        {
+            return false;
+        }
+        self.pending_operations.remove(&request.id);
+        true
     }
 
     /// Capture the departure distance immediately before replacing the displayed body.
@@ -290,6 +337,7 @@ impl App {
             }
             if completion.adopted {
                 let document = self.document().expect("adopted document");
+                let pdf = document.content.format() == DocumentFormat::Pdf;
                 let same_document = previous_key.as_ref() == Some(&document.key);
                 let path = document.path.clone();
                 let (target, pending_movements) = match operation {
@@ -324,12 +372,19 @@ impl App {
                     } => {
                         self.history.travel(index, distance);
                         (
-                            PositionTarget::Distance(saved),
+                            if pdf {
+                                PositionTarget::Top
+                            } else {
+                                PositionTarget::Distance(saved)
+                            },
                             PendingMovementPolicy::Replace,
                         )
                     }
                 };
-                if self.watch_target.as_ref().map(|target| &target.key)
+                if pdf {
+                    self.watch_target = None;
+                    self.deferred_reload = false;
+                } else if self.watch_target.as_ref().map(|target| &target.key)
                     != self.document().map(|document| &document.key)
                 {
                     self.next_watch += 1;
@@ -424,6 +479,44 @@ impl App {
             .complete_diagram(result, self.document.current.as_ref())
     }
 
+    fn supports_search(&self) -> Result<(), UnsupportedSearch> {
+        if self
+            .document()
+            .is_some_and(|doc| doc.content.format() == DocumentFormat::Pdf)
+        {
+            Err(UnsupportedSearch)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// T3 must migrate all UI search entrypoints before enabling PDF adoption.
+    pub fn begin_document_search(&mut self) -> Result<(), UnsupportedSearch> {
+        self.supports_search()?;
+        self.begin_search();
+        Ok(())
+    }
+
+    pub fn confirm_document_search(
+        &mut self,
+        query: String,
+        from: usize,
+    ) -> Result<SearchOutcome, UnsupportedSearch> {
+        if let Err(error) = self.supports_search() {
+            self.mode = Mode::Normal;
+            self.search.end_unsupported();
+            return Err(error);
+        }
+        Ok(self.confirm_search(query, from))
+    }
+
+    pub fn step_document_match(&mut self, forward: bool) -> Result<(), UnsupportedSearch> {
+        self.supports_search()?;
+        self.step_match(forward);
+        Ok(())
+    }
+
+    /// Markdown-only compatibility API; PDF callers must use begin_document_search.
     pub fn begin_search(&mut self) {
         if self.mode != Mode::Normal {
             return;
@@ -439,6 +532,7 @@ impl App {
         }
     }
 
+    /// Markdown-only compatibility API; PDF callers must use confirm_document_search.
     pub fn confirm_search(&mut self, query: String, from: usize) -> SearchOutcome {
         self.mode = Mode::Normal;
         self.search.confirm_search(query, from)
@@ -463,15 +557,15 @@ impl App {
     }
 
     pub fn rendered(&mut self, generation: Generation, text: &str) -> bool {
-        if self
-            .document()
-            .is_none_or(|doc| doc.generation != generation)
-        {
+        if self.document().is_none_or(|doc| {
+            doc.generation != generation || doc.content.format() == DocumentFormat::Pdf
+        }) {
             return false;
         }
         self.search.rendered(generation, text)
     }
 
+    /// Markdown-only compatibility API; PDF callers must use step_document_match.
     pub fn step_match(&mut self, forward: bool) {
         self.search.step_match(forward);
     }

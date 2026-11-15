@@ -72,7 +72,7 @@ impl Session {
                 ) else {
                     panic!("initial real file read")
                 };
-                viewer.complete(crate::infra::read_document(request), cx);
+                viewer.complete_fixture(crate::infra::read_document(request), cx);
             })
         });
         let requests = Rc::new(RefCell::new(Vec::new()));
@@ -146,7 +146,7 @@ impl Session {
         let result = crate::infra::read_document(request);
         cx.update(|cx| {
             self.view
-                .update(cx, |viewer, cx| viewer.complete(result, cx))
+                .update(cx, |viewer, cx| viewer.complete_fixture(result, cx))
         });
         self.frame(cx);
     }

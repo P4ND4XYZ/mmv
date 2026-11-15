@@ -1,23 +1,73 @@
-use crate::app::{DocumentKey, LoadedDocument, ReadPhase, ReadRequest, ReadResponse, ReadResult};
+use crate::app::{
+    DocumentFormat, DocumentKey, LoadedDocument, ReadPhase, ReadRequest, ReadResponse, ReadResult,
+};
+use std::sync::Arc;
 
-pub fn read_document(request: ReadRequest) -> ReadResponse {
+/// Intermediate I/O is not PDF preparation or a successful app adoption.
+pub enum DocumentRead {
+    Response(ReadResponse),
+    PdfBytes {
+        request: ReadRequest,
+        key: DocumentKey,
+        bytes: Arc<Vec<u8>>,
+    },
+}
+
+pub fn read_document_input(request: ReadRequest) -> DocumentRead {
+    read_document_with(request, |path| std::fs::read(path))
+}
+
+fn read_document_with(
+    request: ReadRequest,
+    read: impl FnOnce(&std::path::Path) -> std::io::Result<Vec<u8>>,
+) -> DocumentRead {
     let key = resolve_key(&request).map_err(|error| report_read_error(&request, error));
     if request.phase == ReadPhase::Resolve {
-        return ReadResponse::Resolved { request, key };
+        return DocumentRead::Response(ReadResponse::Resolved { request, key });
     }
     let content = key.and_then(|key| {
-        let source = std::fs::read_to_string(&request.path)
-            .map_err(|error| report_read_error(&request, error))?;
-        Ok(LoadedDocument::markdown(
-            key,
-            source
-                .strip_prefix('\u{feff}')
-                .unwrap_or(&source)
-                .to_owned(),
-        ))
+        let bytes = read(&request.path).map_err(|error| report_read_error(&request, error))?;
+        Ok((key, bytes))
     });
+    match content {
+        Ok((key, bytes)) if DocumentFormat::for_path(&request.path) == DocumentFormat::Pdf => {
+            DocumentRead::PdfBytes {
+                request,
+                key,
+                bytes: Arc::new(bytes),
+            }
+        }
+        content => {
+            let content = content.and_then(|(key, bytes)| {
+                let source = String::from_utf8(bytes).map_err(|error| {
+                    report_read_error(
+                        &request,
+                        std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+                    )
+                })?;
+                Ok(LoadedDocument::markdown(
+                    key,
+                    source
+                        .strip_prefix('\u{feff}')
+                        .unwrap_or(&source)
+                        .to_owned(),
+                ))
+            });
+            DocumentRead::Response(ReadResponse::Loaded(ReadResult { request, content }))
+        }
+    }
+}
 
-    ReadResponse::Loaded(ReadResult { request, content })
+/// Existing Markdown production bridge. T3 must consume DocumentRead and perform
+/// real preparation before delivering PDF success; bytes alone never succeed.
+pub fn read_document(request: ReadRequest) -> ReadResponse {
+    match read_document_input(request) {
+        DocumentRead::Response(response) => response,
+        DocumentRead::PdfBytes { request, .. } => ReadResponse::Loaded(ReadResult {
+            request,
+            content: Err("PDF preparation is not connected".into()),
+        }),
+    }
 }
 
 fn resolve_key(request: &ReadRequest) -> std::io::Result<DocumentKey> {
@@ -58,7 +108,13 @@ fn report_read_error(request: &ReadRequest, error: std::io::Error) -> String {
     super::logging::log_document_failure(&request.path, &error.to_string());
     format!(
         "{}: {}",
-        read_error_message(&error, request.tree.is_some()),
+        if DocumentFormat::for_path(&request.path) == DocumentFormat::Pdf
+            && error.kind() == std::io::ErrorKind::InvalidData
+        {
+            "Unable to read file"
+        } else {
+            read_error_message(&error, request.tree.is_some())
+        },
         request.path.display()
     )
 }
@@ -106,6 +162,39 @@ mod tests {
             crate::app::OperationResult::Pending(request) => request,
             _ => panic!("tree open requires preflight"),
         }
+    }
+
+    #[test]
+    fn pdf_io_returns_bytes_once_without_utf8_or_successful_adoption() {
+        let path = std::env::temp_dir().join(format!("mmv-t2b-pdf-{}.PDF", std::process::id()));
+        std::fs::write(&path, [0xff, 0x00, 0x25]).unwrap();
+        let mut app = App::default();
+        let resolve = app.open(path.clone());
+        assert_eq!(resolve.phase, ReadPhase::Resolve);
+        let DocumentRead::Response(ReadResponse::Resolved { request, key }) =
+            read_document_with(resolve, |_| panic!("resolve must not read"))
+        else {
+            panic!("resolve")
+        };
+        let crate::app::ReadResolution::Continue(load) = app.resolve_at(request, key, 0.).unwrap()
+        else {
+            panic!("load")
+        };
+        let mut reads = 0;
+        let result = read_document_with(load.clone(), |path| {
+            reads += 1;
+            std::fs::read(path)
+        });
+        assert_eq!(reads, 1);
+        let DocumentRead::PdfBytes { bytes, request, .. } = result else {
+            panic!("raw bytes")
+        };
+        assert_eq!(request, load);
+        assert_eq!(bytes.as_slice(), &[0xff, 0x00, 0x25]);
+        assert!(app.document().is_none());
+        let result = loaded(read_document(load));
+        assert!(result.content.is_err());
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

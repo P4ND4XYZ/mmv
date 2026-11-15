@@ -28,7 +28,7 @@ pub(super) fn navigate(
             ) else {
                 panic!("identity check");
             };
-            viewer.complete(
+            viewer.complete_fixture(
                 crate::app::ReadResponse::Resolved {
                     request,
                     key: Ok(key),
@@ -179,7 +179,7 @@ fn completed_source_line_does_not_resurrect_after_resize_reload_or_old_callbacks
             ) else {
                 panic!();
             };
-            viewer.complete(success(request, source), cx);
+            viewer.complete_fixture(success(request, source), cx);
             viewer.apply_position_after_layout(&old, &text, cx);
         })
     });
@@ -292,7 +292,7 @@ fn pending_source_line_and_relative_move_survive_async_reload(cx: &mut TestAppCo
             // Install an unlaid-out TextView so the request cannot complete
             // before the second asynchronous body replacement arrives.
             let request = viewer.app.open(viewer.path.clone());
-            viewer.complete(success(request, source.clone()), cx);
+            viewer.complete_fixture(success(request, source.clone()), cx);
             let key = viewer.app.document().unwrap().key.clone();
             let crate::app::OperationResult::Pending(request) = viewer.request_external(
                 crate::app::ExternalOperation::Open {
@@ -304,7 +304,7 @@ fn pending_source_line_and_relative_move_survive_async_reload(cx: &mut TestAppCo
             ) else {
                 panic!("identity check");
             };
-            viewer.complete(
+            viewer.complete_fixture(
                 crate::app::ReadResponse::Resolved {
                     request,
                     key: Ok(key),
@@ -326,7 +326,7 @@ fn pending_source_line_and_relative_move_survive_async_reload(cx: &mut TestAppCo
                 ExternalRequestId("after-line".into()),
                 cx,
             );
-            viewer.complete(success(request, source), cx);
+            viewer.complete_fixture(success(request, source), cx);
             assert!(matches!(
                 viewer.app.position_request().map(|request| &request.target),
                 Some(crate::app::PositionTarget::SourceLine(_))
@@ -375,7 +375,7 @@ fn source_line_confirmation_preserves_later_relative_movement(cx: &mut TestAppCo
                 cx,
             );
             assert_eq!(viewer.document.distance(cx), 0.);
-            viewer.complete(
+            viewer.complete_fixture(
                 crate::app::ReadResponse::Resolved {
                     request,
                     key: Ok(key),
@@ -412,7 +412,7 @@ fn history_reads_wait_for_source_line_departure_layout(cx: &mut TestAppContext) 
             ) else {
                 panic!();
             };
-            viewer.complete(success(request, source.clone()), cx);
+            viewer.complete_fixture(success(request, source.clone()), cx);
         })
     });
     frame(cx, window);
@@ -447,7 +447,7 @@ fn history_reads_wait_for_source_line_departure_layout(cx: &mut TestAppContext) 
             ) else {
                 panic!();
             };
-            viewer.complete(
+            viewer.complete_fixture(
                 crate::app::ReadResponse::Resolved {
                     request,
                     key: Ok(key),
@@ -470,7 +470,7 @@ fn history_reads_wait_for_source_line_departure_layout(cx: &mut TestAppContext) 
         .expect("history starts after layout");
     cx.update(|cx| {
         view.update(cx, |viewer, cx| {
-            viewer.complete(success(back, source.clone()), cx)
+            viewer.complete_fixture(success(back, source.clone()), cx)
         })
     });
     frame(cx, window);
@@ -483,7 +483,7 @@ fn history_reads_wait_for_source_line_departure_layout(cx: &mut TestAppContext) 
             ) else {
                 panic!();
             };
-            viewer.complete(success(request, source), cx);
+            viewer.complete_fixture(success(request, source), cx);
         })
     });
     frame(cx, window);
@@ -566,7 +566,7 @@ fn completed_image_and_mermaid_targets_do_not_resurrect_after_dimension_changes(
     cx.update(|cx| {
         view.update(cx, |viewer, cx| {
             let request = viewer.app.open(viewer.path.clone());
-            viewer.complete(success(request, source), cx);
+            viewer.complete_fixture(success(request, source), cx);
         })
     });
     frame(cx, window);

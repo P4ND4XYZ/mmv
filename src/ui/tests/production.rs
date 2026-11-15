@@ -107,7 +107,7 @@ fn production_pipe_reverse_completions_with_colliding_external_ids_and_disconnec
     let a_read = reads.borrow_mut().pop().unwrap();
     cx.update(|cx| {
         view.update(cx, |view, cx| {
-            view.complete(super::success(b_read.clone(), "newest".into()), cx)
+            view.complete_fixture(super::success(b_read.clone(), "newest".into()), cx)
         })
     });
     pump_until(cx, || b.is_finished());
@@ -115,7 +115,7 @@ fn production_pipe_reverse_completions_with_colliding_external_ids_and_disconnec
     assert!(matches!(a_rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
     cx.update(|cx| {
         view.update(cx, |view, cx| {
-            view.complete(
+            view.complete_fixture(
                 crate::app::ReadResult {
                     request: a_read,
                     content: Err("older read failed".into()),
@@ -153,7 +153,7 @@ fn production_pipe_reverse_completions_with_colliding_external_ids_and_disconnec
     let late = reads.borrow_mut().pop().unwrap();
     cx.update(|cx| {
         view.update(cx, |view, cx| {
-            view.complete(super::success(late.clone(), "after disconnect".into()), cx)
+            view.complete_fixture(super::success(late.clone(), "after disconnect".into()), cx)
         })
     });
     view.read_with(cx, |view, _| assert_eq!(view.path, late.path));

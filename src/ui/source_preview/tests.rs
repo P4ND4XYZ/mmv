@@ -388,7 +388,7 @@ fn links_events_preserve_manual_scroll_for_same_id_and_isolate_half_page_and_ime
     assert_eq!(request.path, PathBuf::from(r"C:\fixtures\two.md"));
     cx.update(|cx| {
         viewer.update(cx, |v, cx| {
-            v.complete(
+            v.complete_fixture(
                 app::ReadResult {
                     request,
                     content: Err("missing".into()),

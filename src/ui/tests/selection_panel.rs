@@ -173,7 +173,7 @@ fn selection_panel_ranked_id_confirmation_and_both_utf8_highlight_fields(cx: &mu
     view.read_with(cx, |viewer, _| assert!(viewer.link_panel.is_none()));
     cx.update(|cx| {
         view.update(cx, |viewer, cx| {
-            viewer.complete(success(request, "# Start\n\nDestination".into()), cx)
+            viewer.complete_fixture(success(request, "# Start\n\nDestination".into()), cx)
         })
     });
     frame(cx, window);

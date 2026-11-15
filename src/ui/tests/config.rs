@@ -22,7 +22,7 @@ fn startup_configuration_notice_survives_first_document_adoption(cx: &mut TestAp
     cx.update(|cx| {
         view.update(cx, |viewer, cx| {
             let request = viewer.app.open(PathBuf::from("example.md"));
-            viewer.complete(success(request, "body".into()), cx);
+            viewer.complete_fixture(success(request, "body".into()), cx);
         })
     });
     cx.run_until_parked();

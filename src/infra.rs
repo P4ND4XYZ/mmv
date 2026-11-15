@@ -73,7 +73,7 @@ pub use {
 };
 
 pub use config::load_config;
-pub use document::read_document;
+pub use document::{DocumentRead, read_document, read_document_input};
 pub use logging::{log_config_failure, log_diagram_failure, log_document_failure};
 pub use mermaid::{cleanup_mermaid_scratch, generate_diagram};
 pub use watch::{FileWatch, WatchNotice};

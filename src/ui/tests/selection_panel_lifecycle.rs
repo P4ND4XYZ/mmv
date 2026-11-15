@@ -50,14 +50,14 @@ fn selection_panel_read_request_failure_and_stale_success_preserve_query_selecti
                 cx,
             ));
             assert!(viewer.link_panel.is_some(), "request alone is not adoption");
-            viewer.complete(
+            viewer.complete_fixture(
                 ReadResult {
                     request: latest,
                     content: Err("not found".into()),
                 },
                 cx,
             );
-            viewer.complete(success(old, "stale body".into()), cx);
+            viewer.complete_fixture(success(old, "stale body".into()), cx);
         })
     });
     frame(cx, window);
@@ -98,7 +98,7 @@ fn selection_panel_only_adopted_body_closes_panel_warns_and_old_ids_cannot_execu
                 let request =
                     pending(viewer.request_operation(DocumentOperation::Reload, origin, None, cx));
                 assert!(viewer.link_panel.is_some());
-                viewer.complete(success(request, "[New](new.md)".into()), cx);
+                viewer.complete_fixture(success(request, "[New](new.md)".into()), cx);
                 assert!(viewer.link_panel.is_none());
             })
         });
@@ -350,7 +350,7 @@ fn selection_panel_confirm_then_read_failure_keeps_original_body_distance_and_hi
     let request = reads.borrow_mut().pop().unwrap();
     cx.update(|cx| {
         view.update(cx, |viewer, cx| {
-            viewer.complete(
+            viewer.complete_fixture(
                 ReadResult {
                     request,
                     content: Err("missing destination".into()),
@@ -403,7 +403,7 @@ fn selection_panel_external_history_adoption_closes_only_on_success(cx: &mut Tes
         view.update(cx, |viewer, cx| {
             let request =
                 pending(viewer.request_document(viewer.path.with_file_name("second.md"), None, cx));
-            viewer.complete(success(request, "[Second](second-link.md)".into()), cx);
+            viewer.complete_fixture(success(request, "[Second](second-link.md)".into()), cx);
         })
     });
     frame(cx, window);
@@ -416,7 +416,7 @@ fn selection_panel_external_history_adoption_closes_only_on_success(cx: &mut Tes
                 ExternalRequestId("back-failed".into()),
                 cx,
             ));
-            viewer.complete(
+            viewer.complete_fixture(
                 ReadResult {
                     request: failed,
                     content: Err("history missing".into()),
@@ -437,7 +437,7 @@ fn selection_panel_external_history_adoption_closes_only_on_success(cx: &mut Tes
                 ExternalRequestId("back".into()),
                 cx,
             ));
-            viewer.complete(success(request, "[First](first.md)".into()), cx);
+            viewer.complete_fixture(success(request, "[First](first.md)".into()), cx);
         })
     });
     frame(cx, window);
@@ -470,7 +470,7 @@ fn selection_panel_external_adoption_restores_only_logical_focus_and_does_not_ac
                 None,
                 cx,
             ));
-            viewer.complete(success(request, "External body".into()), cx);
+            viewer.complete_fixture(success(request, "External body".into()), cx);
         })
     });
     frame(cx, window);

@@ -7,6 +7,25 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DocumentFormat {
+    Markdown,
+    Pdf,
+}
+
+impl DocumentFormat {
+    pub fn for_path(path: &Path) -> Self {
+        if path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+        {
+            Self::Pdf
+        } else {
+            Self::Markdown
+        }
+    }
+}
+
 /// Prototype condition: case-sensitive, non-overlapping literal UTF-8 search.
 pub fn find_matches(text: &str, query: &str) -> Vec<Range<usize>> {
     if query.is_empty() {
@@ -131,6 +150,22 @@ impl HeadingIds {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn document_format_only_recognizes_pdf_extension() {
+        for path in ["a.pdf", "a.PDF", "a.PdF"] {
+            assert_eq!(
+                DocumentFormat::for_path(Path::new(path)),
+                DocumentFormat::Pdf
+            );
+        }
+        for path in ["a", "a.md", "a.markdown", "a.txt", ".pdf", "a.pdf.txt"] {
+            assert_eq!(
+                DocumentFormat::for_path(Path::new(path)),
+                DocumentFormat::Markdown
+            );
+        }
+    }
 
     #[test]
     fn japanese_matches_use_distinct_utf8_byte_ranges() {

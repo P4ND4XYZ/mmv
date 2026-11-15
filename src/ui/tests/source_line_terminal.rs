@@ -142,7 +142,7 @@ fn adapter_end_and_overshooting_pages_save_normalized_history(cx: &mut TestAppCo
                 else {
                     panic!()
                 };
-                viewer.complete(success(read, source.clone()), cx);
+                viewer.complete_fixture(success(read, source.clone()), cx);
             })
         });
         frame(cx, window);
@@ -201,7 +201,7 @@ fn adapter_end_and_overshooting_pages_save_normalized_history(cx: &mut TestAppCo
             .expect("history released after normalization");
         cx.update(|cx| {
             view.update(cx, |viewer, cx| {
-                viewer.complete(success(back, "first document".into()), cx)
+                viewer.complete_fixture(success(back, "first document".into()), cx)
             })
         });
         frames(cx, window);
@@ -214,7 +214,7 @@ fn adapter_end_and_overshooting_pages_save_normalized_history(cx: &mut TestAppCo
                 ) else {
                     panic!()
                 };
-                viewer.complete(success(read, source.clone()), cx);
+                viewer.complete_fixture(success(read, source.clone()), cx);
             })
         });
         frames(cx, window);
@@ -244,7 +244,7 @@ fn adapter_manual_cancel_and_new_read_wait_for_normalization(cx: &mut TestAppCon
             ) else {
                 panic!()
             };
-            viewer.complete(success(read, "replacement".into()), cx);
+            viewer.complete_fixture(success(read, "replacement".into()), cx);
             assert_ne!(
                 viewer
                     .app
@@ -296,7 +296,7 @@ fn adapter_mapping_failure_releases_movement_and_gates_read_completion(cx: &mut 
             else {
                 panic!()
             };
-            viewer.complete(success(read, "replacement".into()), cx);
+            viewer.complete_fixture(success(read, "replacement".into()), cx);
             assert_ne!(
                 viewer
                     .app
