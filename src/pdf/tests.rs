@@ -3,7 +3,7 @@ use super::*;
 use gpui_kit::{Point, TestAppContext, div, prelude::*, px, size};
 
 // Self-authored minimal PDF objects; no customer documents, fonts or external assets.
-fn fixture(pages: &str, count: usize, encrypted: bool) -> Arc<Vec<u8>> {
+pub(crate) fn fixture(pages: &str, count: usize, encrypted: bool) -> Arc<Vec<u8>> {
     let mut objects = vec![
         "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
         format!("<< /Type /Pages /Kids [{pages}] /Count {count} >>"),

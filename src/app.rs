@@ -9,10 +9,10 @@ use std::{collections::BTreeMap, ops::Range, path::PathBuf};
 pub use crate::core::DocumentFormat;
 pub use crate::core::{ImageLocation, LinkTarget, resolve_image, resolve_link};
 pub use document::{
-    Document, DocumentKey, DocumentOperation, ExternalRequestId, Generation, LoadedDocument,
-    OperationError, OperationOrigin, OperationResult, PendingMovementPolicy, PositionRequest,
-    PositionTarget, ReadCompletion, ReadPhase, ReadRequest, ReadRequestId, ReadResolution,
-    ReadResponse, ReadResult, WatchTarget,
+    Document, DocumentContent, DocumentKey, DocumentOperation, ExternalRequestId, Generation,
+    LoadedDocument, OperationError, OperationOrigin, OperationResult, PendingMovementPolicy,
+    PositionRequest, PositionTarget, ReadCompletion, ReadPhase, ReadRequest, ReadRequestId,
+    ReadResolution, ReadResponse, ReadResult, WatchTarget,
 };
 #[cfg(test)]
 pub use mermaid::{Diagram, DiagramStatus};
@@ -79,6 +79,7 @@ pub struct App {
     watch_target: Option<WatchTarget>,
     next_watch: u64,
     deferred_reload: bool,
+    reads_stopped: bool,
     pub mode: Mode,
 }
 
@@ -161,6 +162,9 @@ impl App {
             response_to: response_to.clone(),
             outcome,
         };
+        if self.reads_stopped {
+            return complete(Err(OperationError::DocumentUnavailable));
+        }
         let tree = match &operation {
             DocumentOperation::TreeOpen { root, .. } => {
                 Some(document::TreeOpen { root: root.clone() })
@@ -300,6 +304,26 @@ impl App {
         true
     }
 
+    pub fn read_request_status(&self, request: &ReadRequest) -> Option<bool> {
+        self.document.request_status(request)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn read_record_counts(&self) -> (usize, usize) {
+        (
+            self.document.outstanding_count(),
+            self.pending_operations.len(),
+        )
+    }
+
+    /// Shutdown is not a normal completion: preserve document, history, errors and input.
+    pub fn shutdown_reads(&mut self) {
+        self.reads_stopped = true;
+        self.deferred_reload = false;
+        self.document.shutdown_reads();
+        self.pending_operations.clear();
+    }
+
     /// Capture the departure distance immediately before replacing the displayed body.
     pub fn complete_at(&mut self, result: ReadResult, distance: f32) -> Option<ReadCompletion> {
         let previous_key = self.document().map(|document| document.key.clone());
@@ -406,7 +430,7 @@ impl App {
     }
 
     pub fn watch_changed(&mut self, target: &WatchTarget) -> Option<ReadRequest> {
-        if self.watch_target.as_ref() != Some(target) {
+        if self.reads_stopped || self.watch_target.as_ref() != Some(target) {
             return None;
         }
         self.deferred_reload = true;
@@ -416,7 +440,7 @@ impl App {
     /// One trailing read covers all saves received while a read was pending.
     /// A successful switch discards the old file's deferred work; failure keeps it.
     pub fn take_automatic_reload(&mut self) -> Option<ReadRequest> {
-        if !self.deferred_reload || self.is_loading() {
+        if self.reads_stopped || !self.deferred_reload || self.is_loading() {
             return None;
         }
         self.deferred_reload = false;

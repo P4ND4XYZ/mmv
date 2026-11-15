@@ -8,6 +8,7 @@ mod layout;
 mod link_candidates;
 mod modes;
 mod operations;
+mod pdf;
 mod phase_one;
 mod production;
 mod selection_panel;

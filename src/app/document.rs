@@ -377,6 +377,26 @@ impl DocumentState {
         true
     }
 
+    /// Full request and phase identity, with adoption currency kept separate from response duty.
+    pub(super) fn request_status(&self, request: &ReadRequest) -> Option<bool> {
+        let (saved, period) = self.outstanding.get(&request.id)?;
+        (saved == request).then(|| {
+            self.pending == Some(request.id)
+                || (self.reload == Some(request.id) && *period == Some(self.period))
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn outstanding_count(&self) -> usize {
+        self.outstanding.len()
+    }
+
+    pub(super) fn shutdown_reads(&mut self) {
+        self.pending = None;
+        self.reload = None;
+        self.outstanding.clear();
+    }
+
     /// A newer synchronous navigation supersedes display adoption, not read responses.
     pub fn supersede(&mut self) {
         self.pending = None;

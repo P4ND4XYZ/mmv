@@ -9,7 +9,11 @@ impl Viewer {
     /// span into the rendered-text snapshot; never infer offsets from Markdown lines.
     pub(super) fn search_origin(&mut self, cx: &mut Context<Self>) -> Result<usize, String> {
         let document = self.app.document().ok_or("Document is loading")?;
-        let text = self.document.text.read(cx);
+        let markdown = self
+            .document
+            .as_markdown()
+            .ok_or(crate::app::UnsupportedSearch.message())?;
+        let text = markdown.text.read(cx);
         let snapshot = text.rendered_text();
         if Some(snapshot.source()) != document.markdown_source().map(|source| source.as_str()) {
             return Err("Document is being analyzed".into());
@@ -19,7 +23,11 @@ impl Viewer {
             return Ok(0);
         }
         self.analyze_document(cx)?;
-        let analysis = self.document.analysis.as_ref().expect("document analysis");
+        let analysis = self
+            .document
+            .as_markdown()
+            .and_then(|view| view.analysis.as_ref())
+            .expect("document analysis");
         Ok(analysis
             .blocks
             .iter()
@@ -31,10 +39,13 @@ impl Viewer {
     }
 
     pub(super) fn apply_search(&mut self, reveal: bool, cx: &mut Context<Self>) {
+        let Some(markdown) = self.document.as_markdown() else {
+            return;
+        };
         let Some(document) = self.app.document() else {
             return;
         };
-        if Some(self.document.text.read(cx).rendered_text().source())
+        if Some(markdown.text.read(cx).rendered_text().source())
             != document.markdown_source().map(|source| source.as_str())
         {
             return;
@@ -53,13 +64,18 @@ impl Viewer {
             self.document.cancel_source_reveal();
             self.document.anchor_changed(cx);
         }
-        let result = self.document.text.update(cx, |text, cx| {
-            text.set_range_highlights(highlights, cx)?;
-            if let Some(target) = target.filter(|_| reveal) {
-                text.reveal_range(target, cx)?;
-            }
-            Ok::<_, gpui_kit::component::text::RangeHighlightError>(())
-        });
+        let result = self
+            .document
+            .as_markdown()
+            .expect("Markdown checked")
+            .text
+            .update(cx, |text, cx| {
+                text.set_range_highlights(highlights, cx)?;
+                if let Some(target) = target.filter(|_| reveal) {
+                    text.reveal_range(target, cx)?;
+                }
+                Ok::<_, gpui_kit::component::text::RangeHighlightError>(())
+            });
         self.display_error = result.err().map(|error| {
             crate::infra::log_document_failure(&self.path, &error.to_string());
             "Unable to highlight search results".into()
@@ -67,12 +83,15 @@ impl Viewer {
     }
 
     pub(super) fn range_highlights(&self) -> Vec<RangeHighlight> {
-        let link = self.palette.get(Group::Link).bg;
-        let mut highlights = self
+        let Some(analysis) = self
             .document
-            .analysis
-            .as_ref()
-            .expect("current analysis")
+            .as_markdown()
+            .and_then(|view| view.analysis.as_ref())
+        else {
+            return Vec::new();
+        };
+        let link = self.palette.get(Group::Link).bg;
+        let mut highlights = analysis
             .links
             .iter()
             .cloned()

@@ -31,6 +31,7 @@ mod tests;
 
 pub struct Viewer {
     app: app::App,
+    window_id: WindowId,
     path: PathBuf,
     document: DocumentView,
     input: Prompt,
@@ -52,7 +53,7 @@ pub struct Viewer {
     latest_navigation_order: u64,
     read_orders: std::collections::BTreeMap<app::ReadRequestId, (u64, bool)>,
     position_reads: Vec<ReadRequest>,
-    normalized_reads: std::collections::VecDeque<app::ReadResponse>,
+    normalized_reads: std::collections::VecDeque<crate::runtime::PreparedRead>,
 }
 
 struct DeferredLink {
@@ -63,6 +64,8 @@ struct DeferredLink {
     order: u64,
 }
 
+pub(crate) struct ReadStateChanged;
+impl EventEmitter<ReadStateChanged> for Viewer {}
 impl EventEmitter<WatchTarget> for Viewer {}
 impl EventEmitter<ReadRequest> for Viewer {}
 impl EventEmitter<ReadCompletion> for Viewer {}
@@ -100,6 +103,7 @@ impl Viewer {
         body_focus.focus(window, cx);
         Self {
             app: app::App::default(),
+            window_id: window.window_handle().window_id(),
             path,
             document,
             input,
@@ -280,6 +284,7 @@ impl Viewer {
                 cx.emit(request.clone());
             }
         }
+        cx.emit(ReadStateChanged);
         cx.notify();
         result
     }
@@ -363,20 +368,35 @@ impl Viewer {
         }
     }
 
-    pub fn complete(&mut self, result: impl Into<app::ReadResponse>, cx: &mut Context<Self>) {
+    pub fn complete(
+        &mut self,
+        result: impl Into<crate::runtime::PreparedRead>,
+        cx: &mut Context<Self>,
+    ) {
         let result = result.into();
+        let request = result.request().clone();
+        if self.app.read_request_status(&request).is_none() {
+            return;
+        }
+        if result.is_abandoned() {
+            self.finish_internal_read(&request, cx);
+            return;
+        }
         self.settle_position(cx);
         // Identity-only same-file acceptance may register the next position
         // while an anchor normalizes. Delaying it would let a later Back
         // invalidate an already-resolved line intent before it is registered.
-        let same_file_resolution = matches!(&result,
-            app::ReadResponse::Resolved { request, key: Ok(key) }
-                if request.skip_same && self.app.document().is_some_and(|doc| doc.key == *key));
+        let same_file_resolution =
+            result.same_file_resolution(self.app.document().map(|doc| &doc.key));
         if self.document.normalization_pending() && !same_file_resolution {
             self.normalized_reads.push_back(result);
             cx.notify();
             return;
         }
+        let Some((result, prepared)) = result.into_parts() else {
+            self.finish_internal_read(&request, cx);
+            return;
+        };
         let previous_watch = self.app.watch_target().cloned();
         let distance = self.departure_distance(cx);
         let previous_position = self.app.position_request().map(|request| request.serial);
@@ -432,9 +452,14 @@ impl Viewer {
             self.message =
                 panel_closed.then(|| "Link selection closed because the document changed".into());
             self.message_is_error = false;
-            self.document.replace(generation, pending_movements, cx);
+            if let Some(prepared) = prepared {
+                self.document.replace_pdf(prepared, cx);
+                self.settle_position(cx);
+            } else {
+                self.document.replace(generation, pending_movements, cx);
+                self.accept_rendered_text(generation, cx);
+            }
             self.display_error = None;
-            self.accept_rendered_text(generation, cx);
         }
         if self.app.watch_target() != previous_watch.as_ref()
             && let Some(target) = self.app.watch_target()
@@ -442,6 +467,7 @@ impl Viewer {
             cx.emit(target.clone());
         }
         cx.emit(completion);
+        cx.emit(ReadStateChanged);
         if let Some(request) = self.app.take_automatic_reload() {
             cx.emit(request);
         }
@@ -449,14 +475,48 @@ impl Viewer {
         cx.notify();
     }
 
+    pub(crate) fn document_window_id(&self) -> WindowId {
+        self.window_id
+    }
+
+    pub(crate) fn read_request_status(&self, request: &ReadRequest) -> Option<bool> {
+        self.app.read_request_status(request)
+    }
+
+    pub(crate) fn finish_internal_read(
+        &mut self,
+        request: &ReadRequest,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.app.finish_internal(request) {
+            return false;
+        }
+        self.read_orders.remove(&request.id);
+        self.position_reads.retain(|queued| queued != request);
+        self.normalized_reads
+            .retain(|queued| queued.request() != request);
+        cx.notify();
+        true
+    }
+
+    pub(crate) fn shutdown_document_reads(&mut self, cx: &mut Context<Self>) {
+        self.app.shutdown_reads();
+        self.read_orders.clear();
+        self.position_reads.clear();
+        self.normalized_reads.clear();
+        self.document.release(None, cx);
+    }
+
     pub fn complete_diagram(&mut self, result: DiagramResult, cx: &mut Context<Self>) {
         if self.app.complete_diagram(&result)
             && let Ok(png) = result.png
         {
-            self.document.diagram_images.insert(
-                result.request.start,
-                Arc::new(Image::from_bytes(ImageFormat::Png, png)),
-            );
+            if let Some(markdown) = self.document.as_markdown_mut() {
+                markdown.diagram_images.insert(
+                    result.request.start,
+                    Arc::new(Image::from_bytes(ImageFormat::Png, png)),
+                );
+            }
         }
         self.start_next_diagram(cx);
         cx.notify();

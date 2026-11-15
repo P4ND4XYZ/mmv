@@ -64,11 +64,22 @@ impl fmt::Display for PrepareError {
 }
 impl std::error::Error for PrepareError {}
 
+// Test-only instrumentation on the deterministic executor's test thread; parallel
+// test contexts must not count each other's independent preparations.
+#[cfg(test)]
+thread_local! { static PREPARE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+#[cfg(test)]
+pub(crate) fn prepare_calls() -> usize {
+    PREPARE_CALLS.with(std::cell::Cell::get)
+}
+
 /// CPU-only: the fork parses shared bytes once and validates every page's geometry.
 pub(crate) fn prepare(
     bytes: Arc<Vec<u8>>,
     cancel: &PrepareCancellation,
 ) -> Result<PreparedPdf, PrepareError> {
+    #[cfg(test)]
+    PREPARE_CALLS.with(|count| count.set(count.get() + 1));
     gpui_pdf::prepare(bytes, &cancel.inner)
         .map(|inner| PreparedPdf { inner })
         .map_err(|error| {
@@ -244,4 +255,4 @@ impl Render for PdfView {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -222,7 +222,12 @@ impl Viewer {
         if command {
             self.app.begin_command();
         } else {
-            self.app.begin_search();
+            if let Err(error) = self.app.begin_document_search() {
+                self.message = Some(error.message().into());
+                self.message_is_error = false;
+                cx.notify();
+                return;
+            }
             self.apply_search(false, cx);
         }
         self.input.state.update(cx, |input, cx| {
@@ -243,6 +248,21 @@ impl Viewer {
         let input = self.input.state.read(cx).value().to_string();
         match self.app.mode {
             Mode::Search => {
+                if self
+                    .app
+                    .document()
+                    .is_some_and(|doc| doc.content.format() == crate::app::DocumentFormat::Pdf)
+                {
+                    let error = self
+                        .app
+                        .confirm_document_search(input, 0)
+                        .expect_err("PDF search is unsupported");
+                    self.message = Some(error.message().into());
+                    self.message_is_error = false;
+                    self.body_focus.focus(window, cx);
+                    cx.notify();
+                    return;
+                }
                 let from = match self.search_origin(cx) {
                     Ok(from) => from,
                     Err(error) => {
@@ -252,7 +272,10 @@ impl Viewer {
                         return;
                     }
                 };
-                let outcome = self.app.confirm_search(input, from);
+                let outcome = self
+                    .app
+                    .confirm_document_search(input, from)
+                    .expect("Markdown search");
                 self.apply_search(outcome == SearchOutcome::Found, cx);
                 self.message_is_error = false;
                 self.message = match outcome {
@@ -265,6 +288,7 @@ impl Viewer {
                 self.app.cancel_input();
                 match input.as_str() {
                     "q" => {
+                        self.document.release(Some(window), cx);
                         window.remove_window();
                         return;
                     }
@@ -289,8 +313,14 @@ impl Viewer {
         if !self.normal_keys_enabled() {
             return;
         }
-        self.app.step_match(forward);
-        self.apply_search(true, cx);
+        if let Err(error) = self.app.step_document_match(forward) {
+            self.message = Some(error.message().into());
+            self.message_is_error = false;
+            self.display_error = None;
+            self.app.clear_error();
+        } else {
+            self.apply_search(true, cx);
+        }
         cx.notify();
     }
 

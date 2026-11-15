@@ -59,7 +59,11 @@ impl Viewer {
             cx.notify();
             return;
         }
-        let analysis = self.document.analysis.as_ref().expect("current analysis");
+        let analysis = self
+            .document
+            .as_markdown()
+            .and_then(|view| view.analysis.as_ref())
+            .expect("current analysis");
         let generation = analysis.generation;
         let mut matcher = LinkMatcher::default();
         let items = panel_items(&analysis.candidates, &mut matcher, "");
@@ -84,8 +88,8 @@ impl Viewer {
                     let selection = this.link_panel.as_mut().expect("open panel");
                     let Some(analysis) = this
                         .document
-                        .analysis
-                        .as_ref()
+                        .as_markdown()
+                        .and_then(|view| view.analysis.as_ref())
                         .filter(|analysis| analysis.generation == selection.generation)
                     else {
                         return;
@@ -97,8 +101,8 @@ impl Viewer {
                     let selection = this.link_panel.as_ref().expect("open panel");
                     let Some(analysis) = this
                         .document
-                        .analysis
-                        .as_ref()
+                        .as_markdown()
+                        .and_then(|view| view.analysis.as_ref())
                         .filter(|analysis| analysis.generation == selection.generation)
                     else {
                         return;
@@ -133,8 +137,8 @@ impl Viewer {
                     let generation = this.link_panel.as_ref().expect("open panel").generation;
                     let target = this
                         .document
-                        .analysis
-                        .as_ref()
+                        .as_markdown()
+                        .and_then(|view| view.analysis.as_ref())
                         .filter(|analysis| {
                             analysis.generation == generation
                                 && this

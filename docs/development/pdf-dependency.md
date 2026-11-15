@@ -2,7 +2,9 @@
 
 ## 現在の範囲
 
-固定Git依存に加え、実parserとhost-controlled viewを包む薄いadapterを追加しています。ただし、runtimeのprepared配送・取消registry、本文のMarkdown/PDF切り替え、検索・キー操作への接続は未実装です。productionのPDF採用はまだ有効にしておらず、アプリでPDFを開けるようになったことや全体の動作検証完了を意味しません。機能上の正本は[PDF表示の要件](../requirements/features/pdf-viewing.md)と[PDF接続契約](../design/components/pdf-viewing-contract.md)です。
+固定Git依存と薄いadapterを、runtimeの実解析・prepared配送・取消registry、排他的なMarkdown/PDF本文ビューへ接続しています。バイト列の読取だけでは成功せず、実解析と全ページ寸法の検証後に共通の文書採用・CLI応答を行います。同一PDFの通常openは再読込・再解析・view再生成をせず、失敗や古い要求では現在の表示を保持します。PDF上の検索は未対応通知に接続し、Search中の入力・確定済み検索語と既存IMEガードを維持します。
+
+この接続段階では、実parser・headless view・隔離Named Pipeを通る自動試験を行います。T4で扱う操作・入口の仕上げや、native GPU・実shutdown・IME実機・代表PDFの性能確認まで完了した意味ではありません。機能上の正本は[PDF表示の要件](../requirements/features/pdf-viewing.md)と[PDF接続契約](../design/components/pdf-viewing-contract.md)です。
 
 ## 固定した取得元
 
@@ -38,4 +40,4 @@ revision更新時はforkの変更をレビューし、新しい完全SHAへ固�
 
 利用する`gpui-pdf` crateはMIT、ZoriteのrootアプリはGPL-3.0-or-laterとして区別します。GPL本体のコードをコピー・流用する構成ではありません。取得元の著作権・ライセンス表示は保持します。推移依存を含むライセンス監査が完了したとは扱いません。
 
-依存の解決・ビルド確認は、実機でのPDF動作確認の代わりにはなりません。実装接続後のnative GPU表示と資源解放、置換・終了時のshutdown、Search/CommandとIME、日本語・画像多数・数百ページの代表PDFによる性能・メモリ確認は別の検証です。この段階では、それらの成功や測定結果を主張しません。自動検証の失敗を、この手動確認へ暗黙に付け替えるものでもありません。
+依存の解決・ビルド確認は、実機でのPDF動作確認の代わりにはなりません。実装接続後のnative GPU表示と資源解放、置換・終了時のshutdown、Search/CommandとIME、日本語・画像多数・数百ページの代表PDFによる性能・メモリ確認は別の検証です。headless試験は実機のGPU・OS終了・IME動作や代表PDFの測定を代替しないため、それらの成功や測定結果を主張しません。自動検証の失敗を、この手動確認へ暗黙に付け替えるものでもありません。
