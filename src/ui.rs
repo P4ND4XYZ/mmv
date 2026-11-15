@@ -98,14 +98,15 @@ impl Viewer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::with_lua(
-            path,
-            started,
-            crate::lua::LuaRuntime::from_config(config),
-            config_notice,
-            window,
-            cx,
-        )
+        // This test-only fixture explicitly opts in to the optional plugin.
+        // Production uses with_lua and only the user's init.lua registrations.
+        let lua = crate::lua::LuaRuntime::from_config(config);
+        lua.lua()
+            .load(include_str!("../plugins/link_picker.lua"))
+            .set_name("@test/link_picker.lua")
+            .exec()
+            .expect("load link picker test fixture");
+        Self::with_lua(path, started, lua, config_notice, window, cx)
     }
 
     pub(crate) fn with_lua(

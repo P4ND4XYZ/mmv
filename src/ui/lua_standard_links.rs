@@ -1,4 +1,4 @@
-//! Public-API standard script and real GPUI key-routing integration tests.
+//! Optional public-API link picker and real GPUI key-routing integration tests.
 use super::Viewer;
 use crate::lua::ui::list::Id;
 use gpui_kit::{
@@ -615,8 +615,8 @@ fn app_lua_routing_nonmodal_native_input_modal_and_search_command(cx: &mut TestA
 }
 
 #[gpui_kit::test]
-fn standard_lua_user_override_remove_and_atomic_failure_restore_f(cx: &mut TestAppContext) {
-    for (user, opens) in [
+fn link_picker_user_override_remove_and_atomic_failure_leave_f_unbound(cx: &mut TestAppContext) {
+    for (user, fails) in [
         ("require('mmv').keymap.remove('f')", false),
         (
             "require('mmv').keymap.set('f',function()overridden=true end)",
@@ -632,11 +632,11 @@ fn standard_lua_user_override_remove_and_atomic_failure_restore_f(cx: &mut TestA
         ),
     ] {
         let (window, view) = crate::ui::tests::open(cx, "[Only](only.md)".into());
+        let source = format!("{}\n{user}", include_str!("../../plugins/link_picker.lua"));
         let (runtime, error) =
-            crate::lua::LuaRuntime::initialize(crate::lua::STANDARD, Some((user, "@test-user")))
-                .unwrap();
-        assert_eq!(error.is_some(), opens);
-        if opens {
+            crate::lua::LuaRuntime::initialize("", Some((&source, "@test-user"))).unwrap();
+        assert_eq!(error.is_some(), fails);
+        if fails {
             assert_eq!(runtime.config(), crate::config::Config::default());
         }
         view.update(cx, |v, cx| {
@@ -646,7 +646,12 @@ fn standard_lua_user_override_remove_and_atomic_failure_restore_f(cx: &mut TestA
         });
         frame(cx, window);
         press(cx, window, "f");
-        assert_eq!(is_open(cx, &view), opens);
+        assert!(!is_open(cx, &view));
+        view.read_with(cx, |v, _| {
+            if fails {
+                assert!(!v.lua.enqueue_key("f").unwrap());
+            }
+        });
     }
 }
 

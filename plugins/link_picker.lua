@@ -1,4 +1,4 @@
--- Standard link selection is composed exclusively from the public mmv API.
+-- Optional link selection is composed exclusively from the public mmv API.
 local mmv = require("mmv")
 local ui = mmv.ui
 local labels = {

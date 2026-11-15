@@ -21,8 +21,6 @@ use crate::config::Config;
 pub(crate) use callbacks::{CallbackScope, ErrorInfo, OwnerId};
 pub(crate) use host::{HostOutput, Pump};
 
-pub(crate) const STANDARD: &str = include_str!("lua/standard.lua");
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Phase {
     Init,
@@ -82,7 +80,7 @@ impl LuaRuntime {
         Ok(Self { lua, context })
     }
 
-    /// Standard registrations run first. A failed candidate VM is dropped in
+    /// An optional caller-supplied prelude runs first. A failed candidate VM is dropped in
     /// full, including globals, registry roots and closures, not just Config.
     /// The successful init VM itself becomes the execution VM.
     pub(crate) fn initialize(
@@ -92,7 +90,7 @@ impl LuaRuntime {
         Self::initialize_with(standard, user, |_, _, _| Ok(()))
     }
 
-    /// Install later APIs into each isolated VM *before* standard/user init.
+    /// Install later APIs into each isolated VM before caller-supplied init.
     /// The installer only builds bindings; it must not perform host operations.
     pub(crate) fn initialize_with(
         standard: &str,
@@ -116,9 +114,6 @@ impl LuaRuntime {
     /// installs the VM returned by the configuration loader instead.
     pub(crate) fn from_config(config: Config) -> Self {
         let runtime = Self::new().expect("create Lua runtime");
-        runtime
-            .run_init(STANDARD, "@mmv/standard.lua")
-            .expect("standard Lua");
         let mut state = runtime.context.shared.borrow_mut();
         state.config = config;
         state.initializing = false;
