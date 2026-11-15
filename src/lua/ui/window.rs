@@ -19,6 +19,8 @@ pub(crate) struct WindowData {
     pub components: BTreeMap<String, Component>,
     pub focus_order: Vec<u64>,
     pub previous_focus: Option<FocusTarget>,
+    pub synchronized: bool,
+    pub native_pending: bool,
 }
 
 #[derive(Clone)]
@@ -36,6 +38,47 @@ impl WindowHandle {
 
 impl UserData for WindowHandle {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        for (name, kind) in [("list", Kind::List), ("source", Kind::Source)] {
+            methods.add_method(name, move |lua, this, args: MultiValue| {
+                if !this.context.is_open(this.owner) {
+                    return Ok(Value::Boolean(false));
+                }
+                this.context.check(Access::Mutation)?;
+                if args.len() != 1 {
+                    return Err(tree::err("expected one component key"));
+                }
+                let key = tree::string(args.into_iter().next().unwrap(), "component key")?;
+                let ui = this.context.ui.borrow();
+                let c = ui
+                    .windows
+                    .iter()
+                    .find(|w| w.owner == this.owner)
+                    .and_then(|w| w.components.get(&key))
+                    .ok_or_else(|| tree::err("unknown component key"))?;
+                if c.kind != kind {
+                    return Err(tree::err("component type mismatch"));
+                }
+                let identity = c.identity;
+                drop(ui);
+                if kind == Kind::List {
+                    Ok(Value::UserData(lua.create_userdata(
+                        super::list::ListHandle {
+                            owner: this.owner,
+                            identity,
+                            context: this.context.clone(),
+                        },
+                    )?))
+                } else {
+                    Ok(Value::UserData(lua.create_userdata(
+                        super::source::SourceControl {
+                            owner: this.owner,
+                            identity,
+                            context: this.context.clone(),
+                        },
+                    )?))
+                }
+            });
+        }
         methods.add_method("is_open", |_, this, ()| {
             if !this.context.is_open(this.owner) {
                 return Ok(false);
@@ -60,16 +103,20 @@ impl UserData for WindowHandle {
     }
 }
 
-pub(crate) fn render_result(lua: &Lua, values: MultiValue) -> mlua::Result<Rc<Node>> {
+pub(crate) fn render_result(
+    lua: &Lua,
+    context: &LuaContext,
+    values: MultiValue,
+) -> mlua::Result<Rc<Node>> {
     if values.len() != 1 {
         return Err(tree::err(
             "render must return exactly one display description",
         ));
     }
     let value = values.into_iter().next().unwrap();
-    let root = tree::description(value.clone())?;
+    let root = tree::rooted_description(lua, context, value)?;
     tree::validate_keys(&root)?;
-    tree::rooted_description(lua, value)
+    Ok(root)
 }
 
 pub(crate) fn open(
@@ -150,14 +197,11 @@ pub(crate) fn open(
             .transpose()?,
     )?;
     let result = (|| {
-        let root = render_result(
-            lua,
-            context.construct(owner, None, &tree::load_function(lua, &render)?, ())?,
-        )?;
+        let root = context.build_ui(lua, owner, &render, focus.as_deref())?;
         let mut ui = context.ui.borrow_mut();
         // Validate explicit focus before publishing any part of the window.
         fn focusable(node: &Node, key: &str) -> bool {
-            (node.key.as_deref() == Some(key) && node.kind == Kind::Button && node.enabled)
+            (node.key.as_deref() == Some(key) && node.kind.focusable(node.enabled))
                 || node.children.iter().any(|c| focusable(c, key))
         }
         if focus.as_ref().is_some_and(|key| !focusable(&root, key)) {
@@ -177,8 +221,12 @@ pub(crate) fn open(
             components: BTreeMap::new(),
             focus_order: Vec::new(),
             previous_focus,
+            synchronized: false,
+            native_pending: false,
         });
-        ui.adopt(owner, root);
+        drop(ui);
+        context.adopt_ui(lua, owner, root)?;
+        let mut ui = context.ui.borrow_mut();
         if let Some(key) = focus {
             let identity = ui.windows.last().unwrap().components[&key].identity;
             ui.set_focus(Some(FocusTarget {

@@ -12,16 +12,29 @@ use crate::{
 };
 use gpui_kit::{prelude::*, *};
 use std::collections::BTreeMap;
+mod input;
+mod source;
+
+#[derive(Default)]
+struct ListEntry {
+    scroll: ScrollHandle,
+    selected: Option<crate::lua::ui::list::Id>,
+    initialized: bool,
+}
 
 #[derive(Default)]
 pub(super) struct FloatingUi {
     handles: BTreeMap<(OwnerId, Option<u64>), FocusHandle>,
     previous_external: Option<FocusHandle>,
     focus_revision: u64,
+    inputs: BTreeMap<(OwnerId, u64), input::InputEntry>,
+    sources: BTreeMap<(OwnerId, u64), Entity<source::RawSource>>,
+    lists: BTreeMap<(OwnerId, u64), ListEntry>,
 }
 
 impl Viewer {
     fn sync_lua_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.gate_pending_lua_inputs(window, cx);
         let context = self.lua.context();
         let mut ui = context.ui.borrow_mut();
         for w in &ui.windows {
@@ -100,9 +113,55 @@ impl Viewer {
     ) {
         self.sync_lua_focus(window, cx);
         let context = self.lua.context();
-        // This interceptor runs before GPUI keybindings, including native Tab.
-        // D adds its input-owned composition check before calling ui_key. Behind
-        // a nonmodal, leave the existing prompt/IME path completely untouched.
+        // This interceptor precedes GPUI bindings. Composition always owns the
+        // key, including bindings which would otherwise close or confirm.
+        if let Some(focus) = context.ui.borrow().focus
+            && let Some(id) = focus.identity
+            && self.floating_ui.composing(focus.owner, id, window, cx)
+        {
+            if event.keystroke.key == "escape" {
+                if let Some(input) = self.floating_ui.inputs.get(&(focus.owner, id)) {
+                    input.state.update(cx, |s, cx| {
+                        if let Some(marked) = s.marked_text_range(window, cx) {
+                            let current = s.value().to_string();
+                            let byte = |utf16: usize| {
+                                let mut units = 0;
+                                for (i, ch) in current.char_indices() {
+                                    if units == utf16 {
+                                        return Some(i);
+                                    }
+                                    units += ch.len_utf16();
+                                }
+                                (units == utf16).then_some(current.len())
+                            };
+                            if let (Some(start), Some(end)) = (byte(marked.start), byte(marked.end))
+                            {
+                                let stop = input.bound_text.len().checked_sub(current.len() - end);
+                                if let Some(stop) = stop.filter(|stop| *stop >= start) {
+                                    if let Some(original) = input.bound_text.get(start..stop) {
+                                        // Restore the original marked region inside the open
+                                        // composition transaction. Its net-no-op is discarded
+                                        // by InputState without clearing prior undo history.
+                                        s.replace_and_mark_text_in_range(
+                                            Some(marked),
+                                            original,
+                                            None,
+                                            window,
+                                            cx,
+                                        );
+                                        s.unmark_text(window, cx);
+                                        s.set_selected_range(start..stop, cx);
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+                cx.stop_propagation();
+                cx.notify();
+            }
+            return;
+        }
         if context.ui.borrow().focus.is_none() {
             return;
         }
@@ -147,6 +206,7 @@ impl Viewer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
+        self.sync_lua_resources(window, cx);
         self.sync_lua_focus(window, cx);
         let context = self.lua.context();
         let ui = context.ui.borrow();
@@ -169,7 +229,7 @@ impl Viewer {
                 &w.root,
                 owner,
                 &w.components,
-                &self.floating_ui.handles,
+                &self.floating_ui,
                 &self.palette,
                 Group::Panel,
                 cx,
@@ -246,7 +306,7 @@ fn render_node(
     node: &Node,
     owner: OwnerId,
     components: &BTreeMap<String, crate::lua::ui::Component>,
-    handles: &BTreeMap<(OwnerId, Option<u64>), FocusHandle>,
+    resources: &FloatingUi,
     palette: &Palette,
     inherited: Group,
     cx: &mut Context<Viewer>,
@@ -268,6 +328,7 @@ fn render_node(
     let mut el = div()
         .id(SharedString::from(selector.clone()))
         .debug_selector(move || selector.clone())
+        .test_support()
         .min_w_0()
         .min_h_0()
         .flex_shrink_1()
@@ -292,7 +353,7 @@ fn render_node(
             };
             for child in &node.children {
                 el = el.child(render_node(
-                    child, owner, components, handles, palette, group, cx,
+                    child, owner, components, resources, palette, group, cx,
                 ));
             }
         }
@@ -306,11 +367,89 @@ fn render_node(
                 StyledText::new(node.text.clone()).with_highlights(text_highlights(node, palette)),
             );
         }
+        Kind::Input | Kind::List | Kind::Source => {
+            let component = &components[node.key.as_ref().unwrap()];
+            let identity = component.identity;
+            let handle = &resources.handles[&(owner, Some(identity))];
+            if node.kind != Kind::Input {
+                el = el.track_focus(handle);
+            }
+            el = el.overflow_hidden().on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, window, cx| {
+                    let context = this.lua.context();
+                    if context.ui.borrow().accessible(owner) {
+                        context.ui.borrow_mut().set_focus(Some(FocusTarget {
+                            owner,
+                            identity: Some(identity),
+                        }));
+                    }
+                    this.sync_lua_focus(window, cx);
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            );
+            match node.kind {
+                Kind::Input => {
+                    let input = &resources.inputs[&(owner, identity)].state;
+                    el = el.child(
+                        gpui_kit::component::input::Input::new(input)
+                            .appearance(false)
+                            .bordered(false)
+                            .focus_bordered(false)
+                            .bg(colors.bg)
+                            .text_color(colors.fg)
+                            .size_full(),
+                    );
+                }
+                Kind::Source => el = el.child(resources.sources[&(owner, identity)].clone()),
+                Kind::List => {
+                    let list = node.list.as_ref().unwrap();
+                    let scroll = &resources.lists[&(owner, identity)].scroll;
+                    el = el
+                        .flex()
+                        .flex_col()
+                        .overflow_y_scroll()
+                        .track_scroll(scroll);
+                    for (index, child) in node.children.iter().enumerate() {
+                        let content =
+                            render_node(child, owner, components, resources, palette, group, cx);
+                        if let Some(id) = list.ids.get(index) {
+                            let id = id.clone();
+                            el = el.child(
+                                div()
+                                    .id(("lua-list-row", index))
+                                    .flex_shrink_0()
+                                    .child(content)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        let context = this.lua.context();
+                                        if context.ui.borrow().accessible(owner) {
+                                            let h = crate::lua::ui::list::ListHandle {
+                                                owner,
+                                                identity,
+                                                context,
+                                            };
+                                            let _ = h.click(this.lua.lua(), id.clone());
+                                        }
+                                        this.pump_lua(cx);
+                                        this.sync_lua_focus(window, cx);
+                                        cx.stop_propagation();
+                                        cx.notify();
+                                    })),
+                            );
+                        } else {
+                            el = el.child(content);
+                        }
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
         Kind::Button => {
             let component = &components[node.key.as_ref().unwrap()];
             if node.enabled {
                 let identity = component.identity;
-                let handle = &handles[&(owner, Some(identity))];
+                let handle = &resources.handles[&(owner, Some(identity))];
                 el = el
                     .track_focus(handle)
                     .cursor_pointer()

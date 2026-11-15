@@ -31,7 +31,7 @@ struct Binding {
 impl BindingType {
     fn accepts(self, value: &Value) -> bool {
         match self {
-            Self::String => matches!(value, Value::String(_)),
+            Self::String => matches!(value, Value::String(s) if s.to_str().is_ok()),
             Self::SelectionId => matches!(value, Value::Nil | Value::String(_) | Value::Integer(_)),
         }
     }
@@ -70,6 +70,18 @@ impl StateHandle {
         *self.value.borrow_mut() = value;
         let mut ui = self.context.ui.borrow_mut();
         ui.dirty |= !ui.windows.is_empty();
+        for window in &mut ui.windows {
+            window.synchronized = false;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn same_state(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.value, &other.value)
+    }
+
+    pub(crate) fn replace_display_value(&self, lua: &Lua, value: Value) -> mlua::Result<()> {
+        *self.value.borrow_mut() = lua.create_registry_value(copy(lua, &self.context, value)?)?;
         Ok(())
     }
 

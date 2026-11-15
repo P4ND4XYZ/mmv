@@ -1,6 +1,110 @@
 use crate::lua::{LuaRuntime, Pump};
 
 #[test]
+fn revision_r3_pending_notification_survives_failed_render_and_recovery() {
+    let r = event_runtime(
+        r#"
+        u=require('mmv').ui;a=u.state();b=u.state();fail=u.state(false);first=true;log=''
+        local function row()return u.text{text='row'}end
+        w=u.float.open{width=100,height=100,on_error=function()end,render=function()
+            if fail:get()then error('render failure')end
+            return u.column{children={
+                u.list{key='a',selection=a,items={{id=1}},render_item=row,
+                    on_selection_changed=function()if first then first=false;fail:set(true)end end},
+                u.list{key='b',selection=b,items={{id=1}},render_item=row,
+                    on_selection_changed=function(id)log=log..id end}
+            }}
+        end}
+    "#,
+    );
+    drain(&r);
+    r.lua().load("fail:set(false)").exec().unwrap();
+    drain(&r);
+    r.lua()
+        .load("assert(log=='1','lost initial selection notification: '..log)")
+        .exec()
+        .unwrap();
+}
+
+#[test]
+fn revision_r2_failed_focus_open_keeps_selection_value() {
+    let r = event_runtime(
+        r#"
+        u=require('mmv').ui;s=u.state()
+        ok,why=pcall(u.float.open,{width=100,height=100,focus='missing',
+            render=function()return u.list{key='l',selection=s,items={{id=1}},
+                render_item=function()return u.text{text='row'}end}end})
+        assert(not ok)
+        assert(s:get()==nil,'failed open changed selection to '..tostring(s:get()))
+        s:set(77)
+        assert(not pcall(u.float.open,{width=100,height=100,focus='missing',render=function()return u.list{key='l',selection=s,items={{id=1}},render_item=function()return u.text{text='row'}end}end}))
+        assert(s:get()==77,'failed open rolled back a completed user set')
+    "#,
+    );
+    drain(&r);
+}
+
+#[test]
+fn revision_r2_true_cycle_restores_internal_corrections_not_callback_sets() {
+    let r = event_runtime(
+        r#"
+        u=require('mmv').ui;a=u.state();cycle=u.state(false);mark=u.state(0);errors=0
+        w=u.float.open{width=100,height=100,render=function()
+            return u.list{key='l',selection=a,items={{id=cycle:get() and (a:get()==1 and 2 or 1) or 1}},render_item=function()return u.text{text='row'}end}
+        end,on_error=function()errors=errors+1 end}
+        require('mmv').keymap.set('x',function()mark:set(9);cycle:set(true)end)
+    "#,
+    );
+    drain(&r);
+    let root = r.context().ui.borrow().windows[0].root.clone();
+    r.enqueue_key("x").unwrap();
+    drain(&r);
+    assert!(std::rc::Rc::ptr_eq(
+        &root,
+        &r.context().ui.borrow().windows[0].root
+    ));
+    r.lua().load("assert(a:get()==1 and mark:get()==9 and cycle:get() and errors==1);assert(not w:list('l'):confirm())").exec().unwrap();
+}
+
+#[test]
+fn revision_r2_finite_selection_dependency_can_revisit_a_value() {
+    let r = event_runtime(
+        r#"
+        u=require('mmv').ui;a=u.state();b=u.state();c=u.state()
+        local function list(key,s,id)return u.list{key=key,selection=s,items={{id=id}},
+            render_item=function()return u.text{text=key}end}end
+        w=u.float.open{width=100,height=100,render=function()
+            local aid=b:get()==1 and 2 or 1
+            local bid=c:get()==nil and 1 or 2
+            return u.column{children={list('a',a,aid),list('b',b,bid),list('c',c,1)}}
+        end}
+        assert(a:get()==1 and b:get()==2 and c:get()==1)
+        assert(w:list('a'):confirm())
+    "#,
+    );
+    drain(&r);
+}
+
+#[test]
+fn revision_r2_selection_notifications_are_current_after_prior_callback_changes_state() {
+    let r = event_runtime(
+        r#"
+        u=require('mmv').ui;a=u.state();b=u.state();log=''
+        w=u.float.open{width=100,height=100,render=function()
+            return u.column{children={
+                u.list{key='a',selection=a,items={{id=1}},render_item=function()return u.text{text='a'}end,
+                    on_selection_changed=function(id)b:set(2)end},
+                u.list{key='b',selection=b,items={{id=1},{id=2}},render_item=function()return u.text{text='b'}end,
+                    on_selection_changed=function(id)log=log..tostring(id)..'/'..tostring(b:get())..';'end}
+            }}
+        end}
+    "#,
+    );
+    drain(&r);
+    r.lua().load("assert(log=='2/2;',log)").exec().unwrap();
+}
+
+#[test]
 fn review_description_cycles_collect_after_close_and_failed_open() {
     let runtime = runtime("ui=require('mmv').ui; weak=setmetatable({},{__mode='v'})");
     runtime.lua().load(r#"
@@ -515,4 +619,242 @@ fn window_custom_keys_override_window_defaults_and_errors_never_unconsume_the_ke
         .exec()
         .unwrap();
     assert_eq!(context.ui.borrow().focus.unwrap().identity, None);
+}
+
+fn event_runtime(source: &str) -> LuaRuntime {
+    let r = runtime("");
+    r.lua().load(source).exec().unwrap();
+    r
+}
+
+#[test]
+fn list_selection_ids_reset_clear_and_notification_follow_normal_display() {
+    let r = event_runtime(
+        r#"
+        u=require('mmv').ui; selected=u.state('2'); reset=u.state(''); rows=u.state({{id=2,label='integer'},{id='2',label='string'}}); log={}; renders=0
+        require('mmv').keymap.set('x',function()
+            w=u.float.open{width=300,height=200,focus='l',render=function()
+                renders=renders+1
+                return u.list{key='l',items=rows:get(),selection=selected,reset_on=reset:get(),wrap_navigation=false,
+                    render_item=function(item,active)assert(type(active)=='boolean');item.label='independent';return u.column{children={u.text{text=tostring(item.id)},u.text{text=active and 'selected' or 'other'}}}end,
+                    on_selection_changed=function(id)assert(selected:get()==id);table.insert(log,id or 'nil')end,
+                    on_confirm=function(id)confirmed=id end}
+            end}
+            l=w:list('l');assert(selected:get()=='2');assert(#log==0);assert(not pcall(w.source,w,'l'))
+        end)
+    "#,
+    );
+    r.enqueue_key("x").unwrap();
+    drain(&r);
+    r.lua().load("assert(#log==1 and log[1]=='2');assert(l:select('2'));assert(l:select_next());assert(not pcall(l.select,l,5))").exec().unwrap();
+    drain(&r);
+    r.lua()
+        .load("assert(#log==1);assert(l:select(nil))")
+        .exec()
+        .unwrap();
+    drain(&r);
+    r.lua()
+        .load("assert(selected:get()==nil and log[2]=='nil');rows:set(rows:get())")
+        .exec()
+        .unwrap();
+    drain(&r);
+    r.lua()
+        .load("assert(selected:get()==nil);assert(l:select_previous())")
+        .exec()
+        .unwrap();
+    drain(&r);
+    r.lua()
+        .load("assert(selected:get()=='2');reset:set('new')")
+        .exec()
+        .unwrap();
+    drain(&r);
+    r.lua()
+        .load(
+            "assert(selected:get()==2);assert(l:confirm());assert(rows:get()[1].label=='integer')",
+        )
+        .exec()
+        .unwrap();
+    drain(&r);
+    r.lua()
+        .load("assert(confirmed==2);selected:set('unknown')")
+        .exec()
+        .unwrap();
+    drain(&r);
+    r.lua()
+        .load("assert(selected:get()==2);rows:set({})")
+        .exec()
+        .unwrap();
+    drain(&r);
+    r.lua().load("assert(selected:get()==nil);assert(not l:select_next());assert(not l:select_previous());assert(not l:confirm())").exec().unwrap();
+}
+
+#[test]
+fn list_render_failure_keeps_tree_but_rejects_old_confirm_and_is_not_deferred() {
+    let r = event_runtime(
+        r#"
+        u=require('mmv').ui;s=u.state();fail=u.state(false);errors={};confirmed=0
+        w=u.float.open{width=100,height=100,render=function()return u.list{key='l',selection=s,items={{id=1}},render_item=function()if fail:get()then error('bad row')end;return u.text{text='row'}end,on_confirm=function()confirmed=confirmed+1 end}end,on_error=function(e)table.insert(errors,e)end};l=w:list('l')
+    "#,
+    );
+    drain(&r);
+    let root = r.context().ui.borrow().windows[0].root.clone();
+    r.lua()
+        .load("fail:set(true);assert(not l:confirm())")
+        .exec()
+        .unwrap();
+    drain(&r);
+    assert!(std::rc::Rc::ptr_eq(
+        &root,
+        &r.context().ui.borrow().windows[0].root
+    ));
+    r.lua().load("assert(not l:confirm());assert(#errors==1 and errors[1].phase=='render' and errors[1].key=='l');fail:set(false)").exec().unwrap();
+    drain(&r);
+    r.lua()
+        .load("assert(confirmed==0);assert(l:confirm())")
+        .exec()
+        .unwrap();
+    drain(&r);
+    r.lua().load("assert(confirmed==1)").exec().unwrap();
+}
+
+#[test]
+fn component_bind_claims_validate_atomically_and_release_on_removal_close_and_type_change() {
+    let r = event_runtime(
+        r#"
+        u=require('mmv').ui;q=u.state('');s=u.state();stage=u.state(0)
+        w=u.float.open{width=100,height=100,render=function()
+            if stage:get()==0 then return u.column{children={u.input{key='q',bind=q},u.list{key='l',selection=s,items={{id=1}},render_item=function()return u.text{text='row'}end}}}end
+            if stage:get()==1 then return u.input{key='l',bind=q}end
+            return u.text{text='empty'}
+        end};l=w:list('l')
+        assert(not pcall(function()q:set(3)end));assert(q:get()=='');assert(not pcall(function()s:set(3.5)end))
+        assert(not pcall(u.float.open,{width=10,height=10,render=function()return u.input{key='q2',bind=q}end}))
+        assert(not pcall(u.float.open,{width=10,height=10,render=function()return u.column{children={u.input{key='a',bind=q},u.input{key='b',bind=q}}}end}))
+    "#,
+    );
+    drain(&r);
+    r.lua().load("stage:set(1)").exec().unwrap();
+    drain(&r);
+    r.lua().load("assert(not l:select('unknown'));assert(not l:confirm());assert(not pcall(w.list,w,'l'));s:set({});stage:set(2)").exec().unwrap();
+    drain(&r);
+    r.lua()
+        .load("q:set(3);assert(q:get()==3);assert(w:close());assert(not w:list({}))")
+        .exec()
+        .unwrap();
+    drain(&r);
+}
+
+#[test]
+fn list_and_input_reject_invalid_contract_values_without_publishing_partial_windows() {
+    let r = event_runtime(
+        r#"
+        u=require('mmv').ui;s=u.state();q=u.state('');errors=0
+        assert(not pcall(u.list,{key='l',selection=s,items={},render_item=function()return u.text{text='x'}end}))
+        local cases={
+            function()return u.list{key='l',selection=s,items={{id=1},{id=1}},render_item=function()return u.text{text='x'}end}end,
+            function()return u.list{key='l',selection=s,items={[2]={id=1}},render_item=function()return u.text{text='x'}end}end,
+            function()return u.list{key='l',selection=s,items={{id=1.5}},render_item=function()return u.text{text='x'}end}end,
+            function()return u.list{key='l',selection=s,items={{id=1,payload=function()end}},render_item=function()return u.text{text='x'}end}end,
+            function()return u.list{key='l',selection=s,items={},wrap_navigation=1,render_item=function()return u.text{text='x'}end}end,
+            function()return u.list{key='l',selection=s,items={},reset_on={},render_item=function()return u.text{text='x'}end}end,
+            function()return u.list{key='l',selection=s,items={{id=1}},render_item=function()s:set(1);return u.text{text='x'}end}end,
+            function()return u.list{key='l',selection=s,items={{id=1}},render_item=function()return u.text{text='x'},nil end}end,
+            function()return u.input{key='q',bind=q,keys={['ctrl-a']=function()end,['CTRL-a']=function()end}}end,
+            function()return u.input{key='q',bind=s}end,
+        }
+        for _,render in ipairs(cases)do assert(not pcall(u.float.open,{width=10,height=10,render=render,on_error=function()errors=errors+1 end}))end
+        assert(errors==0)
+    "#,
+    );
+    drain(&r);
+    assert!(r.context().ui.borrow().windows.is_empty());
+}
+
+#[test]
+fn list_notifications_use_display_order_and_callback_sets_coalesce() {
+    let r = event_runtime(
+        r#"
+        u=require('mmv').ui;a=u.state();b=u.state();log='';renders=0
+        local function list(key,state)return u.list{key=key,selection=state,items={{id=1},{id=2}},render_item=function()return u.text{text=key}end,on_selection_changed=function(id)assert(state:get()==id);log=log..key..id end}end
+        w=u.float.open{width=100,height=100,render=function()renders=renders+1;return u.column{children={list('z',a),list('a',b)}}end}
+        require('mmv').keymap.set('x',function()a:set(2);a:set(1);a:set(2);b:set(2)end)
+    "#,
+    );
+    drain(&r);
+    r.lua()
+        .load("assert(log=='z1a1');log='';before=renders")
+        .exec()
+        .unwrap();
+    r.enqueue_key("x").unwrap();
+    drain(&r);
+    r.lua()
+        .load("assert(log=='z2a2' and renders==before+1)")
+        .exec()
+        .unwrap();
+}
+
+#[test]
+fn reused_list_description_rebuilds_rows_from_selection_without_mutating_items() {
+    let r = event_runtime(
+        r#"
+        u=require('mmv').ui;s=u.state();row_calls=0
+        w=u.float.open{width=100,height=100,render=function()
+            if not cached then cached=u.list{key='l',selection=s,items={{id=1,label='one'},{id=2,label='two'}},render_item=function(item,selected)row_calls=row_calls+1;local text=item.label..(selected and '*'or '');item.label='changed';return u.text{text=text}end}end
+            return cached
+        end};l=w:list('l')
+    "#,
+    );
+    drain(&r);
+    r.lua().load("assert(l:select(2))").exec().unwrap();
+    drain(&r);
+    let context = r.context();
+    let ui = context.ui.borrow();
+    let l = ui.windows[0].root.list.as_ref().unwrap();
+    assert_eq!(l.selected, Some(super::list::Id::Integer(2)));
+    assert_eq!(ui.windows[0].root.children[1].text, "two*");
+}
+
+#[test]
+fn dependent_lists_normalize_without_restricting_composition_and_update_other_readers() {
+    let r = event_runtime(
+        r#"
+        u=require('mmv').ui;a=u.state();b=u.state();c=u.state();log=''
+        reader=u.float.open{width=100,height=100,render=function()return u.text{text=tostring(c:get())}end}
+        local function list(key,state)return u.list{key=key,selection=state,items={{id=1}},render_item=function()return u.text{text=key}end,on_selection_changed=function()assert(a:get()==1 and b:get()==1 and c:get()==1);log=log..key end}end
+        w=u.float.open{width=100,height=100,render=function()
+            local children={list('a',a)}
+            if a:get()then table.insert(children,list('b',b))end
+            if b:get()then table.insert(children,list('c',c))end
+            return u.column{children=children}
+        end};assert(w:list('c'):confirm())
+    "#,
+    );
+    drain(&r);
+    r.lua().load("assert(log=='abc')").exec().unwrap();
+    assert_eq!(r.context().ui.borrow().windows[0].root.text, "1");
+}
+
+#[test]
+fn input_keys_and_list_event_descriptions_do_not_root_lua_cycles_after_owner_close() {
+    let r = event_runtime(
+        r#"
+        u=require('mmv').ui;weak=setmetatable({},{__mode='v'});calls=0
+        do
+            local c={q=u.state(''),s=u.state()};weak[1]=c
+            c.input=u.input{key='q',bind=c.q,keys={['ctrl-k']=function()assert(c.input);calls=calls+1 end},on_change=function()assert(c.q)end};weak[2]=c.input
+            c.w=u.float.open{width=100,height=100,focus='q',render=function()
+                local list=u.list{key='l',selection=c.s,items={{id=1}},render_item=function()assert(c.q);return u.text{text='one'}end,on_selection_changed=function()assert(c.q)end,on_confirm=function()assert(c.q)end}
+                weak[3]=list;return u.column{children={c.input,list}}
+            end}
+            assert(c.w:close())
+        end
+    "#,
+    );
+    drain(&r);
+    r.lua().gc_collect().unwrap();
+    r.lua().gc_collect().unwrap();
+    r.lua()
+        .load("assert(weak[1]==nil and weak[2]==nil and weak[3]==nil)")
+        .exec()
+        .unwrap();
 }
