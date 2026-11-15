@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "family": "Noto Sans JP",
+  "font_version": "Version 2.004-H2;hotconv 1.0.118;makeotfexe 2.5.65603",
+  "postscript_name": "NotoSansJP-Thin",
+  "weight_axis": {"minimum": 100, "default": 100, "maximum": 900},
+  "file": "NotoSansJP[wght].ttf",
+  "repository": "https://github.com/google/fonts",
+  "revision": "66a36c8c94b1a5d992ee4e7f392fccfe4945767c",
+  "url": "https://raw.githubusercontent.com/google/fonts/66a36c8c94b1a5d992ee4e7f392fccfe4945767c/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf",
+  "sha256": "c2f3b4d463500a2ddcd3849cded1fceeb9fd6d1c32e6cbecd568453ba50fc68f",
+  "bytes": 9589900,
+  "license": "SIL Open Font License 1.1",
+  "license_url": "https://raw.githubusercontent.com/google/fonts/66a36c8c94b1a5d992ee4e7f392fccfe4945767c/ofl/notosansjp/OFL.txt",
+  "license_sha256": "1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9",
+  "copyright": "Copyright 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'",
+  "retrieved_utc": "2026-11-15",
+  "embedding": "Unmodified complete variable TrueType file, default outline; no subsetting or font modification. OS/2 fsType=0. CIDs equal original glyph IDs with Identity CIDToGIDMap; explicit widths and ToUnicode.",
+  "rights_review": "OFL preamble and permission allow embedding/redistribution; copyright and full OFL accompany each generated corpus. Font not sold alone, renamed, or relicensed.",
+  "revision_resolution_url": "https://api.github.com/repos/google/fonts/commits?path=ofl/notosansjp&per_page=1"
+}
