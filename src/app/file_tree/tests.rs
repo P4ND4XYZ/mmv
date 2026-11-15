@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn only_normal_markdown_files_are_open_candidates() {
+fn only_normal_markdown_and_pdf_files_are_open_candidates() {
     let mut tree = FileTree::default();
     let root = tree
         .document_changed("/tree/a.md".into(), true, &[])
@@ -10,20 +10,30 @@ fn only_normal_markdown_files_are_open_candidates() {
     let listing = directory(tree.complete(Completion::Root(root, "/tree".into())));
     let mut reparse = entry("/tree", "link.md", false);
     reparse.reparse = true;
+    let mut pdf_reparse = entry("/tree", "link.PDF", false);
+    pdf_reparse.reparse = true;
     tree.complete(Completion::Directory(
         listing,
         Ok(vec![
             entry("/tree", "folder", true),
             entry("/tree", "a.MD", false),
+            entry("/tree", "b.pdf", false),
+            entry("/tree", "c.PDF", false),
+            entry("/tree", "notes.markdown", false),
             entry("/tree", "asset.txt", false),
             reparse,
+            pdf_reparse,
         ]),
     ));
     for (name, allowed) in [
         ("folder", false),
         ("a.MD", true),
+        ("b.pdf", true),
+        ("c.PDF", true),
+        ("notes.markdown", false),
         ("asset.txt", false),
         ("link.md", false),
+        ("link.PDF", false),
     ] {
         tree.cursor = Some(PathBuf::from("/tree").join(name));
         assert_eq!(tree.open_candidate().is_some(), allowed);

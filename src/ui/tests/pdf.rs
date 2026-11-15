@@ -20,9 +20,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-struct Files(PathBuf);
+pub(super) struct Files(pub(super) PathBuf);
 impl Files {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
             "mmv-pdf-ui-{}-{}",
             std::process::id(),
@@ -34,12 +34,12 @@ impl Files {
         std::fs::create_dir(&path).unwrap();
         Self(path)
     }
-    fn write(&self, name: &str, bytes: &[u8]) -> PathBuf {
+    pub(super) fn write(&self, name: &str, bytes: &[u8]) -> PathBuf {
         let path = self.0.join(name);
         std::fs::write(&path, bytes).unwrap();
         path
     }
-    fn pdf(&self, name: &str) -> PathBuf {
+    pub(super) fn pdf(&self, name: &str) -> PathBuf {
         self.write(name, &pdf::tests::fixture("3 0 R 3 0 R", 2, false))
     }
 }
@@ -48,7 +48,7 @@ impl Drop for Files {
         std::fs::remove_dir_all(&self.0).unwrap();
     }
 }
-fn frame(cx: &mut TestAppContext, window: AnyWindowHandle) {
+pub(super) fn frame(cx: &mut TestAppContext, window: AnyWindowHandle) {
     for _ in 0..3 {
         cx.run_until_parked();
         cx.update_window(window, |_, window, cx| window.render_frame(cx))
@@ -56,17 +56,22 @@ fn frame(cx: &mut TestAppContext, window: AnyWindowHandle) {
     }
     cx.run_until_parked();
 }
-fn press(cx: &mut TestAppContext, window: AnyWindowHandle, key: &str) {
+pub(super) fn press(cx: &mut TestAppContext, window: AnyWindowHandle, key: &str) {
     cx.update_window(window, |_, window, cx| window.press(key, cx))
         .unwrap();
     frame(cx, window);
 }
-fn input(cx: &mut TestAppContext, window: AnyWindowHandle, text: &str) {
+pub(super) fn input(cx: &mut TestAppContext, window: AnyWindowHandle, text: &str) {
     cx.update_window(window, |_, window, cx| window.input(text, cx))
         .unwrap();
     frame(cx, window);
 }
-fn request(cx: &mut TestAppContext, view: &Entity<Viewer>, path: &Path, id: &str) -> ReadRequest {
+pub(super) fn request(
+    cx: &mut TestAppContext,
+    view: &Entity<Viewer>,
+    path: &Path,
+    id: &str,
+) -> ReadRequest {
     let result = cx.update(|cx| {
         view.update(cx, |view, cx| {
             view.request_external(
@@ -84,7 +89,7 @@ fn request(cx: &mut TestAppContext, view: &Entity<Viewer>, path: &Path, id: &str
     };
     request
 }
-fn body_pdf(cx: &TestAppContext, view: &Entity<Viewer>) -> Entity<pdf::PdfView> {
+pub(super) fn body_pdf(cx: &TestAppContext, view: &Entity<Viewer>) -> Entity<pdf::PdfView> {
     view.read_with(cx, |view, _| match &view.document {
         crate::ui::document::DocumentView::Pdf { view, .. } => view.clone(),
         _ => panic!("expected actual PDF view"),

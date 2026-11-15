@@ -9,6 +9,8 @@ mod link_candidates;
 mod modes;
 mod operations;
 mod pdf;
+mod pdf_entries;
+mod pdf_operations;
 mod phase_one;
 mod production;
 mod selection_panel;

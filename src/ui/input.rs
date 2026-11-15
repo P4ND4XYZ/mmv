@@ -23,6 +23,9 @@ actions!(
         PageUp,
         FirstLine,
         LastLine,
+        PdfZoomIn,
+        PdfZoomOut,
+        PdfFitWidth,
         ToggleTree,
         FocusTree,
         FocusBody,
@@ -69,6 +72,9 @@ pub fn bind_keys(cx: &mut gpui_kit::App) {
         KeyBinding::new("ctrl-b", PageUp, Some("EvaluationNormal")),
         KeyBinding::new("g g", FirstLine, Some("EvaluationNormal")),
         KeyBinding::new("shift-g", LastLine, Some("EvaluationNormal")),
+        KeyBinding::new("+", PdfZoomIn, Some("EvaluationPdfNormal")),
+        KeyBinding::new("-", PdfZoomOut, Some("EvaluationPdfNormal")),
+        KeyBinding::new("=", PdfFitWidth, Some("EvaluationPdfNormal")),
     ]);
 }
 
@@ -200,6 +206,15 @@ pub(super) fn bind_body_actions(body: Div, cx: &mut Context<Viewer>) -> Div {
     }))
     .on_action(cx.listener(|this, _: &NextMatch, _, cx| this.step_match(true, cx)))
     .on_action(cx.listener(|this, _: &PreviousMatch, _, cx| this.step_match(false, cx)))
+    .on_action(cx.listener(|this, _: &PdfZoomIn, window, cx| {
+        this.pdf_zoom_input(Some(1.1), window, cx);
+    }))
+    .on_action(cx.listener(|this, _: &PdfZoomOut, window, cx| {
+        this.pdf_zoom_input(Some(1. / 1.1), window, cx);
+    }))
+    .on_action(cx.listener(|this, _: &PdfFitWidth, window, cx| {
+        this.pdf_zoom_input(None, window, cx);
+    }))
 }
 
 impl Viewer {
@@ -322,6 +337,25 @@ impl Viewer {
             self.apply_search(true, cx);
         }
         cx.notify();
+    }
+
+    fn pdf_zoom_input(
+        &mut self,
+        multiplier: Option<f32>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.body_focus.is_focused(window) || !self.pane_keys_enabled(window, cx) {
+            return;
+        }
+        if let super::document::DocumentView::Pdf { view, .. } = &self.document {
+            view.update(cx, |view, cx| {
+                let _ = match multiplier {
+                    Some(multiplier) => view.set_zoom(view.zoom(cx) * multiplier, cx),
+                    None => view.fit_width(cx),
+                };
+            });
+        }
     }
 
     fn history_input(&mut self, operation: DocumentOperation, cx: &mut Context<Self>) {

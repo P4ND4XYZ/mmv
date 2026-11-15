@@ -4,7 +4,7 @@
 
 固定Git依存と薄いadapterを、runtimeの実解析・prepared配送・取消registry、排他的なMarkdown/PDF本文ビューへ接続しています。バイト列の読取だけでは成功せず、実解析と全ページ寸法の検証後に共通の文書採用・CLI応答を行います。同一PDFの通常openは再読込・再解析・view再生成をせず、失敗や古い要求では現在の表示を保持します。PDF上の検索は未対応通知に接続し、Search中の入力・確定済み検索語と既存IMEガードを維持します。
 
-この接続段階では、実parser・headless view・隔離Named Pipeを通る自動試験を行います。T4で扱う操作・入口の仕上げや、native GPU・実shutdown・IME実機・代表PDFの性能確認まで完了した意味ではありません。機能上の正本は[PDF表示の要件](../requirements/features/pdf-viewing.md)と[PDF接続契約](../design/components/pdf-viewing-contract.md)です。
+本文フォーカスのNormalでスクロール・拡大縮小・冪等な幅合わせを実adapterへ接続し、ツリーの通常`.md`／`.pdf`選択、Markdown内リンク、CLIの共通open・履歴を実parser・headless view・隔離Named Pipeで自動検証する構成です。Search・Command・選択パネル・ツリー・IMEの入力分離も試験対象としますが、native GPU・実shutdown・IME実機・代表PDFの性能確認まで完了した意味ではありません。機能上の正本は[PDF表示の要件](../requirements/features/pdf-viewing.md)と[PDF接続契約](../design/components/pdf-viewing-contract.md)です。
 
 ## 固定した取得元
 
