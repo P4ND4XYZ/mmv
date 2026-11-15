@@ -4,9 +4,11 @@
 
 Windows向けの読み取り専用ビューアーを、GPUIとgpui-componentを用いて構成します。1つのcrateと現在の責務分担を維持し、Markdownの独自解析器・描画器への置き換えは行いません。
 
-初期版には、自動更新、スクロール距離の維持、見出し移動、履歴、正式CLI、単一起動、Named Pipeによる外部操作、Mermaidの非同期生成とエラーログを含めます。Mermaidの永続キャッシュは後続版へ分離します。
+Markdownの初期版には、自動更新、スクロール距離の維持、見出し移動、履歴、正式CLI、単一起動、Named Pipeによる外部操作、Mermaidの非同期生成とエラーログを含めます。Mermaidの永続キャッシュは後続版へ分離します。
 
 この文書群では、全体構成とモジュール境界、実装順序とテスト設計、最初に共通化する文書操作とCLI連携の契約を扱います。後続段階のファイル監視・ログ管理については責務と検証範囲を示し、個々のAPIや内部関数まで固定しません。
+
+PDF追加では、既存の文書操作・要求管理を共通入口として維持し、形式別の本文表示を`DocumentView`のenumで分けます。アプリが入力とモードを所有し、PDF描画にはgpui-pdfのforkを使います。Markdown中心の既存詳細設計に対するPDFの差分・適用範囲は[PDF表示の基本設計](components/pdf-viewing.md)を参照してください。PDFの自動更新・履歴位置復元・検索は初期範囲に含めません。
 
 ## 参照する要件・機能仕様
 
@@ -14,6 +16,7 @@ Windows向けの読み取り専用ビューアーを、GPUIとgpui-componentを�
 - [ファイル表示と更新](../requirements/features/file-viewing.md)、[本文検索](../requirements/features/search.md)
 - [画面と操作モード](../requirements/features/viewer-ui.md)、[スクロール](../requirements/features/navigation.md)
 - [リンクと履歴](../requirements/features/links-history.md)、[外部操作](../requirements/features/external-control.md)
+- [PDF表示](../requirements/features/pdf-viewing.md)
 - [Markdown描画](../requirements/features/markdown-rendering.md)、[Mermaid図](../requirements/features/mermaid.md)、[エラーログ](../requirements/features/logging.md)
 
 ## 検討中の設計案
@@ -79,7 +82,7 @@ mermaid-cliをバックグラウンドで実行し、PNGを生成してMarkdown�
 
 ### CLIの同一ファイルopenとソース行連携
 
-同一ファイルの`open`は本文を読み直さず、`open FILE --line N`で保存済みソースの位置を指定します。CLI・IPCが正の行番号を渡し、infraがファイル同一性を解決し、appが読み込み要否と未適用の行指定を管理し、uiが既存のソース範囲と描画APIで対応箇所を表示します。保存による再読み込みと行指定の確認を独立に扱い、連続する位置要求で本文更新を失効させません。行指定は適用完了後に破棄し、以後の再読み込みや寸法変更で再発行しません。
+ソース行連携はMarkdownを対象とし、PDFへの`--line`は未対応エラーにします。同一ファイルの`open`は本文を読み直さず、`open FILE --line N`で保存済みソースの位置を指定します。CLI・IPCが正の行番号を渡し、infraがファイル同一性を解決し、appが読み込み要否と未適用の行指定を管理し、uiが既存のソース範囲と描画APIで対応箇所を表示します。保存による再読み込みと行指定の確認を独立に扱い、連続する位置要求で本文更新を失効させません。行指定は適用完了後に破棄し、以後の再読み込みや寸法変更で再発行しません。
 
 責務・契約・状態・処理の詳細は[ソース行連携の詳細設計](components/source-line-navigation.md)、検証方法は[テスト設計](testing.md#cliの同一ファイルopenとソース行連携)を参照してください。
 
