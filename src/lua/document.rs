@@ -280,7 +280,11 @@ pub(crate) fn install(lua: &Lua, api: &Table, context: &LuaContext) -> mlua::Res
 
 impl LuaContext {
     /// Capture registrations at actual adoption, before dispatching any Lua.
-    pub(crate) fn replace_document(&self, lua: &Lua, document: impl Into<Option<DocumentHandle>>) -> mlua::Result<()> {
+    pub(crate) fn replace_document(
+        &self,
+        lua: &Lua,
+        document: impl Into<Option<DocumentHandle>>,
+    ) -> mlua::Result<()> {
         self.documents.borrow_mut().current = document.into();
         let subscribers = self.shared.borrow().replaced.clone();
         for callback in subscribers {

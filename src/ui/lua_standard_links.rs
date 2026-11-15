@@ -304,7 +304,6 @@ fn standard_lua_pending_edit_close_releases_host_resources_and_subscriptions_rep
             panic!("replacement read")
         };
         v.complete_fixture(crate::ui::tests::success(read, "replacement".into()), cx);
-
     });
     frame(cx, window);
     view.read_with(cx, |v, _| {
@@ -312,8 +311,15 @@ fn standard_lua_pending_edit_close_releases_host_resources_and_subscriptions_rep
             v.message.is_none(),
             "cancelled subscriptions must not notify later adoption"
         );
-        assert_eq!(v.app.document().unwrap().markdown_source().unwrap().as_str(), "replacement");
-
+        assert_eq!(
+            v.app
+                .document()
+                .unwrap()
+                .markdown_source()
+                .unwrap()
+                .as_str(),
+            "replacement"
+        );
     });
 }
 
@@ -384,7 +390,6 @@ fn standard_lua_reproduction_layout_ranking_highlights_and_confirm(cx: &mut Test
     view.update(cx, |v, cx| {
         v.complete_fixture(
             crate::app::ReadResult {
-
                 request: read,
                 content: Err("missing".into()),
             },
@@ -419,7 +424,6 @@ fn standard_lua_reproduction_source_same_id_revival_and_native_ime(cx: &mut Test
     view.read_with(cx, |v, cx| {
         assert!(std::sync::Arc::ptr_eq(
             &v.app.document().unwrap().markdown_source().unwrap(),
-
             &preview.read(cx).model.source.text()
         ))
     });
@@ -491,14 +495,12 @@ fn standard_lua_reproduction_replacement_closes_only_on_adoption(cx: &mut TestAp
         assert_eq!(v.lua.context().ui.borrow().windows[0].owner, owner);
         v.complete_fixture(
             crate::app::ReadResult {
-
                 request: latest,
                 content: Err("missing".into()),
             },
             cx,
         );
         v.complete_fixture(crate::ui::tests::success(old, "stale".into()), cx);
-
     });
     frame(cx, window);
     assert_eq!(panel(cx, &view).owner, owner);
@@ -513,7 +515,6 @@ fn standard_lua_reproduction_replacement_closes_only_on_adoption(cx: &mut TestAp
             panic!()
         };
         v.complete_fixture(crate::ui::tests::success(read, "[New](new.md)".into()), cx);
-
     });
     frame(cx, window);
     assert!(!is_open(cx, &view));

@@ -569,14 +569,12 @@ impl Viewer {
     pub fn complete_diagram(&mut self, result: DiagramResult, cx: &mut Context<Self>) {
         if self.app.complete_diagram(&result)
             && let Ok(png) = result.png
-        {
-            if let Some(markdown) = self.document.as_markdown_mut() {
+            && let Some(markdown) = self.document.as_markdown_mut() {
                 markdown.diagram_images.insert(
                     result.request.start,
                     Arc::new(Image::from_bytes(ImageFormat::Png, png)),
                 );
             }
-        }
         self.start_next_diagram(cx);
         cx.notify();
     }

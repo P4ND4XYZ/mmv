@@ -141,8 +141,8 @@ impl Viewer {
                             if let (Some(start), Some(end)) = (byte(marked.start), byte(marked.end))
                             {
                                 let stop = input.bound_text.len().checked_sub(current.len() - end);
-                                if let Some(stop) = stop.filter(|stop| *stop >= start) {
-                                    if let Some(original) = input.bound_text.get(start..stop) {
+                                if let Some(stop) = stop.filter(|stop| *stop >= start)
+                                    && let Some(original) = input.bound_text.get(start..stop) {
                                         // Restore the original marked region inside the open
                                         // composition transaction. Its net-no-op is discarded
                                         // by InputState without clearing prior undo history.
@@ -156,7 +156,6 @@ impl Viewer {
                                         s.unmark_text(window, cx);
                                         s.set_selected_range(start..stop, cx);
                                     }
-                                }
                             }
                         }
                     });
