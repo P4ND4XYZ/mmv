@@ -257,7 +257,16 @@ fn changed_history_file_restores_pixels_clamps_and_failed_read_keeps_cursor(
     s.assert_distance(cx, 640.);
     s.view.read_with(cx, |viewer, _| {
         assert_eq!(viewer.document.text, text);
-        assert_eq!(viewer.app.document().unwrap().source.as_str(), fixture());
+        assert_eq!(
+            viewer
+                .app
+                .document()
+                .unwrap()
+                .markdown_source()
+                .unwrap()
+                .as_str(),
+            fixture()
+        );
         assert!(viewer.app.error().is_some());
     });
     assert_eq!(

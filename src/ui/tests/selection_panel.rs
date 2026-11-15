@@ -183,7 +183,8 @@ fn selection_panel_ranked_id_confirmation_and_both_utf8_highlight_fields(cx: &mu
                 .app
                 .document()
                 .unwrap()
-                .source
+                .markdown_source()
+                .unwrap()
                 .contains("Destination")
         );
         assert!(viewer.link_panel.is_none());

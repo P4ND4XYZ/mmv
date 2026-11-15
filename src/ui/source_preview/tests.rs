@@ -13,17 +13,20 @@ fn snapshot(source: String) -> Arc<SourceSnapshot> {
     let request = app.open(path.clone());
     app.complete(app::ReadResult {
         request,
-        content: Ok(app::LoadedDocument {
-            key: app::DocumentKey(path),
+        content: Ok(app::LoadedDocument::markdown(
+            app::DocumentKey(path),
             source,
-        }),
+        )),
     });
     let document = app.document().unwrap();
     let snapshot = Arc::new(SourceSnapshot::new(
-        document.source.clone(),
+        document.markdown_source().unwrap().clone(),
         document.generation,
     ));
-    assert!(Arc::ptr_eq(&document.source, &snapshot.source));
+    assert!(Arc::ptr_eq(
+        document.markdown_source().unwrap(),
+        &snapshot.source
+    ));
     snapshot
 }
 
@@ -270,7 +273,7 @@ fn links_events_preserve_manual_scroll_for_same_id_and_isolate_half_page_and_ime
     let (panel, preview, source) = viewer.read_with(cx, |v, cx| {
         let selection = v.link_panel.as_ref().unwrap();
         assert!(Arc::ptr_eq(
-            &v.app.document().unwrap().source,
+            v.app.document().unwrap().markdown_source().unwrap(),
             &selection.preview.read(cx).snapshot.source
         ));
         (
@@ -422,10 +425,10 @@ fn stale_document_generation_rejects_all_old_panel_events_and_ranges(cx: &mut Te
             let request = v.app.open(path.clone());
             v.app.complete(app::ReadResult {
                 request,
-                content: Ok(app::LoadedDocument {
-                    key: app::DocumentKey(path),
-                    source: "[New](new.md)".into(),
-                }),
+                content: Ok(app::LoadedDocument::markdown(
+                    app::DocumentKey(path),
+                    "[New](new.md)".into(),
+                )),
             });
             v.app.document().unwrap().generation
         })

@@ -246,7 +246,13 @@ fn adapter_manual_cancel_and_new_read_wait_for_normalization(cx: &mut TestAppCon
             };
             viewer.complete(success(read, "replacement".into()), cx);
             assert_ne!(
-                viewer.app.document().unwrap().source.as_str(),
+                viewer
+                    .app
+                    .document()
+                    .unwrap()
+                    .markdown_source()
+                    .unwrap()
+                    .as_str(),
                 "replacement"
             );
         })
@@ -254,7 +260,13 @@ fn adapter_manual_cancel_and_new_read_wait_for_normalization(cx: &mut TestAppCon
     frames(cx, window);
     view.read_with(cx, |viewer, _| {
         assert_eq!(
-            viewer.app.document().unwrap().source.as_str(),
+            viewer
+                .app
+                .document()
+                .unwrap()
+                .markdown_source()
+                .unwrap()
+                .as_str(),
             "replacement"
         )
     });
@@ -286,7 +298,13 @@ fn adapter_mapping_failure_releases_movement_and_gates_read_completion(cx: &mut 
             };
             viewer.complete(success(read, "replacement".into()), cx);
             assert_ne!(
-                viewer.app.document().unwrap().source.as_str(),
+                viewer
+                    .app
+                    .document()
+                    .unwrap()
+                    .markdown_source()
+                    .unwrap()
+                    .as_str(),
                 "replacement"
             );
         })
@@ -294,7 +312,13 @@ fn adapter_mapping_failure_releases_movement_and_gates_read_completion(cx: &mut 
     frames(cx, window);
     view.read_with(cx, |viewer, _| {
         assert_eq!(
-            viewer.app.document().unwrap().source.as_str(),
+            viewer
+                .app
+                .document()
+                .unwrap()
+                .markdown_source()
+                .unwrap()
+                .as_str(),
             "replacement"
         )
     });

@@ -11,7 +11,7 @@ impl Viewer {
         let document = self.app.document().ok_or("Document is loading")?;
         let text = self.document.text.read(cx);
         let snapshot = text.rendered_text();
-        if snapshot.source() != document.source.as_str() {
+        if Some(snapshot.source()) != document.markdown_source().map(|source| source.as_str()) {
             return Err("Document is being analyzed".into());
         }
         let first = text.list_state().logical_scroll_top().item_ix;
@@ -34,7 +34,9 @@ impl Viewer {
         let Some(document) = self.app.document() else {
             return;
         };
-        if self.document.text.read(cx).rendered_text().source() != document.source.as_str() {
+        if Some(self.document.text.read(cx).rendered_text().source())
+            != document.markdown_source().map(|source| source.as_str())
+        {
             return;
         }
         if let Err(error) = self.analyze_document(cx) {

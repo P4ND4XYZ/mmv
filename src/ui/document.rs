@@ -280,13 +280,16 @@ impl Viewer {
     /// heading labels come from TextView's plain rendered-text projection.
     pub(super) fn analyze_document(&mut self, cx: &gpui_kit::App) -> Result<(), String> {
         let document = self.app.document().ok_or("Document is loading")?;
+        let source = document
+            .markdown_source()
+            .ok_or("Unable to determine document positions")?;
         let snapshot = self.document.text.read(cx).rendered_text();
         if self.document.analysis.as_ref().is_some_and(|analysis| {
             analysis.generation == document.generation && analysis.snapshot == snapshot
         }) {
             return Ok(());
         }
-        if snapshot.source() != document.source.as_str() {
+        if snapshot.source() != source.as_str() {
             return Err("Document is being analyzed".into());
         }
         let links = Arc::new(Mutex::new(Vec::new()));
@@ -296,7 +299,7 @@ impl Viewer {
                 images: Default::default(),
             })
             .plugin(LinkRanges(links.clone()));
-        let blocks = parse_markdown(&document.source, extensions.into()).map_err(|error| {
+        let blocks = parse_markdown(source, extensions.into()).map_err(|error| {
             crate::infra::log_document_failure(&document.path, error.as_ref());
             "Unable to determine document positions".to_string()
         })?;
@@ -349,7 +352,7 @@ impl Viewer {
         }
         self.document.analysis = Some(DocumentAnalysis {
             generation: document.generation,
-            source_lines: crate::core::source_position::SourceLines::new(&document.source),
+            source_lines: crate::core::source_position::SourceLines::new(source),
             blocks: blocks
                 .iter()
                 .map(|block| block.span().map(|span| span.start..span.end))
@@ -360,9 +363,9 @@ impl Viewer {
                 .iter()
                 .filter_map(|range| snapshot.range_for_source(range.clone()))
                 .collect(),
-            candidates: super::links::extract_candidates(&document.path, &document.source)?,
+            candidates: super::links::extract_candidates(&document.path, source)?,
             source: Arc::new(super::source_preview::SourceSnapshot::new(
-                document.source.clone(),
+                source.clone(),
                 document.generation,
             )),
             headings,
@@ -422,7 +425,8 @@ impl Viewer {
                         .front()
                         .is_some_and(|intent| intent.order > *order)
             })
-            || self.document.text.read(cx).rendered_text().source() != document.source.as_str()
+            || Some(self.document.text.read(cx).rendered_text().source())
+                != document.markdown_source().map(|source| source.as_str())
             || !self.document.layout_ready(cx)
         {
             return;
@@ -466,7 +470,8 @@ impl Viewer {
             || self.document.text != *text
             || !self.app.document().is_some_and(|doc| {
                 doc.generation == request.generation
-                    && text.read(cx).rendered_text().source() == doc.source.as_str()
+                    && Some(text.read(cx).rendered_text().source())
+                        == doc.markdown_source().map(|source| source.as_str())
             })
         {
             return;
@@ -702,7 +707,9 @@ impl Viewer {
         let Some(document) = self.app.document() else {
             return;
         };
-        if document.generation != generation || snapshot.source() != document.source.as_str() {
+        if document.generation != generation
+            || Some(snapshot.source()) != document.markdown_source().map(|source| source.as_str())
+        {
             return;
         }
         let discovered = std::mem::take(
@@ -738,7 +745,8 @@ impl Viewer {
         }
         self.document.pane_width = Some(window_width);
         let ready = self.app.document().is_some_and(|doc| {
-            self.document.text.read(cx).rendered_text().source() == doc.source.as_str()
+            Some(self.document.text.read(cx).rendered_text().source())
+                == doc.markdown_source().map(|source| source.as_str())
         });
         // The child installs extensions during render. Only then hand it the source,
         // and read synchronous results here as well as asynchronous notifications.
@@ -750,10 +758,11 @@ impl Viewer {
                         .app
                         .document()
                         .filter(|doc| doc.generation == generation)
+                        && let Some(source) = document.markdown_source()
                     {
                         this.document
                             .text
-                            .update(cx, |text, cx| text.set_text(&document.source, cx));
+                            .update(cx, |text, cx| text.set_text(source, cx));
                         this.accept_rendered_text(generation, cx);
                     }
                 });

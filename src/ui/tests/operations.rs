@@ -524,7 +524,13 @@ fn production_watch_connection_catches_up_a_save_before_registration(cx: &mut Te
     };
     view.read_with(cx, |viewer, _| {
         assert_eq!(
-            viewer.app.document().unwrap().source.as_str(),
+            viewer
+                .app
+                .document()
+                .unwrap()
+                .markdown_source()
+                .unwrap()
+                .as_str(),
             "new body saved before registration"
         )
     });
@@ -681,7 +687,16 @@ fn real_notify_save_and_same_file_source_line_preserve_both_arrival_orders(
                 }
                 let departure = viewer.document.distance(cx);
                 viewer.complete(result, cx);
-                assert_eq!(viewer.app.document().unwrap().source.as_str(), new_source);
+                assert_eq!(
+                    viewer
+                        .app
+                        .document()
+                        .unwrap()
+                        .markdown_source()
+                        .unwrap()
+                        .as_str(),
+                    new_source
+                );
                 assert_eq!(
                     viewer.app.position_request().unwrap().target,
                     if save_first {

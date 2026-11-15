@@ -131,7 +131,7 @@ fn saves_during_read_collapse_to_one_trailing_reload_even_after_failure() {
         let request = app.watch_changed(&a).unwrap();
         assert_eq!(request.origin, OperationOrigin::Automatic);
         assert_eq!(
-            app.document().unwrap().source.as_str(),
+            app.document().unwrap().markdown_source().unwrap().as_str(),
             "target edit target"
         );
         assert!(app.watch_changed(&a).is_none());
@@ -180,8 +180,9 @@ fn same_external_identity_keeps_body_search_history_watch_and_input_without_read
     app.preview_search("edit".into());
     let generation = app.document().unwrap().generation;
     app.rendered(generation, "target edit target");
-    let source = app.document().unwrap().source.clone();
+    let source = app.document().unwrap().markdown_source().unwrap().clone();
     let history = app.history.entries.clone();
+
     let watch = app.watch_target().cloned();
     let old_position = app.position_request().cloned();
     let request = external_open(&mut app, "alias.md", None);
@@ -195,8 +196,9 @@ fn same_external_identity_keeps_body_search_history_watch_and_input_without_read
     assert_eq!(app.position_request(), old_position.as_ref());
     assert!(std::sync::Arc::ptr_eq(
         &source,
-        &app.document().unwrap().source
+        app.document().unwrap().markdown_source().unwrap()
     ));
+
     assert_eq!(app.document().unwrap().generation, generation);
     assert_eq!(app.history.entries, history);
     assert_eq!(app.watch_target(), watch.as_ref());
@@ -258,10 +260,10 @@ fn newer_same_key_body_read_rejects_older_reload_success_and_failure_but_complet
         assert!(
             app.complete(ReadResult {
                 request: link,
-                content: Ok(LoadedDocument {
-                    key: DocumentKey("canonical-a".into()),
-                    source: "newer-link-body".into()
-                })
+                content: Ok(LoadedDocument::markdown(
+                    DocumentKey("canonical-a".into()),
+                    "newer-link-body".into()
+                ))
             })
             .unwrap()
             .adopted
@@ -273,10 +275,10 @@ fn newer_same_key_body_read_rejects_older_reload_success_and_failure_but_complet
             .complete(ReadResult {
                 request: reload.clone(),
                 content: if succeeds {
-                    Ok(LoadedDocument {
-                        key: DocumentKey("canonical-a".into()),
-                        source: "older-reload-body".into(),
-                    })
+                    Ok(LoadedDocument::markdown(
+                        DocumentKey("canonical-a".into()),
+                        "older-reload-body".into(),
+                    ))
                 } else {
                     Err("older reload failed".into())
                 },
@@ -289,8 +291,12 @@ fn newer_same_key_body_read_rejects_older_reload_success_and_failure_but_complet
             Some(ExternalRequestId("old-reload".into()))
         );
         assert_eq!(completion.outcome.is_ok(), succeeds);
-        assert_eq!(app.document().unwrap().source.as_str(), "newer-link-body");
+        assert_eq!(
+            app.document().unwrap().markdown_source().unwrap().as_str(),
+            "newer-link-body"
+        );
         assert_eq!(app.document().unwrap().generation, generation);
+
         assert_eq!(app.position_request(), position.as_ref());
         assert_eq!(app.history.entries, history);
         assert!(app.error().is_none());
@@ -425,10 +431,10 @@ fn finish(app: &mut App, request: ReadRequest, key: &str, distance: f32) -> Read
     app.complete_at(
         ReadResult {
             request,
-            content: Ok(LoadedDocument {
-                key: DocumentKey(key.into()),
-                source: "target edit target".into(),
-            }),
+            content: Ok(LoadedDocument::markdown(
+                DocumentKey(key.into()),
+                "target edit target".into(),
+            )),
         },
         distance,
     )
@@ -477,10 +483,15 @@ fn unavailable_operations_preserve_state_and_pending_reads_and_return_external_i
             else {
                 panic!("pending load");
             };
-            let document = app
-                .document()
-                .map(|doc| (doc.generation, doc.path.clone(), doc.source.clone()));
+            let document = app.document().map(|doc| {
+                (
+                    doc.generation,
+                    doc.path.clone(),
+                    doc.markdown_source().unwrap().clone(),
+                )
+            });
             let history = app.history.entries.clone();
+
             let current = app.history.current;
             let position = app.position_request().cloned();
             let mut cases = vec![
@@ -515,7 +526,7 @@ fn unavailable_operations_preserve_state_and_pending_reads_and_return_external_i
                     app.document().map(|doc| (
                         doc.generation,
                         doc.path.clone(),
-                        doc.source.clone()
+                        doc.markdown_source().unwrap().clone()
                     )),
                     document
                 );
@@ -791,7 +802,7 @@ fn failed_and_stale_heading_reads_preserve_document_history_and_pending_position
     assert_eq!(app.position_request(), position.as_ref());
     assert_eq!(app.document().unwrap().path, PathBuf::from("a.md"));
     assert_eq!(
-        app.document().unwrap().source.as_str(),
+        app.document().unwrap().markdown_source().unwrap().as_str(),
         "target edit target"
     );
     assert_eq!(app.error(), Some("missing"));

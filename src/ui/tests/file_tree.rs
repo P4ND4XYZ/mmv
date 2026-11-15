@@ -329,7 +329,16 @@ fn enter_and_l_open_markdown_but_right_arrow_and_other_files_do_not(cx: &mut Tes
             test.view.read_with(cx, |viewer, cx| {
                 assert!(viewer.body_focus.is_focused(window));
                 assert_eq!(viewer.document.distance(cx), 0.);
-                assert_eq!(viewer.app.document().unwrap().source.as_str(), "# Other");
+                assert_eq!(
+                    viewer
+                        .app
+                        .document()
+                        .unwrap()
+                        .markdown_source()
+                        .unwrap()
+                        .as_str(),
+                    "# Other"
+                );
             })
         })
         .unwrap();
@@ -392,7 +401,8 @@ fn real_tree_open_keeps_same_root_state_and_reports_stale_file_failure_in_englis
                 .app
                 .document()
                 .unwrap()
-                .source
+                .markdown_source()
+                .unwrap()
                 .contains("Destination 日本語")
         );
         assert_eq!(viewer.app.tree.root, Some(root.clone()));
@@ -1107,7 +1117,15 @@ fn delayed_tree_completion_preserves_focus_on_failure_staleness_or_new_input(
                     );
                 } else {
                     assert!(viewer.tree.focus.is_focused(window));
-                    assert!(!viewer.app.document().unwrap().source.contains("# Other"));
+                    assert!(
+                        !viewer
+                            .app
+                            .document()
+                            .unwrap()
+                            .markdown_source()
+                            .unwrap()
+                            .contains("# Other")
+                    );
                 }
             })
         })

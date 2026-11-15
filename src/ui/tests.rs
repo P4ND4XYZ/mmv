@@ -36,7 +36,7 @@ fn success(request: ReadRequest, source: String) -> ReadResult {
     let key = DocumentKey(request.path.clone());
     ReadResult {
         request,
-        content: Ok(LoadedDocument { key, source }),
+        content: Ok(LoadedDocument::markdown(key, source)),
     }
 }
 
@@ -246,8 +246,18 @@ fn read_completions_reach_the_connection_boundary_even_when_not_adopted(cx: &mut
     assert_eq!(completions[1].outcome, Ok(()));
     assert!(completions.iter().all(|completion| !completion.adopted));
     view.read_with(cx, |viewer, _| {
-        assert_eq!(viewer.app.document().unwrap().source.as_str(), "元の本文");
+        assert_eq!(
+            viewer
+                .app
+                .document()
+                .unwrap()
+                .markdown_source()
+                .unwrap()
+                .as_str(),
+            "元の本文"
+        );
         assert_eq!(viewer.app.error(), Some("B failed"));
+
         assert!(!viewer.app.is_loading());
     });
 }

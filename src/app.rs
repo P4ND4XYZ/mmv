@@ -488,10 +488,7 @@ mod tests {
         let key = DocumentKey(request.path.clone());
         ReadResult {
             request,
-            content: Ok(LoadedDocument {
-                key,
-                source: source.into(),
-            }),
+            content: Ok(LoadedDocument::markdown(key, source.into())),
         }
     }
 
@@ -510,7 +507,10 @@ mod tests {
             })
             .is_none()
         );
-        assert_eq!(app.document().unwrap().source.as_str(), "new");
+        assert_eq!(
+            app.document().unwrap().markdown_source().unwrap().as_str(),
+            "new"
+        );
         assert!(app.error().is_none());
 
         let first = app.open("first.md".into());
@@ -529,8 +529,12 @@ mod tests {
                 .adopted
         );
         assert_eq!(app.document().unwrap().path, PathBuf::from("latest.md"));
-        assert_eq!(app.document().unwrap().source.as_str(), "new");
+        assert_eq!(
+            app.document().unwrap().markdown_source().unwrap().as_str(),
+            "new"
+        );
         assert_eq!(app.error(), Some("latest failure"));
+
         assert!(!app.is_loading());
     }
 
@@ -586,14 +590,22 @@ mod tests {
                 assert!(!app.is_loading());
                 assert_eq!(app.mode, Mode::Search);
                 if b_succeeds {
-                    assert_eq!(app.document().unwrap().source.as_str(), "new body");
+                    assert_eq!(
+                        app.document().unwrap().markdown_source().unwrap().as_str(),
+                        "new body"
+                    );
                     assert_ne!(app.document().unwrap().generation, generation);
+
                     assert!(app.error().is_none());
                     assert!(app.matches().is_empty());
                     assert!(app.diagrams().is_empty());
                 } else {
-                    assert_eq!(app.document().unwrap().source.as_str(), "target target");
+                    assert_eq!(
+                        app.document().unwrap().markdown_source().unwrap().as_str(),
+                        "target target"
+                    );
                     assert_eq!(app.document().unwrap().generation, generation);
+
                     assert_eq!(app.error(), Some("read failed"));
                     assert_eq!(app.matches(), vec![3..6, 10..13]);
                     assert_eq!(app.current_match(), Some(1));
@@ -703,8 +715,12 @@ mod tests {
         app.open("other.md".into());
         let document = app.document().unwrap();
         assert_eq!(document.path, PathBuf::from("sample.md"));
-        assert_eq!(document.source.as_str(), "target target");
+        assert_eq!(
+            document.markdown_source().unwrap().as_str(),
+            "target target"
+        );
         assert_eq!(app.matches(), vec![0..6, 7..13]);
+
         assert_eq!(app.current_match(), Some(1));
         assert!(app.is_loading());
     }
@@ -795,8 +811,12 @@ mod tests {
             );
             assert_eq!(app.mode, mode);
             assert_eq!(app.document().unwrap().path, PathBuf::from("sample.md"));
-            assert_eq!(app.document().unwrap().source.as_str(), "target target");
+            assert_eq!(
+                app.document().unwrap().markdown_source().unwrap().as_str(),
+                "target target"
+            );
             assert_eq!(app.matches(), matches);
+
             assert_eq!(app.current_match(), Some(1));
             assert_eq!(app.error(), Some("unreadable"));
             assert!(!app.is_loading());
@@ -833,8 +853,12 @@ mod tests {
             .unwrap()
             .adopted
         );
-        assert_eq!(app.document().unwrap().source.as_str(), "retained");
+        assert_eq!(
+            app.document().unwrap().markdown_source().unwrap().as_str(),
+            "retained"
+        );
         assert_eq!(app.error(), Some("unreadable"));
+
         assert!(!app.is_loading());
     }
 
@@ -855,8 +879,12 @@ mod tests {
             png: Err("syntax error".into()),
         }));
         assert_eq!(app.diagrams()[&10].status, DiagramStatus::Failed);
-        assert_eq!(app.document().unwrap().source.as_str(), "retained body");
+        assert_eq!(
+            app.document().unwrap().markdown_source().unwrap().as_str(),
+            "retained body"
+        );
         let second = app.next_diagram().unwrap();
+
         assert_eq!(second.start, 80);
         assert!(app.complete_diagram(&DiagramResult {
             request: second,

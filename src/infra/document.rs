@@ -8,14 +8,15 @@ pub fn read_document(request: ReadRequest) -> ReadResponse {
     let content = key.and_then(|key| {
         let source = std::fs::read_to_string(&request.path)
             .map_err(|error| report_read_error(&request, error))?;
-        Ok(LoadedDocument {
+        Ok(LoadedDocument::markdown(
             key,
-            source: source
+            source
                 .strip_prefix('\u{feff}')
                 .unwrap_or(&source)
                 .to_owned(),
-        })
+        ))
     });
+
     ReadResponse::Loaded(ReadResult { request, content })
 }
 
@@ -137,7 +138,10 @@ mod tests {
             assert!(!completion.adopted);
             assert_eq!(completion.outcome, Ok(()));
             assert_eq!(app.document().unwrap().generation, generation);
-            assert_eq!(app.document().unwrap().source.as_str(), "# Original 日本語");
+            assert_eq!(
+                app.document().unwrap().markdown_source().unwrap().as_str(),
+                "# Original 日本語"
+            );
             assert_eq!(app.position_request(), position.as_ref());
         }
         std::fs::remove_dir_all(root).unwrap();
@@ -221,7 +225,10 @@ mod tests {
         assert_eq!(completion.outcome, Ok(()));
         assert!(!completion.adopted);
         assert_eq!(app.document().unwrap().generation, generation);
-        assert_eq!(app.document().unwrap().source.as_str(), "original");
+        assert_eq!(
+            app.document().unwrap().markdown_source().unwrap().as_str(),
+            "original"
+        );
         let OperationResult::Pending(request) = app.operate(
             DocumentOperation::Reload,
             OperationOrigin::Keyboard,
@@ -298,8 +305,12 @@ mod tests {
         for source in ["# 日本語\r\n本文", "\u{feff}# 日本語\r\n本文"] {
             std::fs::write(&path, source).unwrap();
             let result = loaded(read_document(app.open(path.clone())));
-            assert_eq!(result.content.unwrap().source, "# 日本語\r\n本文");
+            assert_eq!(
+                result.content.unwrap().markdown_source().unwrap().as_str(),
+                "# 日本語\r\n本文"
+            );
         }
+
         std::fs::write(&path, [0xff, 0xfe]).unwrap();
         let invalid = loaded(read_document(app.open(path.clone())));
         std::fs::remove_file(&path).unwrap();

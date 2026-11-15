@@ -117,9 +117,46 @@ pub struct PositionRequest {
     pub serial: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DocumentContent {
+    Markdown { source: Arc<String> },
+    Pdf { bytes: Arc<Vec<u8>> },
+}
+
+impl DocumentContent {
+    pub fn markdown_source(&self) -> Option<&Arc<String>> {
+        match self {
+            Self::Markdown { source } => Some(source),
+            Self::Pdf { .. } => None,
+        }
+    }
+
+    pub fn pdf_bytes(&self) -> Option<&Arc<Vec<u8>>> {
+        match self {
+            Self::Markdown { .. } => None,
+            Self::Pdf { bytes } => Some(bytes),
+        }
+    }
+}
+
 pub struct LoadedDocument {
     pub key: DocumentKey,
-    pub source: String,
+    pub content: DocumentContent,
+}
+
+impl LoadedDocument {
+    pub fn markdown(key: DocumentKey, source: String) -> Self {
+        Self {
+            key,
+            content: DocumentContent::Markdown {
+                source: Arc::new(source),
+            },
+        }
+    }
+
+    pub fn markdown_source(&self) -> Option<&Arc<String>> {
+        self.content.markdown_source()
+    }
 }
 
 pub struct ReadResult {
@@ -163,7 +200,13 @@ pub struct Document {
     pub generation: Generation,
     pub path: PathBuf,
     pub key: DocumentKey,
-    pub source: Arc<String>,
+    pub content: DocumentContent,
+}
+
+impl Document {
+    pub fn markdown_source(&self) -> Option<&Arc<String>> {
+        self.content.markdown_source()
+    }
 }
 
 #[derive(Default)]
@@ -263,7 +306,7 @@ impl DocumentState {
                         generation: Generation(self.next_generation),
                         path: request.path,
                         key: loaded.key,
-                        source: Arc::new(loaded.source),
+                        content: loaded.content,
                     });
                     completion.adopted = true;
                 }
@@ -328,5 +371,78 @@ impl DocumentState {
 
     pub fn clear_error(&mut self) {
         self.error = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn markdown_content_shares_source_and_has_no_pdf_bytes() {
+        for text in ["", "# 日本語\r\n本文"] {
+            let source = Arc::new(text.to_owned());
+            let content = DocumentContent::Markdown {
+                source: source.clone(),
+            };
+            let cloned = content.clone();
+            assert_eq!(content.markdown_source().unwrap().as_str(), text);
+            assert!(Arc::ptr_eq(cloned.markdown_source().unwrap(), &source));
+            assert!(content.pdf_bytes().is_none());
+        }
+    }
+
+    #[test]
+    fn pdf_content_shares_bytes_and_has_no_markdown_source() {
+        let bytes = Arc::new(vec![0x25, 0x50, 0xff, 0x00]);
+        let content = DocumentContent::Pdf {
+            bytes: bytes.clone(),
+        };
+        let cloned = content.clone();
+        assert!(Arc::ptr_eq(cloned.pdf_bytes().unwrap(), &bytes));
+        let loaded = LoadedDocument {
+            key: DocumentKey("sample.pdf".into()),
+            content,
+        };
+        assert!(loaded.markdown_source().is_none());
+        let document = Document {
+            generation: Generation(1),
+            path: "sample.pdf".into(),
+            key: loaded.key,
+            content: loaded.content,
+        };
+        assert!(document.markdown_source().is_none());
+        assert_eq!(
+            document.content.pdf_bytes().unwrap().as_slice(),
+            bytes.as_slice()
+        );
+    }
+
+    #[test]
+    fn markdown_adoption_preserves_the_loaded_source_allocation() {
+        let mut state = DocumentState::default();
+        let request = state.open(
+            "sample.md".into(),
+            None,
+            OperationOrigin::External,
+            None,
+            false,
+            false,
+        );
+        let loaded = LoadedDocument::markdown(DocumentKey("sample.md".into()), "body".into());
+        let source = loaded.markdown_source().unwrap().clone();
+        assert!(
+            state
+                .complete(ReadResult {
+                    request,
+                    content: Ok(loaded)
+                })
+                .unwrap()
+                .adopted
+        );
+        assert!(Arc::ptr_eq(
+            state.current.as_ref().unwrap().markdown_source().unwrap(),
+            &source
+        ));
     }
 }
