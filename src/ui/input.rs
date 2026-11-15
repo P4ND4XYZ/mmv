@@ -22,6 +22,9 @@ actions!(
         PageUp,
         FirstLine,
         LastLine,
+        PdfZoomIn,
+        PdfZoomOut,
+        PdfFitWidth,
         ToggleTree,
         FocusTree,
         FocusBody,
@@ -67,6 +70,9 @@ pub fn bind_keys(cx: &mut gpui_kit::App) {
         KeyBinding::new("ctrl-b", PageUp, Some("EvaluationNormal")),
         KeyBinding::new("g g", FirstLine, Some("EvaluationNormal")),
         KeyBinding::new("shift-g", LastLine, Some("EvaluationNormal")),
+        KeyBinding::new("+", PdfZoomIn, Some("EvaluationPdfNormal")),
+        KeyBinding::new("-", PdfZoomOut, Some("EvaluationPdfNormal")),
+        KeyBinding::new("=", PdfFitWidth, Some("EvaluationPdfNormal")),
     ]);
 }
 
@@ -202,6 +208,15 @@ pub(super) fn bind_body_actions(body: Div, cx: &mut Context<Viewer>) -> Div {
     }))
     .on_action(cx.listener(|this, _: &NextMatch, _, cx| this.step_match(true, cx)))
     .on_action(cx.listener(|this, _: &PreviousMatch, _, cx| this.step_match(false, cx)))
+    .on_action(cx.listener(|this, _: &PdfZoomIn, window, cx| {
+        this.pdf_zoom_input(Some(1.1), window, cx);
+    }))
+    .on_action(cx.listener(|this, _: &PdfZoomOut, window, cx| {
+        this.pdf_zoom_input(Some(1. / 1.1), window, cx);
+    }))
+    .on_action(cx.listener(|this, _: &PdfFitWidth, window, cx| {
+        this.pdf_zoom_input(None, window, cx);
+    }))
 }
 
 impl Viewer {
@@ -232,7 +247,12 @@ impl Viewer {
         if command {
             self.app.begin_command();
         } else {
-            self.app.begin_search();
+            if let Err(error) = self.app.begin_document_search() {
+                self.message = Some(error.message().into());
+                self.message_is_error = false;
+                cx.notify();
+                return;
+            }
             self.apply_search(false, cx);
         }
         self.input.state.update(cx, |input, cx| {
@@ -253,6 +273,21 @@ impl Viewer {
         let input = self.input.state.read(cx).value().to_string();
         match self.app.mode {
             Mode::Search => {
+                if self
+                    .app
+                    .document()
+                    .is_some_and(|doc| doc.content.format() == crate::app::DocumentFormat::Pdf)
+                {
+                    let error = self
+                        .app
+                        .confirm_document_search(input, 0)
+                        .expect_err("PDF search is unsupported");
+                    self.message = Some(error.message().into());
+                    self.message_is_error = false;
+                    self.body_focus.focus(window, cx);
+                    cx.notify();
+                    return;
+                }
                 let from = match self.search_origin(cx) {
                     Ok(from) => from,
                     Err(error) => {
@@ -262,7 +297,10 @@ impl Viewer {
                         return;
                     }
                 };
-                let outcome = self.app.confirm_search(input, from);
+                let outcome = self
+                    .app
+                    .confirm_document_search(input, from)
+                    .expect("Markdown search");
                 self.apply_search(outcome == SearchOutcome::Found, cx);
                 self.message_is_error = false;
                 self.message = match outcome {
@@ -275,6 +313,7 @@ impl Viewer {
                 self.app.cancel_input();
                 match input.as_str() {
                     "q" => {
+                        self.document.release(Some(window), cx);
                         window.remove_window();
                         return;
                     }
@@ -299,9 +338,34 @@ impl Viewer {
         if !self.normal_keys_enabled() {
             return;
         }
-        self.app.step_match(forward);
-        self.apply_search(true, cx);
+        if let Err(error) = self.app.step_document_match(forward) {
+            self.message = Some(error.message().into());
+            self.message_is_error = false;
+            self.display_error = None;
+            self.app.clear_error();
+        } else {
+            self.apply_search(true, cx);
+        }
         cx.notify();
+    }
+
+    fn pdf_zoom_input(
+        &mut self,
+        multiplier: Option<f32>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.body_focus.is_focused(window) || !self.pane_keys_enabled(window, cx) {
+            return;
+        }
+        if let super::document::DocumentView::Pdf { view, .. } = &self.document {
+            view.update(cx, |view, cx| {
+                let _ = match multiplier {
+                    Some(multiplier) => view.set_zoom(view.zoom(cx) * multiplier, cx),
+                    None => view.fit_width(cx),
+                };
+            });
+        }
     }
 
     fn history_input(&mut self, operation: DocumentOperation, cx: &mut Context<Self>) {

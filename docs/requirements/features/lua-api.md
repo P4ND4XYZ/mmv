@@ -233,7 +233,7 @@ selection stateと表示が新しい選択に同期してから`on_selection_cha
 
 ## 文書・リンク・ソース範囲
 
-`mmv.document.current()`は現在のdocumentハンドル、文書がなければnilを返します。documentは取得時の読み取り専用snapshotです。本文置換後も取得時の内容を閲覧でき、暗黙に新しい本文へ切り替わりません。これは呼び出すたびに全文コピーするという意味ではありません。
+文書・ソースAPIはMarkdown専用です。`mmv.document.current()`は現在のMarkdownのdocumentハンドルを返し、文書がない場合やPDF表示中はnilを返します。PDFを空のMarkdown snapshotとして扱いません。標準のリンク選択はPDF表示中には起動しません。documentは取得時の読み取り専用snapshotです。本文置換後も取得時の内容を閲覧でき、暗黙に新しい本文へ切り替わりません。これは呼び出すたびに全文コピーするという意味ではありません。
 
 | 呼び出し | 結果 |
 |---|---|
@@ -262,7 +262,7 @@ subscription:cancel()
 
 `owner`は必須で、callbackは引数なしです。閉じたownerへの登録は購読を作らず`false`を返します。有効なownerへの登録ではsubscriptionを返し、`subscription:cancel()`は解除できたら`true`、解除済みなら`false`を返します。
 
-callbackは実際の新しい本文の採用後に呼びます。本文採用時点の購読を登録順に通知し、採用後に追加した購読は次回から対象とします。配送前に解除された購読やownerが終了した購読には通知しません。要求を受けただけ、本文を保持した失敗、古い未採用完了、スクロール、画像・Mermaid完了では通知しません。
+callbackは実際の新しい本文の採用とUI交換後に呼びます。MarkdownからPDFへの切り替えも通知し、callbackからの`current()`はnilになります。保持済みMarkdown snapshotはPDFへの切り替え後も閲覧できますが、古いtargetによる新要求は`stale_target`で拒否します。本文採用時点の購読を登録順に通知し、採用後に追加した購読は次回から対象とします。配送前に解除された購読やownerが終了した購読には通知しません。要求を受けただけ、本文を保持した失敗、古い未採用完了、スクロール、画像・Mermaid完了では通知しません。
 
 ownerのwindow終了で購読を解除します。汎用float自体に文書依存を持たせず、Luaが終了処理を接続します。callbackが失敗しても、古いtargetを使えない検証はホスト側に残します。
 

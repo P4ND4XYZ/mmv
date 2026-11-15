@@ -51,7 +51,7 @@ impl TreeTest {
         cx.update(|cx| {
             view.update(cx, |viewer, cx| {
                 let request = viewer.app.open(PathBuf::from(r"C:\tree\sample.md"));
-                viewer.complete(
+                viewer.complete_fixture(
                     success(request, "[Link](other.md)\n\n本文 target\n\n".repeat(60)),
                     cx,
                 );
@@ -269,7 +269,7 @@ fn enter_and_l_open_markdown_but_right_arrow_and_other_files_do_not(cx: &mut Tes
         assert!(request.tree.is_some());
         cx.update(|cx| {
             test.view.update(cx, |viewer, cx| {
-                viewer.complete(success(request, "ignored same file".into()), cx);
+                viewer.complete_fixture(success(request, "ignored same file".into()), cx);
                 assert_eq!(viewer.app.document().unwrap().generation, generation);
             })
         });
@@ -321,7 +321,7 @@ fn enter_and_l_open_markdown_but_right_arrow_and_other_files_do_not(cx: &mut Tes
         let request = reads.borrow_mut().pop().unwrap();
         cx.update(|cx| {
             test.view.update(cx, |viewer, cx| {
-                viewer.complete(success(request, "# Other".into()), cx)
+                viewer.complete_fixture(success(request, "# Other".into()), cx)
             })
         });
         frame(cx, test.window);
@@ -329,7 +329,16 @@ fn enter_and_l_open_markdown_but_right_arrow_and_other_files_do_not(cx: &mut Tes
             test.view.read_with(cx, |viewer, cx| {
                 assert!(viewer.body_focus.is_focused(window));
                 assert_eq!(viewer.document.distance(cx), 0.);
-                assert_eq!(viewer.app.document().unwrap().source.as_str(), "# Other");
+                assert_eq!(
+                    viewer
+                        .app
+                        .document()
+                        .unwrap()
+                        .markdown_source()
+                        .unwrap()
+                        .as_str(),
+                    "# Other"
+                );
             })
         })
         .unwrap();
@@ -392,7 +401,8 @@ fn real_tree_open_keeps_same_root_state_and_reports_stale_file_failure_in_englis
                 .app
                 .document()
                 .unwrap()
-                .source
+                .markdown_source()
+                .unwrap()
                 .contains("Destination 日本語")
         );
         assert_eq!(viewer.app.tree.root, Some(root.clone()));
@@ -769,7 +779,7 @@ fn tree_scroll_is_minimal_and_retained_for_hide_and_same_root_only(cx: &mut Test
     cx.update(|cx| {
         test.view.update(cx, |viewer, cx| {
             let request = viewer.app.open(PathBuf::from(r"C:\tree\another.md"));
-            viewer.complete(success(request, "another".into()), cx);
+            viewer.complete_fixture(success(request, "another".into()), cx);
         })
     });
     frame(cx, test.window);
@@ -812,7 +822,7 @@ fn tree_scroll_is_minimal_and_retained_for_hide_and_same_root_only(cx: &mut Test
     cx.update(|cx| {
         test.view.update(cx, |viewer, cx| {
             let request = viewer.app.open(PathBuf::from(r"C:\other\new.md"));
-            viewer.complete(success(request, "new".into()), cx);
+            viewer.complete_fixture(success(request, "new".into()), cx);
         })
     });
     let Request::Root(request) = test.requests.borrow_mut().remove(0) else {
@@ -950,7 +960,7 @@ fn document_failure_preserves_tree_and_root_discovery_locks_old_tree_until_compl
     cx.update(|cx| {
         test.view.update(cx, |viewer, cx| {
             let request = viewer.app.open(PathBuf::from(r"C:\missing\file.md"));
-            viewer.complete(
+            viewer.complete_fixture(
                 ReadResult {
                     request,
                     content: Err("unreadable".into()),
@@ -970,7 +980,7 @@ fn document_failure_preserves_tree_and_root_discovery_locks_old_tree_until_compl
     cx.update(|cx| {
         test.view.update(cx, |viewer, cx| {
             let request = viewer.app.open(PathBuf::from(r"C:\tree\next.md"));
-            viewer.complete(success(request, "next".into()), cx);
+            viewer.complete_fixture(success(request, "next".into()), cx);
         })
     });
     frame(cx, test.window);
@@ -1101,7 +1111,7 @@ fn delayed_tree_completion_preserves_focus_on_failure_staleness_or_new_input(
                 } else {
                     success(request, "# Other".into())
                 };
-                viewer.complete(result, cx);
+                viewer.complete_fixture(result, cx);
             })
         });
         frame(cx, test.window);
@@ -1118,7 +1128,15 @@ fn delayed_tree_completion_preserves_focus_on_failure_staleness_or_new_input(
                     );
                 } else {
                     assert!(viewer.tree.focus.is_focused(window));
-                    assert!(!viewer.app.document().unwrap().source.contains("# Other"));
+                    assert!(
+                        !viewer
+                            .app
+                            .document()
+                            .unwrap()
+                            .markdown_source()
+                            .unwrap()
+                            .contains("# Other")
+                    );
                 }
             })
         })

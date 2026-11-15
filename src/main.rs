@@ -10,6 +10,7 @@ mod infra;
     reason = "Shared Lua host/owner seams are connected by subsequent UI and navigation steps"
 )]
 mod lua;
+mod pdf;
 mod runtime;
 mod ui;
 

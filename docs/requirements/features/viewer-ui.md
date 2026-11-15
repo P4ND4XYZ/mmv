@@ -6,6 +6,8 @@
 
 本文の閲覧、検索、コマンド入力を分け、キーボード中心で操作できるようにします。
 
+PDFも同じ本文領域を使い、アプリ側がモード・キー操作・入力UIを管理する。PDF内蔵のヘッダー・検索欄・ページ番号入力・ショートカットは使わない。PDF内検索と状態行のページ情報は初期要件に含めない。以下のMarkdown本文配置・検索・リンク選択・再読み込みに固有の仕様をPDFへ一律適用せず、PDFの範囲は[PDF表示](pdf-viewing.md)に従う。
+
 ## 画面構成
 
 - 左ツリー・右本文の固定2領域のpaneとし、ツリーは表示／非表示を切り替えられる。任意分割・複数本文・汎用paneプラグインは対象外とする。
@@ -37,6 +39,8 @@
 
 ## 表示言語と通知
 
+PDFの読み込み・解析失敗も共通の通知方針と状態保持に従う。以下の不正UTF-8はMarkdownのエラーであり、PDFをUTF-8検査しない。
+
 アプリが生成するGUIのエラー・警告・案内・状態・空表示・種類ラベル・アクセシビリティ文言は英語に統一する。Markdown本文、ファイル名・パス、URL、見出しID、利用者の入力は翻訳しない。モード欄のNORMAL／SEARCH／COMMANDは維持する。ローカライズ基盤は追加せず、ログとCLI全体の翻訳は対象外とする。
 
 OSや描画基盤の生エラーは画面へ流さず、固定英語へ分類し、対象パスと詳細原因を既存ログへ記録する。通知に付けるパス・ID・入力は元の文字列を維持する。以下の入力行表示はNormalで表示し、Search／Commandでは入力モードと文字列を保護する。ダイアログは使わない。
@@ -51,6 +55,7 @@ OSや描画基盤の生エラーは画面へ流さず、固定英語へ分類し
 | ドライブ切断・一般I/O・未知のOS原因 | `Unable to read file: {path}` | 入力行 | 同上 |
 | 設定の読み込み・実行・検証失敗 | `Unable to load configuration` | 入力行 | 標準設定で本文閲覧を継続 |
 | 検索一致なし | `No matches found` | 入力行 | 本文・履歴、Normalへ戻る |
+| PDFでNormalの`/`・`n`・`N`、またはPDF上でSearchのEnterを実行 | `Search is not supported for PDF yet` | 下部入力行（INPUT） | 文書・位置・倍率・履歴。Normalを維持／Normalへ戻る |
 | 再利用する検索語なし | `No previous search query` | 入力行 | 本文・履歴、Normalへ戻る |
 | 未対応コマンド | `Unsupported command: :{input}` | 入力行 | 本文・履歴、Normalへ戻る |
 | 文書の読み込み／解析待ち | `Document is loading` / `Document is being analyzed` | 入力行 | 本文・履歴 |
@@ -59,7 +64,7 @@ OSや描画基盤の生エラーは画面へ流さず、固定英語へ分類し
 | 本文置換でリンク選択を終了 | `Link selection closed because the document changed` | 入力行 | 新しい本文・入力モードと文字列 |
 | リンク候補なし | `No matching links` | 選択パネル | パネル入力・本文・履歴 |
 | フォルダー一覧取得失敗 | `Unable to access directory.` | ツリー内 | 既存一覧・本文・入力。ルート不能時だけカーソルをルートへ |
-| リンクの種類 | `Heading` / `Markdown` / `Markdown heading` / `Web` | 選択パネル | 本文由来の表示名と宛先 |
+| 見出し・Markdown・Webリンクの種類 | `Heading` / `Markdown` / `Markdown heading` / `Web` | 選択パネル | 本文由来の表示名と宛先 |
 | Mermaidのアクセシビリティ | `Mermaid diagram` | 図のアクセシビリティラベル | 図の内容は翻訳しない |
 
 リンク形式の不正時は既存の英語要約（`invalid URL`、`invalid file URL`、`invalid fragment encoding`、`invalid UTF-8 fragment`、`document path must be absolute`、`unsupported link scheme: {scheme}`）を入力行へ表示し、本文・履歴を保持する。Mermaid生成失敗は引き続き画面には出さずログだけとする。
@@ -67,8 +72,9 @@ OSや描画基盤の生エラーは画面へ流さず、固定英語へ分類し
 ## モードと入力
 
 - 起動時はNormalモードとする。
-- 本文にフォーカスがあるNormalでは、[本文スクロール](navigation.md)、検索結果の次／前への移動、`F5`による再読み込みを受け付ける。Normal用の標準`f`は、[リンク選択パネル](links-history.md#キーボードによるリンク選択)を開く同梱Luaの登録とし、利用者が上書き・解除できる。
-- 本文にフォーカスがあるNormalの`/`で、空入力のSearchモードへ移る。検索の振る舞いは[本文検索](search.md)を参照する。
+- 本文にフォーカスがあるNormalでは、[本文スクロール](navigation.md)を受け付ける。検索結果の次／前への移動、`F5`による再読み込み、`f`による[リンク選択パネル](links-history.md#キーボードによるリンク選択)の表示はMarkdownを対象とする。PDFでは`F5`で再読み込みせず、`n` / `N`は検索せず上記の未対応通知を表示する。
+- 本文にフォーカスがあるNormalの`/`で、Markdownでは空入力のSearchモードへ移る。PDFではNormalのまま上記の未対応通知を表示する。Search中に外部CLIでPDFへ切り替わった場合は入力モード・文字列を保ち、IME未確定中でないEnterでNormalへ戻り同じ通知を表示する。入力中に通知で文字列を上書きせず、既存の通知機構を使う。検索の振る舞いは[本文検索](search.md)を参照する。
+- Normal用の標準`f`はMarkdownの[リンク選択パネル](links-history.md#キーボードによるリンク選択)を開く同梱Luaの登録とし、利用者が上書き・解除できる。PDFでは標準リンク選択を起動しない。
 - 本文にフォーカスがあるNormalの`:`で、空入力のCommandモードへ移る。
 - Search・Commandの入力中は、キーボードのNormal専用操作を実行しない。たとえば`j`、`n`、`N`は入力文字として扱う。
 - 外部CLI操作は入力中も受け付け、入力モードと入力中の文字列を維持する。詳細は[外部操作](external-control.md#入力モードとの関係)を参照する。

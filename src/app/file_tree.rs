@@ -97,11 +97,9 @@ impl FileTree {
         let node = self.nodes.get(self.cursor.as_ref()?)?;
         (!node.entry.directory
             && !node.entry.reparse
-            && node
-                .entry
-                .path
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("md")))
+            && node.entry.path.extension().is_some_and(|ext| {
+                ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("pdf")
+            }))
         .then(|| (node.entry.path.clone(), root.clone()))
     }
 

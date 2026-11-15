@@ -8,6 +8,9 @@ mod layout;
 mod link_candidates;
 mod modes;
 mod operations;
+mod pdf;
+mod pdf_entries;
+mod pdf_operations;
 mod phase_one;
 mod production;
 mod selection_panel;
@@ -32,11 +35,55 @@ use crate::app::{
     ReadCompletion, ReadRequest, ReadResult,
 };
 
+impl Viewer {
+    /// Fixture delivery must respect the same identity/Load phases as runtime.
+    pub(super) fn complete_fixture(
+        &mut self,
+        result: impl Into<crate::app::ReadResponse>,
+        cx: &mut gpui_kit::Context<Self>,
+    ) {
+        use crate::app::{ReadPhase, ReadResolution, ReadResponse};
+        let mut result = result.into();
+        if let ReadResponse::Loaded(loaded) = &mut result
+            && loaded.request.phase == ReadPhase::Resolve
+        {
+            let key = loaded
+                .content
+                .as_ref()
+                .map(|doc| doc.key.clone())
+                .map_err(Clone::clone);
+            if key
+                .as_ref()
+                .is_ok_and(|key| self.app.document().is_none_or(|doc| doc.key != *key))
+            {
+                let distance = self.departure_distance(cx);
+                match self.app.resolve_at(loaded.request.clone(), key, distance) {
+                    Some(ReadResolution::Continue(request)) => loaded.request = request,
+                    None => return,
+                    Some(ReadResolution::Complete(_)) => {
+                        unreachable!("different fixture key must load")
+                    }
+                }
+            } else {
+                self.complete(
+                    ReadResponse::Resolved {
+                        request: loaded.request.clone(),
+                        key,
+                    },
+                    cx,
+                );
+                return;
+            }
+        }
+        self.complete(result, cx);
+    }
+}
+
 pub(super) fn success(request: ReadRequest, source: String) -> ReadResult {
     let key = DocumentKey(request.path.clone());
     ReadResult {
         request,
-        content: Ok(LoadedDocument { key, source }),
+        content: Ok(LoadedDocument::markdown(key, source)),
     }
 }
 
@@ -67,7 +114,7 @@ pub(super) fn open(
                 });
                 view.update(cx, |view, cx| {
                     let request = view.app.open(view.path.clone());
-                    view.complete(success(request, source), cx);
+                    view.complete_fixture(success(request, source), cx);
                 });
                 view
             },
@@ -112,7 +159,7 @@ fn clicking_local_links_replaces_the_document_and_reload_uses_the_new_path(
     });
     cx.update(|cx| {
         view.update(cx, |viewer, cx| {
-            viewer.complete(success(request, "切り替え後の本文".into()), cx);
+            viewer.complete_fixture(success(request, "切り替え後の本文".into()), cx);
         })
     });
     cx.run_until_parked();
@@ -162,7 +209,7 @@ fn failed_local_link_load_keeps_the_document_and_reload_target(cx: &mut TestAppC
     assert_eq!(request.path, original.with_file_name("missing.md"));
     cx.update(|cx| {
         view.update(cx, |viewer, cx| {
-            viewer.complete(
+            viewer.complete_fixture(
                 ReadResult {
                     request,
                     content: Err("file not found".into()),
@@ -220,15 +267,15 @@ fn read_completions_reach_the_connection_boundary_even_when_not_adopted(cx: &mut
     let b = requests[1].clone();
     cx.update(|cx| {
         view.update(cx, |viewer, cx| {
-            viewer.complete(
+            viewer.complete_fixture(
                 ReadResult {
                     request: b,
                     content: Err("B failed".into()),
                 },
                 cx,
             );
-            viewer.complete(success(a.clone(), "古い本文".into()), cx);
-            viewer.complete(success(a, "古い本文".into()), cx);
+            viewer.complete_fixture(success(a.clone(), "古い本文".into()), cx);
+            viewer.complete_fixture(success(a, "古い本文".into()), cx);
         })
     });
     cx.run_until_parked();
@@ -246,8 +293,18 @@ fn read_completions_reach_the_connection_boundary_even_when_not_adopted(cx: &mut
     assert_eq!(completions[1].outcome, Ok(()));
     assert!(completions.iter().all(|completion| !completion.adopted));
     view.read_with(cx, |viewer, _| {
-        assert_eq!(viewer.app.document().unwrap().source.as_str(), "元の本文");
+        assert_eq!(
+            viewer
+                .app
+                .document()
+                .unwrap()
+                .markdown_source()
+                .unwrap()
+                .as_str(),
+            "元の本文"
+        );
         assert_eq!(viewer.app.error(), Some("B failed"));
+
         assert!(!viewer.app.is_loading());
     });
 }
@@ -385,7 +442,7 @@ fn stale_diagram_completion_preserves_replacement_and_composing_input(cx: &mut T
                     else {
                         panic!("read required")
                     };
-                    viewer.complete(
+                    viewer.complete_fixture(
                         success(
                             request,
                             "new body edit\n\n```mermaid\nnew diagram\n```".into(),
@@ -723,7 +780,7 @@ mod pipe_notifications {
         let request = reads.borrow_mut().pop().unwrap();
         cx.update(|cx| {
             view.update(cx, |view, cx| {
-                view.complete(success(request.clone(), "still completes".into()), cx)
+                view.complete_fixture(success(request.clone(), "still completes".into()), cx)
             })
         });
         view.read_with(cx, |view, _| assert_eq!(view.path, request.path));

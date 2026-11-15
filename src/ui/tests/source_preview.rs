@@ -116,7 +116,7 @@ fn source_preview_unknown_location_removes_old_component_but_can_confirm(cx: &mu
         v.lua.context().documents.borrow_mut().current =
             Some(crate::lua::document::DocumentHandle::new(
                 doc.path.clone(),
-                doc.source.clone(),
+                doc.markdown_source().unwrap().clone(),
                 extract,
             ));
     });

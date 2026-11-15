@@ -130,7 +130,7 @@ fn other_document_fragment_is_decoded_and_missing_headings_go_to_top(cx: &mut Te
     assert_eq!(request.path.file_name().unwrap(), "日本語 memo.md");
     cx.update(|cx| {
         view.update(cx, |viewer, cx| {
-            viewer.complete(super::success(request, fixture()), cx);
+            viewer.complete_fixture(super::success(request, fixture()), cx);
             assert_eq!(
                 viewer.app.position_request().unwrap().target,
                 PositionTarget::Heading("使い方-2".into())
@@ -144,7 +144,7 @@ fn other_document_fragment_is_decoded_and_missing_headings_go_to_top(cx: &mut Te
         if let Some(request) = requests.borrow_mut().pop() {
             cx.update(|cx| {
                 view.update(cx, |viewer, cx| {
-                    viewer.complete(super::success(request, fixture()), cx)
+                    viewer.complete_fixture(super::success(request, fixture()), cx)
                 })
             });
         }
@@ -176,7 +176,7 @@ fn consecutive_links_record_applied_heading_distance_for_history(cx: &mut TestAp
             ) else {
                 panic!("history read")
             };
-            viewer.complete(super::success(request, fixture()), cx);
+            viewer.complete_fixture(super::success(request, fixture()), cx);
         })
     });
     frame(cx, window);
@@ -200,7 +200,7 @@ fn heading_before_first_layout_survives_reload_and_queued_link(cx: &mut TestAppC
             ) else {
                 panic!("heading read")
             };
-            viewer.complete(super::success(request, fixture()), cx);
+            viewer.complete_fixture(super::success(request, fixture()), cx);
             let OperationResult::Pending(reload) = viewer.request_operation(
                 DocumentOperation::Reload,
                 OperationOrigin::Automatic,
@@ -209,7 +209,7 @@ fn heading_before_first_layout_survives_reload_and_queued_link(cx: &mut TestAppC
             ) else {
                 panic!("reload")
             };
-            viewer.complete(super::success(reload, fixture()), cx);
+            viewer.complete_fixture(super::success(reload, fixture()), cx);
             assert_eq!(
                 viewer.app.position_request().unwrap().target,
                 PositionTarget::Heading("使い方-2".into())
@@ -230,7 +230,7 @@ fn heading_before_first_layout_survives_reload_and_queued_link(cx: &mut TestAppC
             ) else {
                 panic!("history")
             };
-            viewer.complete(super::success(request, fixture()), cx);
+            viewer.complete_fixture(super::success(request, fixture()), cx);
         })
     });
     frame(cx, window);
@@ -278,7 +278,7 @@ fn nested_heading_uses_the_projected_line_and_shares_document_ids(cx: &mut TestA
             ) else {
                 panic!("history")
             };
-            viewer.complete(super::success(request, source), cx);
+            viewer.complete_fixture(super::success(request, source), cx);
         })
     });
     frame(cx, window);
@@ -306,7 +306,7 @@ fn external_open_supersedes_a_queued_link(cx: &mut TestAppContext, url: &str) {
             ) else {
                 panic!("heading read")
             };
-            viewer.complete(super::success(request, fixture()), cx);
+            viewer.complete_fixture(super::success(request, fixture()), cx);
             path
         })
     });
@@ -320,7 +320,7 @@ fn external_open_supersedes_a_queued_link(cx: &mut TestAppContext, url: &str) {
             else {
                 panic!("external read")
             };
-            viewer.complete(super::success(request, "Newest document B".into()), cx);
+            viewer.complete_fixture(super::success(request, "Newest document B".into()), cx);
             path
         })
     });
@@ -340,7 +340,13 @@ fn external_open_supersedes_a_queued_link(cx: &mut TestAppContext, url: &str) {
     view.read_with(cx, |viewer, _| {
         assert_eq!(viewer.app.document().unwrap().path, newest);
         assert_eq!(
-            viewer.app.document().unwrap().source.as_str(),
+            viewer
+                .app
+                .document()
+                .unwrap()
+                .markdown_source()
+                .unwrap()
+                .as_str(),
             "Newest document B"
         );
         assert!(!viewer.app.is_loading());
@@ -364,7 +370,7 @@ fn external_open_supersedes_a_queued_link(cx: &mut TestAppContext, url: &str) {
                 request.path, departure,
                 "obsolete link added a history entry"
             );
-            viewer.complete(super::success(request, fixture()), cx);
+            viewer.complete_fixture(super::success(request, fixture()), cx);
         })
     });
     frame(cx, window);
@@ -404,14 +410,14 @@ fn failed_and_stale_heading_loads_keep_the_displayed_text_and_distance(cx: &mut 
             };
             let old = request(viewer, "old.md", cx);
             let failed = request(viewer, "missing.md", cx);
-            viewer.complete(
+            viewer.complete_fixture(
                 crate::app::ReadResult {
                     request: failed,
                     content: Err("missing".into()),
                 },
                 cx,
             );
-            viewer.complete(super::success(old, "stale body".into()), cx);
+            viewer.complete_fixture(super::success(old, "stale body".into()), cx);
             assert_eq!(viewer.document.text, text);
             assert_eq!(viewer.app.error(), Some("missing"));
             assert!(viewer.app.position_request().is_none());
@@ -420,6 +426,15 @@ fn failed_and_stale_heading_loads_keep_the_displayed_text_and_distance(cx: &mut 
     frame(cx, window);
     view.read_with(cx, |viewer, cx| {
         assert_eq!(viewer.document.distance(cx), 480.);
-        assert_eq!(viewer.app.document().unwrap().source.as_str(), fixture());
+        assert_eq!(
+            viewer
+                .app
+                .document()
+                .unwrap()
+                .markdown_source()
+                .unwrap()
+                .as_str(),
+            fixture()
+        );
     });
 }

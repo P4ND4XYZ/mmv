@@ -172,6 +172,88 @@ impl Drop for Temp {
 }
 
 #[gpui_kit::test]
+fn pdf_adoption_clears_lua_current_preserves_snapshot_and_rejects_old_targets(
+    cx: &mut TestAppContext,
+) {
+    use crate::ui::lua_floating::standard_links::{is_open, press};
+    let temp = Temp::new();
+    let pdf = temp.0.join("document.pdf");
+    std::fs::write(&pdf, crate::pdf::tests::fixture("3 0 R", 1, false).as_slice()).unwrap();
+    let markdown = temp.0.join("return.md");
+    std::fs::write(&markdown, "[New](new.md)").unwrap();
+    let source = "[Old](old.md)";
+    let (window, view) = super::super::tests::open(cx, source.into());
+    ready(cx, window, &view);
+    cx.update(|cx| crate::runtime::connect_document_reads(&view, cx));
+    event(&view, cx, r#"
+        local m=require('mmv')
+        old=m.document.current(); old_source=old:source(); old_target=old:links()[1].target
+    "#);
+    press(cx, window, "f");
+    assert!(is_open(cx, &view));
+    // The production replacement notification must close the standard Lua panel.
+    view.update(cx, |v, cx| {
+        v.request_document(pdf.clone(), None, cx);
+    });
+    ready(cx, window, &view);
+    frame(cx, window);
+    assert!(!is_open(cx, &view));
+    assert_lua(&view, cx, "assert(require('mmv').document.current()==nil and old:source()==old_source and old:links()[1].display_name=='Old')");
+    view.read_with(cx, |v, _| {
+        assert!(matches!(v.document, crate::ui::document::DocumentView::Pdf { .. }));
+        assert_eq!(v.message.as_deref(), Some("Link selection closed because the document changed"));
+    });
+    press(cx, window, "f");
+    assert!(!is_open(cx, &view));
+    event(&view, cx, "require('mmv').navigation.open(old_target,{on_complete=function(r)result=r end})");
+    outcome(cx, window, &view);
+    assert_lua(&view, cx, "assert(not result.ok and result.code=='stale_target')");
+    view.update(cx, |v, cx| {
+        v.request_document(markdown.clone(), None, cx);
+    });
+    ready(cx, window, &view);
+    assert_lua(&view, cx, "local d=require('mmv').document.current(); assert(d and d~=old and d:links()[1].display_name=='New' and old:links()[1].display_name=='Old')");
+}
+
+#[gpui_kit::test]
+fn lua_pdf_navigation_keeps_typed_io_errors_and_notifies_before_completion(
+    cx: &mut TestAppContext,
+) {
+    let temp = Temp::new();
+    std::fs::write(temp.0.join("valid.pdf"), crate::pdf::tests::fixture("3 0 R", 1, false).as_slice()).unwrap();
+    std::fs::write(temp.0.join("invalid.pdf"), [255, 254]).unwrap();
+    let source = format!("[Missing]({}) [Invalid]({}) [Valid]({})",
+        temp.url("missing.pdf"), temp.url("invalid.pdf"), temp.url("valid.pdf"));
+    let (window, view) = super::super::tests::open(cx, source);
+    ready(cx, window, &view);
+    cx.update(|cx| crate::runtime::connect_document_reads(&view, cx));
+    for (index, code) in [(1, "file_not_found"), (2, "navigation_failed")] {
+        event(&view, cx, &format!("result=nil; local m=require('mmv'); m.navigation.open(m.document.current():links()[{index}].target,{{on_complete=function(r)result=r end}})"));
+        outcome(cx, window, &view);
+        assert_lua(&view, cx, &format!("assert(not result.ok and result.code=='{code}' and require('mmv').document.current()~=nil)"));
+    }
+    event(&view, cx, r#"
+        local m=require('mmv'); result=nil; events=''
+        w=m.ui.float.open{width=100,height=100,modal=false,render=function()return m.ui.text{text='observer'}end}
+        m.document.on_replaced({owner=w},function()
+            assert(m.document.current()==nil)
+            events=events..'R'
+        end)
+        m.navigation.open(m.document.current():links()[3].target,{on_complete=function(r)
+            assert(m.document.current()==nil)
+            result=r; events=events..'C'
+        end})
+    "#);
+    outcome(cx, window, &view);
+    assert_lua(&view, cx, "assert(result.ok and events=='RC')");
+    view.read_with(cx, |v, _| {
+        assert!(matches!(v.document, crate::ui::document::DocumentView::Pdf { .. }));
+        assert!(v.app.error().is_none());
+        assert!(v.message.is_none());
+    });
+}
+
+#[gpui_kit::test]
 fn runtime_real_file_failures_and_os_launch_results_preserve_body_without_gui_duplicates(
     cx: &mut TestAppContext,
 ) {
@@ -215,7 +297,8 @@ fn runtime_real_file_failures_and_os_launch_results_preserve_body_without_gui_du
             &format!("assert(not result.ok and result.code=='{code}')"),
         );
         view.read_with(cx, |v, _| {
-            assert_eq!(v.app.document().unwrap().source.as_str(), source);
+            assert_eq!(v.app.document().unwrap().markdown_source().unwrap().as_str(), source);
+
             assert!(v.app.error().is_none());
             assert!(v.message.is_none());
         });
@@ -262,7 +345,8 @@ fn actual_adoption_notifies_before_completion_owner_close_does_not_cancel_naviga
     );
     view.read_with(cx, |v, _| {
         assert_eq!(
-            v.app.document().unwrap().source.as_str(),
+            v.app.document().unwrap().markdown_source().unwrap().as_str(),
+
             "# Next\n\n[Self](#next)"
         );
         assert!(v.message.is_none());
@@ -321,10 +405,7 @@ fn later_requests_and_reverse_completions_supersede_once_and_only_adoption_notif
         v.complete(
             crate::app::ReadResult {
                 request: second.clone(),
-                content: Ok(crate::app::LoadedDocument {
-                    key: crate::app::DocumentKey(second.path),
-                    source: "# Accepted".into(),
-                }),
+                content: Ok(crate::app::LoadedDocument::markdown(crate::app::DocumentKey(second.path), "# Accepted".into())),
             },
             cx,
         )
@@ -448,7 +529,8 @@ fn host_failure_and_closed_owner_delivery_rules_do_not_create_fallback_duplicate
         }
         view.read_with(cx, |v, _| {
             assert_eq!(v.message.is_some(), fallback);
-            assert_eq!(v.app.document().unwrap().source.as_str(), "[Next](next.md)");
+            assert_eq!(v.app.document().unwrap().markdown_source().unwrap().as_str(), "[Next](next.md)");
+
         });
         event(&view, cx, "w:close()");
     }
@@ -510,14 +592,12 @@ fn adopted_position_failure_is_warning_success_and_terminal_result_never_changes
         v.complete(
             crate::app::ReadResult {
                 request: request.clone(),
-                content: Ok(crate::app::LoadedDocument {
-                    key: crate::app::DocumentKey(request.path),
-                    source: "# One".into(),
-                }),
+                content: Ok(crate::app::LoadedDocument::markdown(crate::app::DocumentKey(request.path), "# One".into())),
             },
             cx,
         );
         let position = v.app.position_request().unwrap().clone();
+
         assert!(v.lua_position_unavailable(
             &position,
             "Unable to determine document positions".into(),
@@ -534,7 +614,8 @@ fn adopted_position_failure_is_warning_success_and_terminal_result_never_changes
         "assert(result.ok and result.warning.code=='position_unavailable' and calls==1)",
     );
     view.read_with(cx, |v, _| {
-        assert_eq!(v.app.document().unwrap().source.as_str(), "# One");
+        assert_eq!(v.app.document().unwrap().markdown_source().unwrap().as_str(), "# One");
+
         assert!(v.message.is_none());
     });
 }
@@ -681,10 +762,7 @@ fn reload_adoption_notifies_but_requests_failures_and_scroll_do_not(cx: &mut Tes
         assert_lua(&view, cx, "assert(replacements==0 and w:is_open())");
         let request = reads.borrow_mut().pop().unwrap();
         let content = if succeeds {
-            Ok(crate::app::LoadedDocument {
-                key: crate::app::DocumentKey(request.path.clone()),
-                source: "# Updated".into(),
-            })
+            Ok(crate::app::LoadedDocument::markdown(crate::app::DocumentKey(request.path.clone()), "# Updated".into()))
         } else {
             Err("Unable to read file".into())
         };
@@ -730,14 +808,12 @@ fn reload_replacing_an_unapplied_navigation_position_completes_it_as_superseded(
         v.complete(
             crate::app::ReadResult {
                 request: request.clone(),
-                content: Ok(crate::app::LoadedDocument {
-                    key: crate::app::DocumentKey(request.path),
-                    source: "# One".into(),
-                }),
+                content: Ok(crate::app::LoadedDocument::markdown(crate::app::DocumentKey(request.path), "# One".into())),
             },
             cx,
         );
         assert!(v.app.position_request().is_some());
+
         // Deliver the reload before yielding to any render/layout callback.
         let OperationResult::Pending(reload) = v.request_operation(
             DocumentOperation::Reload,
@@ -750,10 +826,7 @@ fn reload_replacing_an_unapplied_navigation_position_completes_it_as_superseded(
         v.complete(
             crate::app::ReadResult {
                 request: reload.clone(),
-                content: Ok(crate::app::LoadedDocument {
-                    key: crate::app::DocumentKey(reload.path),
-                    source: "# One updated".into(),
-                }),
+                content: Ok(crate::app::LoadedDocument::markdown(crate::app::DocumentKey(reload.path), "# One updated".into())),
             },
             cx,
         );
@@ -796,8 +869,9 @@ fn superseded_adopted_navigation_keeps_body_and_history_after_the_successor_fail
     let accepted_path = first_read.path.clone();
     view.update(cx, |v, cx| {
         v.complete(super::super::tests::success(first_read, accepted.clone()), cx);
-        assert_eq!(v.app.document().unwrap().source.as_str(), accepted);
+        assert_eq!(v.app.document().unwrap().markdown_source().unwrap().as_str(), accepted);
         let old_position = v.app.position_request().unwrap().clone();
+
         // Accept the successor in the same host turn: the first body/history
         // is already adopted, but its heading has never had a layout frame.
         v.lua.lua().load("local m=require('mmv'); m.navigation.open(m.document.current():links()[1].target,{on_complete=function(r)result=r;calls=calls+1 end})").exec().unwrap();
@@ -824,8 +898,9 @@ fn superseded_adopted_navigation_keeps_body_and_history_after_the_successor_fail
     );
     view.read_with(cx, |v, cx| {
         assert_eq!(v.path, accepted_path);
-        assert_eq!(v.app.document().unwrap().source.as_str(), accepted);
+        assert_eq!(v.app.document().unwrap().markdown_source().unwrap().as_str(), accepted);
         assert!(v.app.position_request().is_none());
+
         assert_eq!(
             v.document.distance(cx),
             0.,

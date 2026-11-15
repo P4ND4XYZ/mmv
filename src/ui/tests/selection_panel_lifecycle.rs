@@ -38,14 +38,16 @@ fn selection_panel_read_request_failure_and_stale_success_preserve_query_selecti
         let old = pending(v.request_document(v.path.with_file_name("old.md"), None, cx));
         let latest = pending(v.request_document(v.path.with_file_name("missing.md"), None, cx));
         assert_eq!(v.lua.context().ui.borrow().windows[0].owner, owner);
-        v.complete(
+        v.complete_fixture(
             ReadResult {
+
                 request: latest,
                 content: Err("not found".into()),
             },
             cx,
         );
-        v.complete(success(old, "stale body".into()), cx);
+        v.complete_fixture(success(old, "stale body".into()), cx);
+
     });
     frame(cx, window);
     assert_eq!(panel(cx, &view).owner, owner);
@@ -88,7 +90,8 @@ fn selection_panel_only_adopted_body_closes_panel_warns_and_old_ids_cannot_execu
         view.update(cx, |v, cx| {
             let request = pending(v.request_operation(DocumentOperation::Reload, origin, None, cx));
             assert!(!v.lua.context().ui.borrow().windows.is_empty());
-            v.complete(success(request, "[New](new.md)".into()), cx);
+            v.complete_fixture(success(request, "[New](new.md)".into()), cx);
+
         });
         frame(cx, window);
         assert!(!is_open(cx, &view));
@@ -182,8 +185,9 @@ fn selection_panel_confirm_then_read_failure_keeps_original_body_distance_and_hi
     press(cx, window, "enter");
     let request = reads.borrow_mut().pop().unwrap();
     view.update(cx, |v, cx| {
-        v.complete(
+        v.complete_fixture(
             ReadResult {
+
                 request,
                 content: Err("missing destination".into()),
             },
@@ -197,7 +201,7 @@ fn selection_panel_confirm_then_read_failure_keeps_original_body_distance_and_hi
             assert_eq!(v.app.mode, Mode::Normal);
             assert_eq!(v.status_text(), "missing destination");
             assert_eq!(v.status_severity(), Some(crate::config::Group::Error));
-            assert_eq!(v.app.document().unwrap().source.as_str(), source);
+            assert_eq!(v.app.document().unwrap().markdown_source().unwrap().as_str(), source);
             assert_eq!(v.document.distance(cx), distance);
             assert!(v.body_focus.is_focused(w));
             assert!(matches!(
@@ -218,7 +222,8 @@ fn selection_panel_external_history_adoption_closes_only_on_success(cx: &mut Tes
     frame(cx, window);
     view.update(cx, |v, cx| {
         let request = pending(v.request_document(v.path.with_file_name("second.md"), None, cx));
-        v.complete(success(request, "[Second](second-link.md)".into()), cx);
+        v.complete_fixture(success(request, "[Second](second-link.md)".into()), cx);
+
     });
     frame(cx, window);
     press(cx, window, "f");
@@ -230,8 +235,9 @@ fn selection_panel_external_history_adoption_closes_only_on_success(cx: &mut Tes
             ExternalRequestId("back-failed".into()),
             cx,
         ));
-        v.complete(
+        v.complete_fixture(
             ReadResult {
+
                 request,
                 content: Err("history missing".into()),
             },
@@ -250,7 +256,8 @@ fn selection_panel_external_history_adoption_closes_only_on_success(cx: &mut Tes
             ExternalRequestId("back".into()),
             cx,
         ));
-        v.complete(success(request, "[First](first.md)".into()), cx);
+        v.complete_fixture(success(request, "[First](first.md)".into()), cx);
+
     });
     frame(cx, window);
     assert!(!is_open(cx, &view));
@@ -411,7 +418,7 @@ fn selection_panel_external_adoption_restores_only_logical_focus_and_does_not_ac
                 None,
                 cx,
             ));
-            viewer.complete(success(request, "External body".into()), cx);
+            viewer.complete_fixture(success(request, "External body".into()), cx);
         })
     });
     frame(cx, window);

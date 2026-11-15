@@ -91,7 +91,7 @@ fn replace(cx: &mut TestAppContext, view: &Entity<Viewer>, source: String, other
             else {
                 panic!("read required");
             };
-            viewer.complete(super::success(request, source), cx);
+            viewer.complete_fixture(super::success(request, source), cx);
             let position = viewer.app.position_request().unwrap().clone();
             let text = viewer.document.text.clone();
             // A fresh TextView has no viewport yet, including for empty source.
@@ -233,7 +233,7 @@ fn failed_reload_keeps_distance_and_new_document_opens_at_top(cx: &mut TestAppCo
             ) else {
                 panic!("read required")
             };
-            viewer.complete(
+            viewer.complete_fixture(
                 crate::app::ReadResult {
                     request,
                     content: Err("missing".into()),
@@ -267,12 +267,12 @@ fn delayed_layout_rejects_old_generation_entity_and_same_generation_serial(
     let (stale, text) = cx.update(|cx| {
         view.update(cx, |viewer, cx| {
             let request = viewer.app.open(viewer.path.clone());
-            viewer.complete(super::success(request, source.clone()), cx);
+            viewer.complete_fixture(super::success(request, source.clone()), cx);
             let old_request = viewer.app.position_request().unwrap().clone();
             let old_text = viewer.document.text.clone();
             // Switch before parsing/layout. Identical source cannot identify a generation.
             let request = viewer.app.open(viewer.path.with_file_name("other.md"));
-            viewer.complete(super::success(request, source), cx);
+            viewer.complete_fixture(super::success(request, source), cx);
             let current = viewer.app.position_request().unwrap().clone();
             assert_ne!(old_request.generation, current.generation);
             viewer.apply_position_after_layout(&old_request, &old_text, cx);
@@ -404,7 +404,7 @@ fn reload_passes_the_live_pixel_distance_to_the_app_contract(cx: &mut TestAppCon
                 cx.notify();
             });
             assert_eq!(viewer.document.distance(cx), 480.);
-            viewer.complete(super::success(request, source), cx);
+            viewer.complete_fixture(super::success(request, source), cx);
             assert_eq!(
                 viewer.app.position_request().unwrap().target,
                 PositionTarget::Distance(480.)
@@ -445,14 +445,14 @@ fn consecutive_automatic_completions_before_layout_keep_the_departure_distance(
     // No frame is allowed between the two adopted completions.
     cx.update(|cx| {
         view.update(cx, |viewer, cx| {
-            viewer.complete(super::success(first, fixture()), cx)
+            viewer.complete_fixture(super::success(first, fixture()), cx)
         })
     });
     let trailing = requests.borrow_mut().pop().unwrap();
     cx.update(|cx| {
         view.update(cx, |viewer, cx| {
             assert_eq!(viewer.document.distance(cx), 0.);
-            viewer.complete(super::success(trailing, fixture()), cx);
+            viewer.complete_fixture(super::success(trailing, fixture()), cx);
             assert_eq!(
                 viewer.app.position_request().unwrap().target,
                 PositionTarget::Distance(480.)
@@ -508,7 +508,7 @@ fn production_watch_connection_catches_up_a_save_before_registration(cx: &mut Te
             },
         )
     });
-    cx.update(|cx| view.update(cx, |viewer, cx| viewer.complete(stale_result, cx)));
+    cx.update(|cx| view.update(cx, |viewer, cx| viewer.complete_fixture(stale_result, cx)));
     assert!(completed.try_recv().unwrap().adopted);
     let deadline = Instant::now() + Duration::from_secs(5);
     let caught_up = loop {
@@ -524,7 +524,13 @@ fn production_watch_connection_catches_up_a_save_before_registration(cx: &mut Te
     };
     view.read_with(cx, |viewer, _| {
         assert_eq!(
-            viewer.app.document().unwrap().source.as_str(),
+            viewer
+                .app
+                .document()
+                .unwrap()
+                .markdown_source()
+                .unwrap()
+                .as_str(),
             "new body saved before registration"
         )
     });
@@ -606,7 +612,7 @@ fn real_notify_save_and_same_file_source_line_preserve_both_arrival_orders(
                 ) else {
                     panic!("initial read");
                 };
-                viewer.complete(crate::infra::read_document(request), cx);
+                viewer.complete_fixture(crate::infra::read_document(request), cx);
             })
         });
         frame(cx, window);
@@ -640,7 +646,7 @@ fn real_notify_save_and_same_file_source_line_preserve_both_arrival_orders(
             ) else {
                 panic!("identity check");
             };
-            viewer.complete(crate::infra::read_document(request), cx);
+            viewer.complete_fixture(crate::infra::read_document(request), cx);
             assert_eq!(viewer.app.document().unwrap().generation, generation);
             assert_eq!(viewer.document.text, text);
         };
@@ -680,8 +686,17 @@ fn real_notify_save_and_same_file_source_line_preserve_both_arrival_orders(
                     assert!(viewer.app.position_request().is_none());
                 }
                 let departure = viewer.document.distance(cx);
-                viewer.complete(result, cx);
-                assert_eq!(viewer.app.document().unwrap().source.as_str(), new_source);
+                viewer.complete_fixture(result, cx);
+                assert_eq!(
+                    viewer
+                        .app
+                        .document()
+                        .unwrap()
+                        .markdown_source()
+                        .unwrap()
+                        .as_str(),
+                    new_source
+                );
                 assert_eq!(
                     viewer.app.position_request().unwrap().target,
                     if save_first {
@@ -741,7 +756,7 @@ fn real_save_uses_reload_distance_and_preserves_search_command_input(cx: &mut Te
             ) else {
                 panic!("read required")
             };
-            viewer.complete(crate::infra::read_document(request), cx);
+            viewer.complete_fixture(crate::infra::read_document(request), cx);
         })
     });
     frame(cx, window);
@@ -787,7 +802,7 @@ fn real_save_uses_reload_distance_and_preserves_search_command_input(cx: &mut Te
         // Reading is completed explicitly so the replacement-time distance is deterministic.
         let result = crate::infra::read_document(request);
         scroll(cx, &view, 640.);
-        cx.update(|cx| view.update(cx, |viewer, cx| viewer.complete(result, cx)));
+        cx.update(|cx| view.update(cx, |viewer, cx| viewer.complete_fixture(result, cx)));
         frame(cx, window);
         view.read_with(cx, |viewer, cx| {
             assert_eq!(viewer.app.mode, mode);
@@ -818,7 +833,7 @@ fn real_save_uses_reload_distance_and_preserves_search_command_input(cx: &mut Te
     assert_eq!(request.origin, OperationOrigin::Keyboard);
     cx.update(|cx| {
         view.update(cx, |viewer, cx| {
-            viewer.complete(crate::infra::read_document(request), cx)
+            viewer.complete_fixture(crate::infra::read_document(request), cx)
         })
     });
     frame(cx, window);
@@ -836,7 +851,7 @@ fn real_save_uses_reload_distance_and_preserves_search_command_input(cx: &mut Te
     let request = requests.borrow_mut().pop().unwrap();
     cx.update(|cx| {
         view.update(cx, |viewer, cx| {
-            viewer.complete(crate::infra::read_document(request), cx)
+            viewer.complete_fixture(crate::infra::read_document(request), cx)
         })
     });
     frame(cx, window);
@@ -893,7 +908,7 @@ fn external_replacement_keeps_search_and_command_input_entity_text_and_focus(
         assert_eq!(request.origin, OperationOrigin::External);
         cx.update(|cx| {
             view.update(cx, |viewer, cx| {
-                viewer.complete(
+                viewer.complete_fixture(
                     super::success(
                         request,
                         "new edit target\n\n".to_owned() + &"Paragraph.\n\n".repeat(200),
@@ -925,7 +940,7 @@ fn external_replacement_keeps_search_and_command_input_entity_text_and_focus(
                 else {
                     panic!("read required");
                 };
-                viewer.complete(
+                viewer.complete_fixture(
                     super::success(
                         request,
                         "new edit target\n\n".to_owned() + &"Paragraph.\n\n".repeat(200),

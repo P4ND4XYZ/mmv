@@ -3,7 +3,7 @@ use super::Viewer;
 use crate::{
     app::{
         DocumentOperation, OperationOrigin, OperationResult, PositionRequest, ReadCompletion,
-        ReadRequestId, ReadResponse,
+        ReadRequestId,
     },
     lua::{
         document::DocumentHandle,
@@ -213,24 +213,12 @@ impl Viewer {
         }
     }
 
-    /// Production runtime supplies the I/O classification independently of the
-    /// English GUI summary. Delayed normalization retains it with the request.
-    pub(crate) fn complete_classified(
-        &mut self,
-        response: ReadResponse,
-        failure: Option<crate::infra::ReadFailureKind>,
-        cx: &mut Context<Self>,
-    ) {
-        let id = match &response {
-            ReadResponse::Loaded(result) => result.request.id,
-            ReadResponse::Resolved { request, .. } => request.id,
-        };
+    pub(super) fn record_lua_read_failure(&mut self, id: ReadRequestId, failure: Option<crate::infra::ReadFailureKind>) {
         if let Some(pending) = self.lua_navigation.pending.as_mut()
             && matches!(pending.stage, Stage::Reading(read) if read == id)
         {
             pending.failure = failure;
         }
-        self.complete(response, cx);
     }
 
     pub(super) fn lua_read_completed(&mut self, completion: &ReadCompletion) {
@@ -304,11 +292,11 @@ impl Viewer {
 
     pub(super) fn publish_lua_document(&mut self, cx: &mut Context<Self>) {
         let document = self.app.document().expect("adopted document");
-        let snapshot = DocumentHandle::new(
+        let snapshot = document.markdown_source().map(|source| DocumentHandle::new(
             document.path.clone(),
-            document.source.clone(),
+            source.clone(),
             super::link_candidates::extract_candidates,
-        );
+        ));
         if let Err(error) = self
             .lua
             .context()

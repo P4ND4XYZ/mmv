@@ -72,7 +72,7 @@ impl Session {
                 ) else {
                     panic!("initial real file read")
                 };
-                viewer.complete(crate::infra::read_document(request), cx);
+                viewer.complete_fixture(crate::infra::read_document(request), cx);
             })
         });
         let requests = Rc::new(RefCell::new(Vec::new()));
@@ -146,7 +146,7 @@ impl Session {
         let result = crate::infra::read_document(request);
         cx.update(|cx| {
             self.view
-                .update(cx, |viewer, cx| viewer.complete(result, cx))
+                .update(cx, |viewer, cx| viewer.complete_fixture(result, cx))
         });
         self.frame(cx);
     }
@@ -257,7 +257,16 @@ fn changed_history_file_restores_pixels_clamps_and_failed_read_keeps_cursor(
     s.assert_distance(cx, 640.);
     s.view.read_with(cx, |viewer, _| {
         assert_eq!(viewer.document.text, text);
-        assert_eq!(viewer.app.document().unwrap().source.as_str(), fixture());
+        assert_eq!(
+            viewer
+                .app
+                .document()
+                .unwrap()
+                .markdown_source()
+                .unwrap()
+                .as_str(),
+            fixture()
+        );
         assert!(viewer.app.error().is_some());
     });
     assert_eq!(

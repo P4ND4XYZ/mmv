@@ -1,4 +1,7 @@
-use crate::app::{DocumentKey, LoadedDocument, ReadPhase, ReadRequest, ReadResponse, ReadResult};
+use crate::app::{
+    DocumentFormat, DocumentKey, LoadedDocument, ReadPhase, ReadRequest, ReadResponse, ReadResult,
+};
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ReadFailureKind {
@@ -32,16 +35,34 @@ impl ReadFailureKind {
     }
 }
 
-/// Existing response-only fixtures; production preserves the classification.
-#[cfg(test)]
-pub fn read_document(request: ReadRequest) -> ReadResponse {
-    read_document_classified(request).0
+/// Intermediate I/O is not PDF preparation or a successful app adoption.
+pub enum DocumentRead {
+    Response(ReadResponse),
+    PdfBytes {
+        request: ReadRequest,
+        key: DocumentKey,
+        bytes: Arc<Vec<u8>>,
+    },
 }
 
-/// Preserve typed I/O classification alongside the existing app response.
-pub(crate) fn read_document_classified(
+pub(crate) fn read_document_input_classified(
     request: ReadRequest,
-) -> (ReadResponse, Option<ReadFailureKind>) {
+) -> (DocumentRead, Option<ReadFailureKind>) {
+    read_document_with_classified(request, |path| std::fs::read(path))
+}
+
+#[cfg(test)]
+fn read_document_with(
+    request: ReadRequest,
+    read: impl FnOnce(&std::path::Path) -> std::io::Result<Vec<u8>>,
+) -> DocumentRead {
+    read_document_with_classified(request, read).0
+}
+
+fn read_document_with_classified(
+    request: ReadRequest,
+    read: impl FnOnce(&std::path::Path) -> std::io::Result<Vec<u8>>,
+) -> (DocumentRead, Option<ReadFailureKind>) {
     let mut failure = None;
     let mut report = |error: std::io::Error| {
         failure = Some(ReadFailureKind::classify(&error));
@@ -49,22 +70,49 @@ pub(crate) fn read_document_classified(
     };
     let key = resolve_key(&request).map_err(&mut report);
     if request.phase == ReadPhase::Resolve {
-        return (ReadResponse::Resolved { request, key }, failure);
+        return (DocumentRead::Response(ReadResponse::Resolved { request, key }), failure);
     }
     let content = key.and_then(|key| {
-        let source = std::fs::read_to_string(&request.path).map_err(&mut report)?;
-        Ok(LoadedDocument {
-            key,
-            source: source
-                .strip_prefix('\u{feff}')
-                .unwrap_or(&source)
-                .to_owned(),
-        })
+        let bytes = read(&request.path).map_err(&mut report)?;
+        Ok((key, bytes))
     });
-    (
-        ReadResponse::Loaded(ReadResult { request, content }),
-        failure,
-    )
+    let result = match content {
+        Ok((key, bytes)) if DocumentFormat::for_path(&request.path) == DocumentFormat::Pdf => {
+            DocumentRead::PdfBytes { request, key, bytes: Arc::new(bytes) }
+        }
+        content => {
+            let content = content.and_then(|(key, bytes)| {
+                let source = String::from_utf8(bytes).map_err(|error| {
+                    report(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+                })?;
+                Ok(LoadedDocument::markdown(
+                    key, source.strip_prefix('\u{feff}').unwrap_or(&source).to_owned(),
+                ))
+            });
+            DocumentRead::Response(ReadResponse::Loaded(ReadResult { request, content }))
+        }
+    };
+    (result, failure)
+}
+
+/// Response-only Markdown fixtures cannot introduce an unprepared PDF success.
+#[cfg(test)]
+pub fn read_document(request: ReadRequest) -> ReadResponse {
+    read_document_classified(request).0
+}
+
+#[cfg(test)]
+pub(crate) fn read_document_classified(request: ReadRequest) -> (ReadResponse, Option<ReadFailureKind>) {
+    let (result, failure) = read_document_input_classified(request);
+    let response = match result {
+        DocumentRead::Response(response) => response,
+        DocumentRead::PdfBytes { request, .. } => ReadResponse::Loaded(ReadResult {
+            request,
+            content: Err("PDF preparation is not connected".into()),
+        }),
+    };
+    (response, failure)
+
 }
 
 fn resolve_key(request: &ReadRequest) -> std::io::Result<DocumentKey> {
@@ -105,7 +153,13 @@ fn report_read_error(request: &ReadRequest, error: std::io::Error) -> String {
     super::logging::log_document_failure(&request.path, &error.to_string());
     format!(
         "{}: {}",
-        read_error_message(&error, request.tree.is_some()),
+        if DocumentFormat::for_path(&request.path) == DocumentFormat::Pdf
+            && error.kind() == std::io::ErrorKind::InvalidData
+        {
+            "Unable to read file"
+        } else {
+            read_error_message(&error, request.tree.is_some())
+        },
         request.path.display()
     )
 }
@@ -156,6 +210,39 @@ mod tests {
     }
 
     #[test]
+    fn pdf_io_returns_bytes_once_without_utf8_or_successful_adoption() {
+        let path = std::env::temp_dir().join(format!("mmv-t2b-pdf-{}.PDF", std::process::id()));
+        std::fs::write(&path, [0xff, 0x00, 0x25]).unwrap();
+        let mut app = App::default();
+        let resolve = app.open(path.clone());
+        assert_eq!(resolve.phase, ReadPhase::Resolve);
+        let DocumentRead::Response(ReadResponse::Resolved { request, key }) =
+            read_document_with(resolve, |_| panic!("resolve must not read"))
+        else {
+            panic!("resolve")
+        };
+        let crate::app::ReadResolution::Continue(load) = app.resolve_at(request, key, 0.).unwrap()
+        else {
+            panic!("load")
+        };
+        let mut reads = 0;
+        let result = read_document_with(load.clone(), |path| {
+            reads += 1;
+            std::fs::read(path)
+        });
+        assert_eq!(reads, 1);
+        let DocumentRead::PdfBytes { bytes, request, .. } = result else {
+            panic!("raw bytes")
+        };
+        assert_eq!(request, load);
+        assert_eq!(bytes.as_slice(), &[0xff, 0x00, 0x25]);
+        assert!(app.document().is_none());
+        let result = loaded(read_document(load));
+        assert!(result.content.is_err());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn tree_same_identity_alias_does_not_read_changed_invalid_utf8() {
         let root = std::env::temp_dir().join(format!(
             "mmv-tree-identity-{}-{:?}",
@@ -185,7 +272,10 @@ mod tests {
             assert!(!completion.adopted);
             assert_eq!(completion.outcome, Ok(()));
             assert_eq!(app.document().unwrap().generation, generation);
-            assert_eq!(app.document().unwrap().source.as_str(), "# Original 日本語");
+            assert_eq!(
+                app.document().unwrap().markdown_source().unwrap().as_str(),
+                "# Original 日本語"
+            );
             assert_eq!(app.position_request(), position.as_ref());
         }
         std::fs::remove_dir_all(root).unwrap();
@@ -269,7 +359,10 @@ mod tests {
         assert_eq!(completion.outcome, Ok(()));
         assert!(!completion.adopted);
         assert_eq!(app.document().unwrap().generation, generation);
-        assert_eq!(app.document().unwrap().source.as_str(), "original");
+        assert_eq!(
+            app.document().unwrap().markdown_source().unwrap().as_str(),
+            "original"
+        );
         let OperationResult::Pending(request) = app.operate(
             DocumentOperation::Reload,
             OperationOrigin::Keyboard,
@@ -346,8 +439,12 @@ mod tests {
         for source in ["# 日本語\r\n本文", "\u{feff}# 日本語\r\n本文"] {
             std::fs::write(&path, source).unwrap();
             let result = loaded(read_document(app.open(path.clone())));
-            assert_eq!(result.content.unwrap().source, "# 日本語\r\n本文");
+            assert_eq!(
+                result.content.unwrap().markdown_source().unwrap().as_str(),
+                "# 日本語\r\n本文"
+            );
         }
+
         std::fs::write(&path, [0xff, 0xfe]).unwrap();
         let invalid = loaded(read_document(app.open(path.clone())));
         std::fs::remove_file(&path).unwrap();

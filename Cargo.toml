@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 gpui-kit = { version = "=0.9.0", features = ["syntect"] }
+gpui-pdf = { git = "https://github.com/P4ND4XYZ/zorite.git", rev = "88fcd079a5724a170d063a4b114c6427edc0c5df", default-features = false }
 reqwest_client = { package = "gpui-pre-reqwest-client", version = "=0.3.11" }
 url = "2.5"
 notify = "=8.2.1"

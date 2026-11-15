@@ -49,7 +49,16 @@ struct MovementIntent {
     movement: Movement,
 }
 
-pub(super) struct DocumentView {
+pub(super) enum DocumentView {
+    Markdown(Box<MarkdownView>),
+    Pdf {
+        view: Entity<crate::pdf::PdfView>,
+        started: Instant,
+        _clicks: Subscription,
+    },
+}
+
+pub(super) struct MarkdownView {
     pub text: Entity<TextViewState>,
     text_subscription: Option<Subscription>,
     pub discovered_diagrams: DiscoveredDiagrams,
@@ -131,7 +140,7 @@ struct HeadingLocation {
     nested: bool,
 }
 
-impl DocumentView {
+impl MarkdownView {
     pub fn new(started: Instant, cx: &mut Context<Viewer>) -> Self {
         Self {
             text: cx.new(|cx| TextViewState::markdown("", cx)),
@@ -273,18 +282,159 @@ impl DocumentView {
     }
 }
 
+impl DocumentView {
+    pub fn new(started: Instant, cx: &mut Context<Viewer>) -> Self {
+        Self::Markdown(Box::new(MarkdownView::new(started, cx)))
+    }
+    pub fn as_markdown(&self) -> Option<&MarkdownView> {
+        match self {
+            Self::Markdown(view) => Some(view),
+            Self::Pdf { .. } => None,
+        }
+    }
+    pub fn as_markdown_mut(&mut self) -> Option<&mut MarkdownView> {
+        match self {
+            Self::Markdown(view) => Some(view),
+            Self::Pdf { .. } => None,
+        }
+    }
+    fn started(&self) -> Instant {
+        match self {
+            Self::Markdown(view) => view.started,
+            Self::Pdf { started, .. } => *started,
+        }
+    }
+    pub fn release(&mut self, window: Option<&mut Window>, cx: &mut gpui_kit::App) {
+        match self {
+            Self::Pdf { view, .. } => view.update(cx, |view, cx| view.release(window, cx)),
+            Self::Markdown(view) => {
+                view.cancel_source_reveal();
+                for image in std::mem::take(&mut view.diagram_images).into_values() {
+                    image.remove_asset(cx);
+                }
+            }
+        }
+    }
+    pub fn replace(
+        &mut self,
+        generation: Generation,
+        policy: PendingMovementPolicy,
+        cx: &mut Context<Viewer>,
+    ) {
+        if matches!(self, Self::Pdf { .. }) {
+            let started = self.started();
+            self.release(None, cx);
+            *self = Self::new(started, cx);
+        }
+        if let Self::Markdown(view) = self {
+            view.replace(generation, policy, cx);
+        }
+    }
+    pub fn replace_pdf(&mut self, prepared: crate::pdf::PreparedPdf, cx: &mut Context<Viewer>) {
+        let started = self.started();
+        // Constructing the new host view cannot fail or reparse after app adoption.
+        let view = cx.new(|cx| crate::pdf::PdfView::from_prepared(prepared, cx));
+        let clicks = cx.subscribe(&view, |this, _, _: &crate::pdf::BodyClicked, cx| {
+            if this.normal_keys_enabled() {
+                this.focus_body_after_pdf_click = true;
+                cx.notify();
+            }
+        });
+        self.release(None, cx);
+        *self = Self::Pdf {
+            view,
+            started,
+            _clicks: clicks,
+        };
+    }
+    pub fn normalization_pending(&self) -> bool {
+        self.as_markdown()
+            .is_some_and(|view| view.normalization_pending())
+    }
+    pub fn distance(&self, cx: &gpui_kit::App) -> f32 {
+        self.as_markdown().map_or(0., |view| view.distance(cx))
+    }
+    pub fn supersede_movements(&mut self, order: u64) {
+        if let Some(view) = self.as_markdown_mut() {
+            view.supersede_movements(order);
+        }
+    }
+    pub fn cancel_source_reveal(&self) {
+        if let Some(view) = self.as_markdown() {
+            view.cancel_source_reveal();
+        }
+    }
+    pub fn anchor_changed(&mut self, cx: &mut Context<Viewer>) {
+        if let Some(view) = self.as_markdown_mut() {
+            view.anchor_changed(cx);
+        }
+    }
+    pub fn scroll(&mut self, lines: f32, pages: f32, cx: &mut Context<Viewer>) {
+        match self {
+            Self::Markdown(view) => view.scroll(lines, pages, cx),
+            Self::Pdf { view, .. } => view.update(cx, |view, cx| {
+                let _ = if pages != 0. {
+                    view.scroll_viewport(pages, cx)
+                } else {
+                    view.scroll_by(lines * 40., cx)
+                };
+            }),
+        }
+    }
+    pub fn scroll_edge(&mut self, end: bool, cx: &mut Context<Viewer>) {
+        match self {
+            Self::Markdown(view) => view.scroll_edge(end, cx),
+            Self::Pdf { view, .. } => view.update(cx, |view, cx| {
+                let _ = view.scroll_to_edge(end, cx);
+            }),
+        }
+    }
+}
+
+// Existing Markdown fixtures deliberately access their engine's detailed layout.
+// Production uses explicit variant checks, never a panicking Deref.
+#[cfg(all(test, feature = "ui-tests"))]
+impl std::ops::Deref for DocumentView {
+    type Target = MarkdownView;
+    fn deref(&self) -> &Self::Target {
+        self.as_markdown().expect("Markdown fixture")
+    }
+}
+#[cfg(all(test, feature = "ui-tests"))]
+impl std::ops::DerefMut for DocumentView {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.as_markdown_mut().expect("Markdown fixture")
+    }
+}
+
 impl Viewer {
     /// Share the same upstream block spans between search and heading links;
     /// heading labels come from TextView's plain rendered-text projection.
     pub(super) fn analyze_document(&mut self, cx: &gpui_kit::App) -> Result<(), String> {
         let document = self.app.document().ok_or("Document is loading")?;
-        let snapshot = self.document.text.read(cx).rendered_text();
-        if self.document.analysis.as_ref().is_some_and(|analysis| {
-            analysis.generation == document.generation && analysis.snapshot == snapshot
-        }) {
+        let source = document
+            .markdown_source()
+            .ok_or("Unable to determine document positions")?;
+        let snapshot = self
+            .document
+            .as_markdown_mut()
+            .expect("Markdown variant checked")
+            .text
+            .read(cx)
+            .rendered_text();
+        if self
+            .document
+            .as_markdown_mut()
+            .expect("Markdown variant checked")
+            .analysis
+            .as_ref()
+            .is_some_and(|analysis| {
+                analysis.generation == document.generation && analysis.snapshot == snapshot
+            })
+        {
             return Ok(());
         }
-        if snapshot.source() != document.source.as_str() {
+        if snapshot.source() != source.as_str() {
             return Err("Document is being analyzed".into());
         }
         let links = Arc::new(Mutex::new(Vec::new()));
@@ -294,7 +444,7 @@ impl Viewer {
                 images: Default::default(),
             })
             .plugin(LinkRanges(links.clone()));
-        let blocks = parse_markdown(&document.source, extensions.into()).map_err(|error| {
+        let blocks = parse_markdown(source, extensions.into()).map_err(|error| {
             crate::infra::log_document_failure(&document.path, error.as_ref());
             "Unable to determine document positions".to_string()
         })?;
@@ -345,9 +495,12 @@ impl Viewer {
                 )
             });
         }
-        self.document.analysis = Some(DocumentAnalysis {
+        self.document
+            .as_markdown_mut()
+            .expect("Markdown variant checked")
+            .analysis = Some(DocumentAnalysis {
             generation: document.generation,
-            source_lines: crate::core::source_position::SourceLines::new(&document.source),
+            source_lines: crate::core::source_position::SourceLines::new(source),
             blocks: blocks
                 .iter()
                 .map(|block| block.span().map(|span| span.start..span.end))
@@ -376,18 +529,52 @@ impl Viewer {
             .document()
             .expect("movement requires a document")
             .generation;
-        self.document.movements.push_back(MovementIntent {
-            generation,
-            order,
-            movement,
-        });
+        if matches!(self.document, DocumentView::Pdf { .. }) {
+            match movement {
+                Movement::Scroll(direction) => {
+                    let (lines, pages) = match direction {
+                        ScrollDirection::Down => (1., 0.),
+                        ScrollDirection::Up => (-1., 0.),
+                        ScrollDirection::HalfDown => (0., 0.5),
+                        ScrollDirection::HalfUp => (0., -0.5),
+                        ScrollDirection::PageDown => (0., 1.),
+                        ScrollDirection::PageUp => (0., -1.),
+                    };
+                    self.document.scroll(lines, pages, cx);
+                }
+                Movement::Edge(end) => self.document.scroll_edge(end, cx),
+            }
+            return;
+        }
+        self.document
+            .as_markdown_mut()
+            .expect("Markdown variant checked")
+            .movements
+            .push_back(MovementIntent {
+                generation,
+                order,
+                movement,
+            });
         self.settle_position(cx);
         self.apply_movements_after_layout(cx);
     }
 
     pub(super) fn settle_position(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.document, DocumentView::Pdf { .. }) {
+            if let Some(request) = self.app.position_request().cloned() {
+                self.document.scroll_edge(false, cx);
+                self.app.acknowledge_position(&request);
+                self.lua_position_completed(&request, None);
+            }
+            return;
+        }
         if let Some(request) = self.app.position_request().cloned() {
-            let text = self.document.text.clone();
+            let text = self
+                .document
+                .as_markdown_mut()
+                .expect("Markdown variant checked")
+                .text
+                .clone();
             self.apply_position_after_layout(&request, &text, cx);
         }
         // Do not consume movement while preparing a new document operation.
@@ -397,30 +584,59 @@ impl Viewer {
     /// Accepted movement is a UI position intent, not a read. Keep it behind
     /// Top/Distance/Heading until that generation's layout can consume it once.
     fn apply_movements_after_layout(&mut self, cx: &mut Context<Self>) {
+        if self.document.as_markdown().is_none() {
+            return;
+        }
         let Some(document) = self.app.document() else {
             return;
         };
         let generation = document.generation;
         self.document
+            .as_markdown_mut()
+            .expect("Markdown variant checked")
             .movements
             .retain(|intent| intent.generation == generation);
-        if self.document.movements.is_empty()
+        if self
+            .document
+            .as_markdown_mut()
+            .expect("Markdown variant checked")
+            .movements
+            .is_empty()
             || self.app.position_request().is_some()
             || self.document.normalization_pending()
             || self.read_orders.values().any(|(order, line)| {
                 *line
                     && self
                         .document
+                        .as_markdown_mut()
+                        .expect("Markdown variant checked")
                         .movements
                         .front()
                         .is_some_and(|intent| intent.order > *order)
             })
-            || self.document.text.read(cx).rendered_text().source() != document.source.as_str()
-            || !self.document.layout_ready(cx)
+            || Some(
+                self.document
+                    .as_markdown_mut()
+                    .expect("Markdown variant checked")
+                    .text
+                    .read(cx)
+                    .rendered_text()
+                    .source(),
+            ) != document.markdown_source().map(|source| source.as_str())
+            || !self
+                .document
+                .as_markdown()
+                .is_some_and(|view| view.layout_ready(cx))
         {
             return;
         }
-        while let Some(intent) = self.document.movements.pop_front() {
+        while let Some(intent) = self
+            .document
+            .as_markdown_mut()
+            .expect("Markdown variant checked")
+            .movements
+            .pop_front()
+        {
             match intent.movement {
                 Movement::Scroll(direction) => {
                     let (lines, pages) = match direction {
@@ -455,11 +671,20 @@ impl Viewer {
         text: &Entity<TextViewState>,
         cx: &mut Context<Self>,
     ) {
+        if self.document.as_markdown().is_none() {
+            return;
+        }
         if self.app.position_request() != Some(request)
-            || self.document.text != *text
+            || self
+                .document
+                .as_markdown_mut()
+                .expect("Markdown variant checked")
+                .text
+                != *text
             || !self.app.document().is_some_and(|doc| {
                 doc.generation == request.generation
-                    && text.read(cx).rendered_text().source() == doc.source.as_str()
+                    && Some(text.read(cx).rendered_text().source())
+                        == doc.markdown_source().map(|source| source.as_str())
             })
         {
             return;
@@ -471,7 +696,10 @@ impl Viewer {
         {
             if matches!(request.target, PositionTarget::SourceLine(_)) {
                 self.document.cancel_source_reveal();
-                self.document.source_reveal = Some(SourceReveal {
+                self.document
+                    .as_markdown_mut()
+                    .expect("Markdown variant checked")
+                    .source_reveal = Some(SourceReveal {
                     request: request.clone(),
                     text: text.clone(),
                     handle: None,
@@ -497,20 +725,36 @@ impl Viewer {
         // An empty document needs only a positive viewport from this layout.
         if self.document.normalization_pending()
             || (!matches!(request.target, PositionTarget::SourceLine(_))
-                && !self.document.layout_ready(cx))
+                && !self
+                    .document
+                    .as_markdown()
+                    .is_some_and(|view| view.layout_ready(cx)))
         {
             return;
         }
         let list = text.read(cx).list_state();
-        if let Some((revealed, layout)) = &self.document.heading_reveal
+        if let Some((revealed, layout)) = &self
+            .document
+            .as_markdown_mut()
+            .expect("Markdown variant checked")
+            .heading_reveal
             && revealed == request
         {
             // TextView performs nested line reveals in its next layout. Do not
             // save an enclosing block's temporary offset as a departure distance.
-            if *layout == self.document.layout_serial {
+            if *layout
+                == self
+                    .document
+                    .as_markdown_mut()
+                    .expect("Markdown variant checked")
+                    .layout_serial
+            {
                 return;
             }
-            self.document.heading_reveal = None;
+            self.document
+                .as_markdown_mut()
+                .expect("Markdown variant checked")
+                .heading_reveal = None;
             self.app.acknowledge_position(request);
             self.lua_position_completed(request, None);
             cx.notify();
@@ -528,6 +772,8 @@ impl Viewer {
             PositionTarget::SourceLine(line) => {
                 if self
                     .document
+                    .as_markdown_mut()
+                    .expect("Markdown variant checked")
                     .source_reveal
                     .as_ref()
                     .is_some_and(|active| active.request == *request && active.text == *text)
@@ -536,16 +782,27 @@ impl Viewer {
                 }
                 let previous_handle = self
                     .document
+                    .as_markdown_mut()
+                    .expect("Markdown variant checked")
                     .source_reveal
                     .as_ref()
                     .and_then(|active| active.handle.clone());
-                self.document.source_reveal = Some(SourceReveal {
+                self.document
+                    .as_markdown_mut()
+                    .expect("Markdown variant checked")
+                    .source_reveal = Some(SourceReveal {
                     request: request.clone(),
                     text: text.clone(),
                     handle: None,
                     _waiter: None,
                 });
-                let analysis = self.document.analysis.as_ref().expect("current analysis");
+                let analysis = self
+                    .document
+                    .as_markdown_mut()
+                    .expect("Markdown variant checked")
+                    .analysis
+                    .as_ref()
+                    .expect("current analysis");
                 use super::source_line_mapping::{MappedLineTarget, map_source_line};
                 let mapped = match map_source_line(
                     &analysis.source_lines,
@@ -599,7 +856,13 @@ impl Viewer {
                     state.request_line_reveal(mapped.snapshot(), target, cx)
                 });
                 let id = handle.id();
-                self.document.source_reveal.as_mut().unwrap().handle = Some(handle.clone());
+                self.document
+                    .as_markdown_mut()
+                    .expect("Markdown variant checked")
+                    .source_reveal
+                    .as_mut()
+                    .unwrap()
+                    .handle = Some(handle.clone());
                 let status = handle.status();
                 if status != TextRevealStatus::Pending {
                     self.finish_source_reveal(
@@ -624,13 +887,21 @@ impl Viewer {
                             );
                         });
                     });
-                    self.document.source_reveal.as_mut().unwrap()._waiter = Some(waiter);
+                    self.document
+                        .as_markdown_mut()
+                        .expect("Markdown variant checked")
+                        .source_reveal
+                        .as_mut()
+                        .unwrap()
+                        ._waiter = Some(waiter);
                 }
                 return;
             }
             PositionTarget::Heading(id) => {
                 if let Some(heading) = self
                     .document
+                    .as_markdown_mut()
+                    .expect("Markdown variant checked")
                     .analysis
                     .as_ref()
                     .and_then(|analysis| analysis.headings.get(id))
@@ -658,8 +929,8 @@ impl Viewer {
                             cx.notify();
                             return;
                         }
-                        self.document.heading_reveal =
-                            Some((request.clone(), self.document.layout_serial));
+                        let markdown = self.document.as_markdown_mut().expect("Markdown variant checked");
+                        markdown.heading_reveal = Some((request.clone(), markdown.layout_serial));
                         cx.notify();
                         return;
                     }
@@ -689,41 +960,74 @@ impl Viewer {
         outcome: SourceLineOutcome,
         cx: &mut Context<Self>,
     ) {
+        if self.document.as_markdown().is_none() {
+            return;
+        }
         if matches!(
             outcome,
             SourceLineOutcome::Reveal(TextRevealStatus::Pending)
         ) || self.app.position_request() != Some(request)
-            || self.document.text != *text
+            || self
+                .document
+                .as_markdown_mut()
+                .expect("Markdown variant checked")
+                .text
+                != *text
             || !self
                 .app
                 .document()
                 .is_some_and(|doc| doc.generation == request.generation)
-            || !self.document.source_reveal.as_ref().is_some_and(|active| {
-                active.request == *request
-                    && active.text == *text
-                    && active.handle.as_ref().map(TextRevealHandle::id) == id
-            })
+            || !self
+                .document
+                .as_markdown_mut()
+                .expect("Markdown variant checked")
+                .source_reveal
+                .as_ref()
+                .is_some_and(|active| {
+                    active.request == *request
+                        && active.text == *text
+                        && active.handle.as_ref().map(TextRevealHandle::id) == id
+                })
         {
             return;
         }
-        self.document.source_outcome = Some(outcome);
-        self.document.source_reveal = None;
+        self.document
+            .as_markdown_mut()
+            .expect("Markdown variant checked")
+            .source_outcome = Some(outcome);
+        self.document
+            .as_markdown_mut()
+            .expect("Markdown variant checked")
+            .source_reveal = None;
         self.app.acknowledge_position(request);
         self.apply_movements_after_layout(cx);
         cx.notify();
     }
 
     pub(super) fn accept_rendered_text(&mut self, generation: Generation, cx: &mut Context<Self>) {
-        let snapshot = self.document.text.read(cx).rendered_text();
+        if self.document.as_markdown().is_none() {
+            return;
+        }
+        let snapshot = self
+            .document
+            .as_markdown_mut()
+            .expect("Markdown variant checked")
+            .text
+            .read(cx)
+            .rendered_text();
         let Some(document) = self.app.document() else {
             return;
         };
-        if document.generation != generation || snapshot.source() != document.source.as_str() {
+        if document.generation != generation
+            || Some(snapshot.source()) != document.markdown_source().map(|source| source.as_str())
+        {
             return;
         }
         let discovered = std::mem::take(
             &mut *self
                 .document
+                .as_markdown_mut()
+                .expect("Markdown variant checked")
                 .discovered_diagrams
                 .lock()
                 .expect("diagram inbox"),
@@ -742,19 +1046,55 @@ impl Viewer {
         window_width: Pixels,
         cx: &mut Context<Self>,
     ) -> Div {
+        if let DocumentView::Pdf { view, .. } = &self.document {
+            let view = view.clone();
+            return input::bind_body_actions(div(), cx)
+                .debug_selector(|| "document-body".to_owned())
+                .key_context(
+                    if self.normal_keys_enabled() {
+                        "EvaluationNormal EvaluationPdfNormal"
+                    } else {
+                        "EvaluationEditing"
+                    },
+                )
+                .track_focus(&self.body_focus)
+                .flex_1()
+                .min_w(px(super::pane::BODY_MIN_WIDTH))
+                .min_h_0()
+                .relative()
+                .flex()
+                .child(view);
+        }
         if self
             .document
+            .as_markdown_mut()
+            .expect("Markdown variant checked")
             .pane_width
             .is_some_and(|width| width != window_width)
             && self.app.position_request().is_none()
             && !self.document.normalization_pending()
         {
             let distance = self.document.distance(cx);
-            self.document.resize_distance.get_or_insert(distance);
+            self.document
+                .as_markdown_mut()
+                .expect("Markdown variant checked")
+                .resize_distance
+                .get_or_insert(distance);
         }
-        self.document.pane_width = Some(window_width);
+        self.document
+            .as_markdown_mut()
+            .expect("Markdown variant checked")
+            .pane_width = Some(window_width);
         let ready = self.app.document().is_some_and(|doc| {
-            self.document.text.read(cx).rendered_text().source() == doc.source.as_str()
+            Some(
+                self.document
+                    .as_markdown_mut()
+                    .expect("Markdown variant checked")
+                    .text
+                    .read(cx)
+                    .rendered_text()
+                    .source(),
+            ) == doc.markdown_source().map(|source| source.as_str())
         });
         // The child installs extensions during render. Only then hand it the source,
         // and read synchronous results here as well as asynchronous notifications.
@@ -766,21 +1106,43 @@ impl Viewer {
                         .app
                         .document()
                         .filter(|doc| doc.generation == generation)
+                        && let Some(source) = document.markdown_source()
                     {
                         this.document
+                            .as_markdown_mut()
+                            .expect("Markdown variant checked")
                             .text
-                            .update(cx, |text, cx| text.set_text(&document.source, cx));
+                            .update(cx, |text, cx| text.set_text(source, cx));
                         this.accept_rendered_text(generation, cx);
                     }
                 });
             });
         }
         let position = self.app.position_request().cloned();
-        let normalization = self.document.normalization.clone();
-        let text = self.document.text.clone();
+        let normalization = self
+            .document
+            .as_markdown_mut()
+            .expect("Markdown variant checked")
+            .normalization
+            .clone();
+        let text = self
+            .document
+            .as_markdown_mut()
+            .expect("Markdown variant checked")
+            .text
+            .clone();
         let layout_view = cx.entity().downgrade();
-        let first_paint = self.document.first_paint.clone();
-        let started = self.document.started;
+        let first_paint = self
+            .document
+            .as_markdown_mut()
+            .expect("Markdown variant checked")
+            .first_paint
+            .clone();
+        let started = self
+            .document
+            .as_markdown_mut()
+            .expect("Markdown variant checked")
+            .started;
         let weak = cx.entity().downgrade();
         // Bound the conversion by the actual viewport before converting f64 to f32.
         let max_width = self
@@ -822,32 +1184,46 @@ impl Viewer {
                     .size_full()
                     .max_w(px(max_width))
                     .child(
-                        TextView::new(&self.document.text)
-                            .style(style)
-                            .plugin(MermaidPlugin {
-                                discovered: self.document.discovered_diagrams.clone(),
-                                images: self.document.diagram_images.clone(),
-                            })
-                            .scrollable(true)
-                            .size_full()
-                            .max_w(px(max_width))
-                            .image_source(move |uri| match resolve_image(&path, uri.as_ref()) {
-                                Ok(ImageLocation::File(path)) => path.into(),
-                                Ok(ImageLocation::Url(url)) => {
-                                    ImageSource::from(SharedUri::from(url))
-                                }
-                                Err(error) => {
-                                    eprintln!("image {uri}: {error}");
-                                    // Keep failed/unsupported resources failed; never read them as local paths.
-                                    ImageSource::from(uri.clone())
-                                }
-                            })
-                            .on_link_click(move |url, event, window, cx| {
-                                if event.is_right_click() {
-                                    return;
-                                }
-                                let _ = weak.update(cx, |this, cx| this.open_link(url, window, cx));
-                            }),
+                        TextView::new(
+                            &self
+                                .document
+                                .as_markdown_mut()
+                                .expect("Markdown variant checked")
+                                .text,
+                        )
+                        .style(style)
+                        .plugin(MermaidPlugin {
+                            discovered: self
+                                .document
+                                .as_markdown_mut()
+                                .expect("Markdown variant checked")
+                                .discovered_diagrams
+                                .clone(),
+                            images: self
+                                .document
+                                .as_markdown_mut()
+                                .expect("Markdown variant checked")
+                                .diagram_images
+                                .clone(),
+                        })
+                        .scrollable(true)
+                        .size_full()
+                        .max_w(px(max_width))
+                        .image_source(move |uri| match resolve_image(&path, uri.as_ref()) {
+                            Ok(ImageLocation::File(path)) => path.into(),
+                            Ok(ImageLocation::Url(url)) => ImageSource::from(SharedUri::from(url)),
+                            Err(error) => {
+                                eprintln!("image {uri}: {error}");
+                                // Keep failed/unsupported resources failed; never read them as local paths.
+                                ImageSource::from(uri.clone())
+                            }
+                        })
+                        .on_link_click(move |url, event, window, cx| {
+                            if event.is_right_click() {
+                                return;
+                            }
+                            let _ = weak.update(cx, |this, cx| this.open_link(url, window, cx));
+                        }),
                     )
                     .context_menu(|menu, window, cx| {
                         // Snapshot before the popup takes focus or its click clears selection.
@@ -882,18 +1258,46 @@ impl Viewer {
                             let normalization = normalization.clone();
                             cx.defer(move |cx| {
                                 let _ = view.update(cx, |this, cx| {
-                                    if this.document.text != text {
+                                    if this.document.as_markdown().is_none() {
                                         return;
                                     }
-                                    this.document.layout_serial += 1;
-                                    if normalization.is_some()
-                                        && this.document.normalization == normalization
+                                    if this
+                                        .document
+                                        .as_markdown_mut()
+                                        .expect("Markdown variant checked")
+                                        .text
+                                        != text
                                     {
-                                        this.document.normalization = None;
+                                        return;
+                                    }
+                                    this.document
+                                        .as_markdown_mut()
+                                        .expect("Markdown variant checked")
+                                        .layout_serial += 1;
+                                    if normalization.is_some()
+                                        && this
+                                            .document
+                                            .as_markdown_mut()
+                                            .expect("Markdown variant checked")
+                                            .normalization
+                                            == normalization
+                                    {
+                                        this.document
+                                            .as_markdown_mut()
+                                            .expect("Markdown variant checked")
+                                            .normalization = None;
                                         cx.notify();
                                     }
-                                    if this.document.layout_ready(cx)
-                                        && let Some(distance) = this.document.resize_distance.take()
+                                    if this
+                                        .document
+                                        .as_markdown()
+                                        .is_some_and(|view| view.layout_ready(cx))
+                                        && let Some(distance) = this
+                                            .document
+                                            .as_markdown_mut()
+                                            .expect("Markdown variant checked")
+                                            .resize_distance
+                                            .take()
                                     {
                                         text.read(cx).list_state().set_offset_from_scrollbar(
                                             point(px(0.), -px(distance.max(0.))),

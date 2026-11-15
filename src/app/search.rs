@@ -10,6 +10,15 @@ pub enum SearchOutcome {
     NoPreviousQuery,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnsupportedSearch;
+
+impl UnsupportedSearch {
+    pub fn message(self) -> &'static str {
+        "Search is not supported for PDF yet"
+    }
+}
+
 #[derive(Default)]
 pub(super) struct SearchState {
     confirmed_query: String,
@@ -27,6 +36,13 @@ impl SearchState {
         self.rendered = None;
         self.matches.clear();
         self.current_match = None;
+    }
+
+    pub fn end_unsupported(&mut self) {
+        self.previous_match = None;
+        self.highlights_hidden = self.previous_highlights_hidden;
+        self.set_query(self.confirmed_query.clone());
+        self.replace_document();
     }
 
     pub fn begin_search(&mut self, generation: Option<Generation>) {

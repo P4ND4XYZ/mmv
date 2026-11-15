@@ -1,5 +1,339 @@
 use super::*;
 
+/// Models an already-prepared app state only; no production preparation bypass.
+fn prepared_pdf(app: &mut App, request: ReadRequest, key: &str) -> ReadCompletion {
+    let request = if request.phase == ReadPhase::Resolve {
+        let ReadResolution::Continue(load) = resolve(app, request, key) else {
+            panic!("load")
+        };
+        load
+    } else {
+        request
+    };
+    app.complete_at(
+        ReadResult {
+            request,
+            content: Ok(LoadedDocument {
+                key: DocumentKey(key.into()),
+                content: document::DocumentContent::Pdf {
+                    bytes: std::sync::Arc::new(vec![0xff]),
+                },
+            }),
+        },
+        240.,
+    )
+    .unwrap()
+}
+
+#[test]
+fn pdf_open_entrypoints_resolve_and_same_open_is_a_state_preserving_noop() {
+    for operation in [
+        DocumentOperation::Initial("a.PDF".into()),
+        DocumentOperation::Open("a.PDF".into()),
+        DocumentOperation::ExternalOpen {
+            path: "a.PDF".into(),
+            line: None,
+        },
+        DocumentOperation::TreeOpen {
+            path: "a.PDF".into(),
+            root: "root".into(),
+        },
+    ] {
+        let mut app = App::default();
+        let request = pending(app.operate(operation.clone(), OperationOrigin::Link, 0., None));
+        assert_eq!(request.phase, ReadPhase::Resolve);
+        prepared_pdf(&mut app, request, "canonical-pdf");
+        let generation = app.document().unwrap().generation;
+        let history = app.history.entries.clone();
+        let position = app.position_request().cloned();
+        let same = pending(app.operate(operation, OperationOrigin::Link, 0., None));
+        let ReadResolution::Complete(done) = resolve(&mut app, same, "canonical-pdf") else {
+            panic!("noop")
+        };
+        assert_eq!(done.outcome, Ok(()));
+        assert!(!done.adopted);
+        assert_eq!(app.document().unwrap().generation, generation);
+        assert_eq!(app.history.entries, history);
+        assert_eq!(app.position_request(), position.as_ref());
+        assert!(app.watch_target().is_none());
+        assert!(matches!(
+            app.operate(
+                DocumentOperation::Reload,
+                OperationOrigin::Keyboard,
+                0.,
+                None
+            ),
+            OperationResult::Complete {
+                outcome: Ok(()),
+                ..
+            }
+        ));
+    }
+}
+
+#[test]
+fn pdf_line_rejected_before_noop_and_resolve_failures_preserve_state() {
+    let mut app = App::default();
+    let request = app.open("a.pdf".into());
+    prepared_pdf(&mut app, request, "pdf");
+    let position = app.position_request().cloned();
+    let history = app.history.entries.clone();
+    let generation = app.document().unwrap().generation;
+    for key in [Ok(DocumentKey("pdf".into())), Err("missing".into())] {
+        let request = external_open(&mut app, "a.pdf", Some(3));
+        let ReadResolution::Complete(done) = app.resolve_at(request.clone(), key, 900.).unwrap()
+        else {
+            panic!("error")
+        };
+        assert!(done.outcome.is_err());
+        assert!(!done.adopted);
+        assert!(
+            app.resolve_at(request, Ok(DocumentKey("pdf".into())), 0.)
+                .is_none()
+        );
+    }
+    assert_eq!(app.document().unwrap().generation, generation);
+    assert_eq!(app.position_request(), position.as_ref());
+    assert_eq!(app.history.entries, history);
+}
+
+#[test]
+fn internal_finish_is_exactly_once_noncurrent_no_response_and_phase_guarded() {
+    let mut app = loaded();
+    let old = read(&mut app, DocumentOperation::Open("old.pdf".into()));
+    assert!(!app.finish_internal(&old));
+    let latest = read(&mut app, DocumentOperation::Open("new.md".into()));
+    assert_eq!(latest.phase, ReadPhase::Resolve);
+    assert!(!app.is_loading());
+    let ReadResolution::Continue(latest) = resolve(&mut app, latest, "new") else {
+        panic!("latest load");
+    };
+    let generation = app.document().unwrap().generation;
+    let mode = app.mode.clone();
+    let error = app.error().map(str::to_owned);
+    let position = app.position_request().cloned();
+    let history = app.history.entries.clone();
+    let mut altered = old.clone();
+    altered.path = "tampered.pdf".into();
+    assert!(!app.finish_internal(&altered));
+    let ReadResolution::Continue(load) = resolve(&mut app, old.clone(), "old") else {
+        panic!("load")
+    };
+    assert_eq!(load.id, old.id);
+    assert!(!app.finish_internal(&old));
+    assert!(app.finish_internal(&load));
+    assert!(!app.finish_internal(&load));
+    assert!(!app.pending_operations.contains_key(&load.id));
+    assert!(app.pending_operations.contains_key(&latest.id));
+    assert!(!app.finish_internal(&latest));
+    assert_eq!(app.document().unwrap().generation, generation);
+    assert_eq!(app.mode, mode);
+    assert_eq!(app.error(), error.as_deref());
+    assert_eq!(app.position_request(), position.as_ref());
+    assert_eq!(app.history.entries, history);
+    assert!(app.is_loading());
+    finish(&mut app, latest, "new", 0.);
+    let external = pending(app.operate(
+        DocumentOperation::Open("external.pdf".into()),
+        OperationOrigin::External,
+        0.,
+        Some(ExternalRequestId("reply".into())),
+    ));
+    let current = read(&mut app, DocumentOperation::Open("current.md".into()));
+    assert!(!app.finish_internal(&external));
+    let ReadResolution::Continue(load) = resolve(&mut app, external, "external") else {
+        panic!("load")
+    };
+    let done = fail(&mut app, load);
+    assert_eq!(done.response_to, Some(ExternalRequestId("reply".into())));
+    assert!(!done.current);
+    assert!(done.outcome.is_err());
+    finish(&mut app, current, "current", 0.);
+}
+
+#[test]
+fn pdf_search_preserves_a_or_draft_b_and_rejects_stale_rendering() {
+    for confirm_on_pdf in [false, true] {
+        let mut app = loaded();
+        let old_generation = app.document().unwrap().generation;
+        app.rendered(old_generation, "A B A");
+        app.begin_document_search().unwrap();
+        app.confirm_document_search("A".into(), 0).unwrap();
+        app.begin_document_search().unwrap();
+        app.preview_search("B".into());
+        let request = app.open("a.pdf".into());
+        prepared_pdf(&mut app, request, "pdf");
+        assert_eq!(app.mode, Mode::Search);
+        assert!(app.matches().is_empty());
+        assert!(!app.rendered(old_generation, "A B A"));
+        let pdf_generation = app.document().unwrap().generation;
+        assert!(!app.rendered(pdf_generation, "A B A"));
+        if confirm_on_pdf {
+            assert_eq!(
+                app.confirm_document_search("B".into(), 0),
+                Err(UnsupportedSearch)
+            );
+            assert_eq!(app.mode, Mode::Normal);
+            assert_eq!(app.begin_document_search(), Err(UnsupportedSearch));
+            assert_eq!(app.step_document_match(true), Err(UnsupportedSearch));
+        }
+        let request = app.open("new.md".into());
+        finish(&mut app, request, "new", 0.);
+        app.rendered(app.document().unwrap().generation, "A B A");
+        assert_eq!(
+            app.matches(),
+            if confirm_on_pdf {
+                vec![0..1, 4..5]
+            } else {
+                vec![2..3]
+            }
+        );
+    }
+}
+
+#[test]
+fn pdf_phase_guards_and_reverse_completions_keep_real_external_outcomes() {
+    for latest_succeeds in [false, true] {
+        for old_succeeds in [false, true] {
+            let mut app = loaded();
+            let original = app.document().unwrap().generation;
+            let old = pending(app.operate(
+                DocumentOperation::Open("old.pdf".into()),
+                OperationOrigin::External,
+                0.,
+                Some(ExternalRequestId("old".into())),
+            ));
+            assert!(
+                app.complete_at(
+                    ReadResult {
+                        request: old.clone(),
+                        content: Err("wrong phase".into())
+                    },
+                    0.
+                )
+                .is_none()
+            );
+            let latest = pending(app.operate(
+                DocumentOperation::Open("latest.PDF".into()),
+                OperationOrigin::External,
+                0.,
+                Some(ExternalRequestId("latest".into())),
+            ));
+            let ReadResolution::Continue(old_load) = resolve(&mut app, old.clone(), "old-pdf")
+            else {
+                panic!("old load")
+            };
+            assert!(
+                app.resolve_at(old, Ok(DocumentKey("old-pdf".into())), 0.)
+                    .is_none()
+            );
+            let ReadResolution::Continue(latest_load) = resolve(&mut app, latest, "latest-pdf")
+            else {
+                panic!("latest load")
+            };
+            let mut altered = old_load.clone();
+            altered.path = "tampered.pdf".into();
+            assert!(
+                app.complete_at(
+                    ReadResult {
+                        request: altered,
+                        content: Err("tampered".into())
+                    },
+                    0.
+                )
+                .is_none()
+            );
+            let latest_done = if latest_succeeds {
+                prepared_pdf(&mut app, latest_load, "latest-pdf")
+            } else {
+                fail(&mut app, latest_load)
+            };
+            assert_eq!(
+                latest_done.response_to,
+                Some(ExternalRequestId("latest".into()))
+            );
+            assert_eq!(latest_done.outcome.is_ok(), latest_succeeds);
+            let generation = app.document().unwrap().generation;
+            let position = app.position_request().cloned();
+            let history = app.history.entries.clone();
+            let error = app.error().map(str::to_owned);
+            let old_done = if old_succeeds {
+                prepared_pdf(&mut app, old_load.clone(), "old-pdf")
+            } else {
+                fail(&mut app, old_load.clone())
+            };
+            assert_eq!(old_done.response_to, Some(ExternalRequestId("old".into())));
+            assert_eq!(old_done.outcome.is_ok(), old_succeeds);
+            assert!(!old_done.current);
+            assert!(!old_done.adopted);
+            assert_eq!(app.document().unwrap().generation, generation);
+            assert_eq!(app.position_request(), position.as_ref());
+            assert_eq!(app.history.entries, history);
+            assert_eq!(app.error(), error.as_deref());
+            if !latest_succeeds {
+                assert_eq!(generation, original);
+            }
+            assert!(
+                app.complete_at(
+                    ReadResult {
+                        request: old_load,
+                        content: Err("duplicate".into())
+                    },
+                    0.
+                )
+                .is_none()
+            );
+        }
+    }
+}
+
+#[test]
+fn pdf_search_without_a_does_not_commit_b_and_command_keeps_nohl() {
+    let mut app = loaded();
+    app.begin_document_search().unwrap();
+    app.preview_search("B".into());
+    let request = app.open("a.pdf".into());
+    prepared_pdf(&mut app, request, "pdf");
+    assert_eq!(
+        app.confirm_document_search("B".into(), 0),
+        Err(UnsupportedSearch)
+    );
+    let request = app.open("return.md".into());
+    finish(&mut app, request, "return", 0.);
+    app.rendered(app.document().unwrap().generation, "B");
+    assert!(app.matches().is_empty());
+
+    app.begin_document_search().unwrap();
+    app.confirm_document_search("A".into(), 0).unwrap();
+    app.clear_search_highlights();
+    app.begin_command();
+    let request = app.open("a.pdf".into());
+    prepared_pdf(&mut app, request, "pdf");
+    assert_eq!(app.mode, Mode::Command);
+    assert!(!app.highlights_visible());
+    assert!(app.matches().is_empty());
+    let request = app.open("another.md".into());
+    finish(&mut app, request, "another", 0.);
+    app.rendered(app.document().unwrap().generation, "A A");
+    assert_eq!(app.mode, Mode::Command);
+    assert!(!app.highlights_visible());
+    assert_eq!(app.matches(), &[0..1, 2..3]);
+}
+
+#[test]
+fn pdf_history_returns_to_top_not_saved_distance() {
+    let mut app = loaded();
+    let request = app.open("a.pdf".into());
+    prepared_pdf(&mut app, request, "pdf");
+    let request = app.open("next.md".into());
+    finish(&mut app, request, "next", 800.);
+    let back = read(&mut app, DocumentOperation::Back);
+    prepared_pdf(&mut app, back, "pdf");
+    assert_eq!(target(&app), PositionTarget::Top);
+    assert_eq!(app.history.current, Some(1));
+    assert!(app.watch_target().is_none());
+}
+
 #[test]
 fn tree_open_same_key_is_noop_and_supersedes_older_reads() {
     let mut app = loaded();
@@ -131,7 +465,7 @@ fn saves_during_read_collapse_to_one_trailing_reload_even_after_failure() {
         let request = app.watch_changed(&a).unwrap();
         assert_eq!(request.origin, OperationOrigin::Automatic);
         assert_eq!(
-            app.document().unwrap().source.as_str(),
+            app.document().unwrap().markdown_source().unwrap().as_str(),
             "target edit target"
         );
         assert!(app.watch_changed(&a).is_none());
@@ -180,8 +514,9 @@ fn same_external_identity_keeps_body_search_history_watch_and_input_without_read
     app.preview_search("edit".into());
     let generation = app.document().unwrap().generation;
     app.rendered(generation, "target edit target");
-    let source = app.document().unwrap().source.clone();
+    let source = app.document().unwrap().markdown_source().unwrap().clone();
     let history = app.history.entries.clone();
+
     let watch = app.watch_target().cloned();
     let old_position = app.position_request().cloned();
     let request = external_open(&mut app, "alias.md", None);
@@ -195,8 +530,9 @@ fn same_external_identity_keeps_body_search_history_watch_and_input_without_read
     assert_eq!(app.position_request(), old_position.as_ref());
     assert!(std::sync::Arc::ptr_eq(
         &source,
-        &app.document().unwrap().source
+        app.document().unwrap().markdown_source().unwrap()
     ));
+
     assert_eq!(app.document().unwrap().generation, generation);
     assert_eq!(app.history.entries, history);
     assert_eq!(app.watch_target(), watch.as_ref());
@@ -258,10 +594,10 @@ fn newer_same_key_body_read_rejects_older_reload_success_and_failure_but_complet
         assert!(
             app.complete(ReadResult {
                 request: link,
-                content: Ok(LoadedDocument {
-                    key: DocumentKey("canonical-a".into()),
-                    source: "newer-link-body".into()
-                })
+                content: Ok(LoadedDocument::markdown(
+                    DocumentKey("canonical-a".into()),
+                    "newer-link-body".into()
+                ))
             })
             .unwrap()
             .adopted
@@ -273,10 +609,10 @@ fn newer_same_key_body_read_rejects_older_reload_success_and_failure_but_complet
             .complete(ReadResult {
                 request: reload.clone(),
                 content: if succeeds {
-                    Ok(LoadedDocument {
-                        key: DocumentKey("canonical-a".into()),
-                        source: "older-reload-body".into(),
-                    })
+                    Ok(LoadedDocument::markdown(
+                        DocumentKey("canonical-a".into()),
+                        "older-reload-body".into(),
+                    ))
                 } else {
                     Err("older reload failed".into())
                 },
@@ -289,8 +625,12 @@ fn newer_same_key_body_read_rejects_older_reload_success_and_failure_but_complet
             Some(ExternalRequestId("old-reload".into()))
         );
         assert_eq!(completion.outcome.is_ok(), succeeds);
-        assert_eq!(app.document().unwrap().source.as_str(), "newer-link-body");
+        assert_eq!(
+            app.document().unwrap().markdown_source().unwrap().as_str(),
+            "newer-link-body"
+        );
         assert_eq!(app.document().unwrap().generation, generation);
+
         assert_eq!(app.position_request(), position.as_ref());
         assert_eq!(app.history.entries, history);
         assert!(app.error().is_none());
@@ -421,14 +761,23 @@ fn pending(result: OperationResult) -> ReadRequest {
     }
 }
 
-fn finish(app: &mut App, request: ReadRequest, key: &str, distance: f32) -> ReadCompletion {
+fn finish(app: &mut App, mut request: ReadRequest, key: &str, distance: f32) -> ReadCompletion {
+    if request.phase == ReadPhase::Resolve {
+        match app
+            .resolve_at(request.clone(), Ok(DocumentKey(key.into())), distance)
+            .unwrap()
+        {
+            ReadResolution::Continue(load) => request = load,
+            ReadResolution::Complete(completion) => return completion,
+        }
+    }
     app.complete_at(
         ReadResult {
             request,
-            content: Ok(LoadedDocument {
-                key: DocumentKey(key.into()),
-                source: "target edit target".into(),
-            }),
+            content: Ok(LoadedDocument::markdown(
+                DocumentKey(key.into()),
+                "target edit target".into(),
+            )),
         },
         distance,
     )
@@ -447,6 +796,15 @@ fn target(app: &App) -> PositionTarget {
 }
 
 fn fail(app: &mut App, request: ReadRequest) -> ReadCompletion {
+    if request.phase == ReadPhase::Resolve {
+        let ReadResolution::Complete(completion) = app
+            .resolve_at(request, Err("missing".into()), 999.)
+            .unwrap()
+        else {
+            panic!("failed resolve")
+        };
+        return completion;
+    }
     app.complete_at(
         ReadResult {
             request,
@@ -477,10 +835,15 @@ fn unavailable_operations_preserve_state_and_pending_reads_and_return_external_i
             else {
                 panic!("pending load");
             };
-            let document = app
-                .document()
-                .map(|doc| (doc.generation, doc.path.clone(), doc.source.clone()));
+            let document = app.document().map(|doc| {
+                (
+                    doc.generation,
+                    doc.path.clone(),
+                    doc.markdown_source().unwrap().clone(),
+                )
+            });
             let history = app.history.entries.clone();
+
             let current = app.history.current;
             let position = app.position_request().cloned();
             let mut cases = vec![
@@ -515,7 +878,7 @@ fn unavailable_operations_preserve_state_and_pending_reads_and_return_external_i
                     app.document().map(|doc| (
                         doc.generation,
                         doc.path.clone(),
-                        doc.source.clone()
+                        doc.markdown_source().unwrap().clone()
                     )),
                     document
                 );
@@ -791,7 +1154,7 @@ fn failed_and_stale_heading_reads_preserve_document_history_and_pending_position
     assert_eq!(app.position_request(), position.as_ref());
     assert_eq!(app.document().unwrap().path, PathBuf::from("a.md"));
     assert_eq!(
-        app.document().unwrap().source.as_str(),
+        app.document().unwrap().markdown_source().unwrap().as_str(),
         "target edit target"
     );
     assert_eq!(app.error(), Some("missing"));
