@@ -50,6 +50,21 @@ class CliTests(unittest.TestCase):
             check=False,
         )
 
+    def test_git_checkout_filters_preserve_exact_upstream_license(self):
+        # Use real Git conversion and working-tree attributes, without changing the index/files.
+        result = subprocess.run(
+            ["git", "-c", "core.autocrlf=true", "cat-file", "--filters",
+             "HEAD:tests/fixtures/pdf/OFL.txt"],
+            cwd=generator.ROOT, capture_output=True, timeout=10, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(result.stdout), 4388)
+        self.assertEqual(
+            generator.sha(result.stdout),
+            "1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9",
+        )
+        self.assertEqual(result.stdout, (generator.SOURCE / "OFL.txt").read_bytes())
+
     def test_help_and_missing_argument_exit_contract(self):
         for script in ("generate_pdf_fixtures.py", "check_pdf_fixtures.py"):
             with self.subTest(script=script):

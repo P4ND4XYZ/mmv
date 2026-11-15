@@ -1,0 +1,2 @@
+# Preserve the exact upstream license bytes required by the fixture identity check.
+/tests/fixtures/pdf/OFL.txt -text

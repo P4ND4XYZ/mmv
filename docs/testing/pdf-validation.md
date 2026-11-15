@@ -41,7 +41,11 @@ python scripts/test_pdf_fixtures.py -v
 
 日本語の構造検査では全使用文字のUnicode cmapが非0 glyphに対応し、CID=元glyph ID、明示幅とToUnicode、フォント全体のSHA256を確認します。**これだけでは見た目の正しさを証明しません**。独立したWindows PDF解析・オフスクリーン描画で日本語の欠字・崩れ、画像色・枠・クリッピングを別途確認し、使用API・OS・対象hash・結果を記録してください。実アプリでの描画はT6で再確認します。
 
-## T5の描画確認と成果物\n\n準備環境はPython 3.12.0 / zlib 1.2.13 / Windows NT 10.0.26300.0です。Windows.Data.Pdf.PdfDocumentで正常4検体のページ数と不正2検体の拒否を確認し、Windows標準PDF APIのオフスクリーンPNGで日本語本文の意味・欠字なし・画像のグリッドと色を確認します。これはアプリのhayro/GPUI描画成功を意味しません。最終検体は専用作業領域の `target/pdf-fixtures/corpus-r2`、再生成は `target/pdf-fixtures/repeat-r2` に保持します。各検体identityは同ディレクトリのmanifestに記録します。後続作業領域へ移す場合はmanifestとOFL・font-sourceを一緒に保全し、hashを照合してください。\n\n## T6記録票（未実施）
+## T5の描画確認と成果物
+
+準備環境はPython 3.12.0 / zlib 1.2.13 / Windows NT 10.0.26300.0です。Windows.Data.Pdf.PdfDocumentで正常4検体のページ数と不正2検体の拒否を確認し、Windows標準PDF APIのオフスクリーンPNGで日本語本文の意味・欠字なし・画像のグリッドと色を確認します。これはアプリのhayro/GPUI描画成功を意味しません。最終検体は専用作業領域の `target/pdf-fixtures/corpus-r2`、再生成は `target/pdf-fixtures/repeat-r2` に保持します。各検体identityは同ディレクトリのmanifestに記録します。後続作業領域へ移す場合はmanifestとOFL・font-sourceを一緒に保全し、hashを照合してください。
+
+## T6記録票（未実施）
 
 まず専用の検証環境とプロセス識別方法を定めます。利用者の既存mmv GUI／既定singletonへ接続しません。隔離起動方法が用意できなければ停止し、未確認と記録します。
 
