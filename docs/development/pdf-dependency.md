@@ -2,7 +2,7 @@
 
 ## 現在の範囲
 
-この段階ではPDF表示用の依存だけを追加しています。実際のPDF解析・表示、adapter、runtime配送、キー操作への接続は後続作業であり、PDFを開けるようになったことや動作検証の完了を意味しません。機能上の正本は[PDF表示の要件](../requirements/features/pdf-viewing.md)と[PDF接続契約](../design/components/pdf-viewing-contract.md)です。
+固定Git依存に加え、実parserとhost-controlled viewを包む薄いadapterを追加しています。ただし、runtimeのprepared配送・取消registry、本文のMarkdown/PDF切り替え、検索・キー操作への接続は未実装です。productionのPDF採用はまだ有効にしておらず、アプリでPDFを開けるようになったことや全体の動作検証完了を意味しません。機能上の正本は[PDF表示の要件](../requirements/features/pdf-viewing.md)と[PDF接続契約](../design/components/pdf-viewing-contract.md)です。
 
 ## 固定した取得元
 

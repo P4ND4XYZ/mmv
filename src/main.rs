@@ -5,6 +5,7 @@ mod cli;
 mod config;
 mod core;
 mod infra;
+mod pdf;
 mod runtime;
 mod ui;
 
