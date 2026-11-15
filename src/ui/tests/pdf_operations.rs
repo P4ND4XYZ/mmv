@@ -59,6 +59,13 @@ fn open_pdf(
     cx.update(|cx| runtime::connect_document_reads(&view, cx));
     request(cx, &view, &path, "pdf");
     frame(cx, window);
+    view.read_with(cx, |view, _| {
+        view.lua
+            .lua()
+            .load(include_str!("../../../plugins/pdf_zoom.lua"))
+            .exec()
+            .unwrap();
+    });
     (files, window, view)
 }
 
@@ -142,7 +149,9 @@ fn dispatched_zoom_preserves_center_and_fit_tracks_tree_and_resize(cx: &mut Test
 }
 
 #[gpui_kit::test]
-fn pdf_zoom_keys_do_not_capture_command_search_tree_or_composition(cx: &mut TestAppContext) {
+fn pdf_plugin_obeys_app_normal_routing_and_protects_command_search_and_composition(
+    cx: &mut TestAppContext,
+) {
     let (files, window, view) = open_pdf(cx);
     let pdf = body_pdf(cx, &view);
     let zoom = pdf.read_with(cx, |pdf, cx| pdf.zoom(cx));
@@ -160,7 +169,14 @@ fn pdf_zoom_keys_do_not_capture_command_search_tree_or_composition(cx: &mut Test
     press(cx, window, "ctrl-w");
     press(cx, window, "h");
     let tree_zoom = pdf.read_with(cx, |pdf, cx| pdf.zoom(cx));
-    for key in ["+", "-", "=", "j", "ctrl-d"] {
+    // App Normal keymaps have no body-focus restriction: unhandled tree keys
+    // reach the app layer, unlike the removed PDF-only built-in actions.
+    press(cx, window, "+");
+    assert!((pdf.read_with(cx, |pdf, cx| pdf.zoom(cx)) - tree_zoom * 1.1).abs() < 0.0001);
+    press(cx, window, "-");
+    press(cx, window, "=");
+    let tree_zoom = pdf.read_with(cx, |pdf, cx| pdf.zoom(cx));
+    for key in ["j", "ctrl-d"] {
         press(cx, window, key);
     }
     assert_eq!(pdf.read_with(cx, |pdf, cx| pdf.zoom(cx)), tree_zoom);
@@ -195,7 +211,8 @@ fn pdf_zoom_keys_do_not_capture_command_search_tree_or_composition(cx: &mut Test
         press(cx, window, key);
     }
     assert_eq!(
-        super::selection_panel::query(cx, &view).read_with(cx, |input, _| input.value().to_string()),
+        super::selection_panel::query(cx, &view)
+            .read_with(cx, |input, _| input.value().to_string()),
         "+-="
     );
     press(cx, window, "escape");
@@ -210,4 +227,121 @@ fn pdf_zoom_keys_do_not_capture_command_search_tree_or_composition(cx: &mut Test
         assert_eq!(view.input.state.read(cx).value().as_ref(), "+-=");
     });
     assert_eq!(pdf.read_with(cx, |pdf, cx| pdf.zoom(cx)), zoom);
+}
+
+#[gpui_kit::test]
+fn pdf_zoom_keys_are_unbound_without_plugin_and_user_can_override_or_remove(
+    cx: &mut TestAppContext,
+) {
+    let files = Files::new();
+    let path = files.pdf("unbound.pdf");
+    let (window, view) = super::open(cx, "old".into());
+    frame(cx, window);
+    cx.update(|cx| runtime::connect_document_reads(&view, cx));
+    request(cx, &view, &path, "pdf");
+    frame(cx, window);
+    let pdf = body_pdf(cx, &view);
+    let initial = pdf.read_with(cx, |pdf, cx| pdf.zoom(cx));
+    for key in ["+", "-", "=", "p"] {
+        press(cx, window, key);
+    }
+    assert_eq!(pdf.read_with(cx, |pdf, cx| pdf.zoom(cx)), initial);
+    view.read_with(cx, |view, _| {
+        view.lua.lua().load(include_str!("../../../plugins/pdf_zoom.lua")).exec().unwrap();
+        view.lua.lua().load("local m=require('mmv'); m.keymap.set('+',function() m.pdf.set_zoom(0.75) end); assert(m.keymap.remove('p'))").exec().unwrap();
+    });
+    press(cx, window, "+");
+    assert!((pdf.read_with(cx, |pdf, cx| pdf.zoom(cx)) - 0.75).abs() < 0.0001);
+    press(cx, window, "p");
+    assert!((pdf.read_with(cx, |pdf, cx| pdf.zoom(cx)) - 0.75).abs() < 0.0001);
+}
+
+#[gpui_kit::test]
+fn native_fit_page_toggle_keeps_zoom_when_off_and_refits_on_resize_only(cx: &mut TestAppContext) {
+    let (_files, window, view) = open_pdf(cx);
+    let pdf = body_pdf(cx, &view);
+    let width_zoom = pdf.read_with(cx, |pdf, cx| pdf.zoom(cx));
+    press(cx, window, "p");
+    let fitted = pdf.read_with(cx, |pdf, cx| pdf.zoom(cx));
+    assert!(fitted < width_zoom);
+    let painted = page(cx, window);
+    near(painted.height, painted.viewport - 32.0);
+    press(cx, window, "j");
+    assert_eq!(pdf.read_with(cx, |pdf, cx| pdf.zoom(cx)), fitted);
+    press(cx, window, "p"); // off is not a reset
+    assert_eq!(pdf.read_with(cx, |pdf, cx| pdf.zoom(cx)), fitted);
+    cx.simulate_window_resize(window, size(px(700.), px(500.)));
+    frame(cx, window);
+    assert_eq!(pdf.read_with(cx, |pdf, cx| pdf.zoom(cx)), fitted);
+    press(cx, window, "p");
+    let taller = pdf.read_with(cx, |pdf, cx| pdf.zoom(cx));
+    assert!(taller > fitted + 0.05);
+    cx.simulate_window_resize(window, size(px(700.), px(400.)));
+    frame(cx, window);
+    assert!(pdf.read_with(cx, |pdf, cx| pdf.zoom(cx)) < taller - 0.05);
+    press(cx, window, "+");
+    let manual = pdf.read_with(cx, |pdf, cx| pdf.zoom(cx));
+    cx.simulate_window_resize(window, size(px(700.), px(600.)));
+    frame(cx, window);
+    assert_eq!(pdf.read_with(cx, |pdf, cx| pdf.zoom(cx)), manual);
+}
+
+#[gpui_kit::test]
+fn lua_zoom_reports_applied_value_and_preserves_mode_and_focus(cx: &mut TestAppContext) {
+    let (_files, window, view) = open_pdf(cx);
+    let pdf = body_pdf(cx, &view);
+    press(cx, window, ":");
+    cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            let old = pdf.read(cx).zoom(cx);
+            view.lua.lua().globals().set("old", old).unwrap();
+            view.lua.lua().load("local p=require('mmv').pdf; assert(math.abs(p.get_zoom()-old)<0.0001); assert(p.set_zoom(0.5)); assert(p.zoom_in()); assert(p.zoom_in()); assert(p.zoom_out()); assert(math.abs(p.get_zoom()-old)<0.0001)").exec().unwrap();
+            assert_eq!(pdf.read(cx).zoom(cx), old);
+            view.pump_lua(cx);
+            view.lua.lua().load("assert(math.abs(require('mmv').pdf.get_zoom()-0.55)<0.0001)").exec().unwrap();
+            assert_eq!(view.app.mode, Mode::Command);
+            assert!(view.input.state.focus_handle(cx).is_focused(window));
+        });
+    }).unwrap();
+    frame(cx, window);
+    assert!((pdf.read_with(cx, |pdf, cx| pdf.zoom(cx)) - 0.55).abs() < 0.0001);
+}
+
+#[gpui_kit::test]
+fn queued_zoom_never_rebinds_to_replacement_pdf_even_at_same_path(cx: &mut TestAppContext) {
+    let (_files, window, view) = open_pdf(cx);
+    let old = body_pdf(cx, &view);
+    view.update(cx, |view, cx| {
+        view.lua
+            .lua()
+            .load("assert(require('mmv').pdf.set_zoom(2.0))")
+            .exec()
+            .unwrap();
+        let prepared = crate::pdf::prepare(
+            crate::pdf::tests::fixture("3 0 R", 1, false),
+            &Default::default(),
+        )
+        .unwrap();
+        view.document.replace_pdf(prepared, cx);
+        view.publish_lua_document(cx); // same app path, different display identity
+        view.lua
+            .lua()
+            .load("assert(require('mmv').pdf.get_zoom()==nil)")
+            .exec()
+            .unwrap();
+    });
+    frame(cx, window);
+    assert!(old.read_with(cx, |pdf, cx| pdf.is_released(cx)));
+    let replacement = body_pdf(cx, &view);
+    assert_ne!(replacement, old);
+    assert!(replacement.read_with(cx, |pdf, cx| pdf.zoom(cx)) < 1.0);
+    view.update(cx, |view, cx| {
+        view.lua
+            .lua()
+            .load("assert(require('mmv').pdf.set_zoom(0.75))")
+            .exec()
+            .unwrap();
+        view.pump_lua(cx);
+    });
+    assert!((replacement.read_with(cx, |pdf, cx| pdf.zoom(cx)) - 0.75).abs() < 0.0001);
 }

@@ -1052,7 +1052,7 @@ impl Viewer {
                 .debug_selector(|| "document-body".to_owned())
                 .key_context(
                     if self.normal_keys_enabled() {
-                        "EvaluationNormal EvaluationPdfNormal"
+                        "EvaluationNormal"
                     } else {
                         "EvaluationEditing"
                     },

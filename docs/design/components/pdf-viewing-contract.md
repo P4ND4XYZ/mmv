@@ -82,6 +82,16 @@ ReadyUnlaidのviewport依存操作は世代付きintentとして保持し、有�
 
 `release`は冪等で、forkに新spawn停止、epoch失効、queue破棄、callback解除、job取消、画像・文書・bytesの解放を一括委譲する。置換・closeともadapter経由で呼ぶ。更新中のWindowはSomeで渡し、Windowなしの終了もforkのrelease hookで処理する。描画中の取消不能jobはforkが回収し、遅着結果を採用せず資源をdropする。単なる画像消去を完了としない。
 
+## Luaズームの接続
+
+公開契約は[PDFズーム仕様](../../requirements/features/pdf-zoom.md)を正本とする。依存revisionは変更せず、既存の公開操作だけを使う。
+
+- Luaは引数・phaseを検証し、採用時に公開された表示identityをtyped host requestへ保持する。ホストは現在表示とのidentity一致を確認してadapterへ渡す。パス一致だけで旧要求を再利用しない。
+- adapterは未適用のズーム操作をFIFOに保持する。相対倍率は先行操作の適用後に評価する。幅fitはhost用の冪等API、ページfitはネイティブtoggleへ委譲し、位置・resize・微小倍率差の判定は依存に任せる。
+- adapterの描画後に、公開のゼロ距離scroll操作で内部viewportの有効性を確認する。未layoutなら相対zoomを依存側の絶対倍率intentに変換せず保留する。有効になった初回に幅fitを確立し、保留操作を順に適用する。
+- Lua向けread modelはadapterだけが更新する。初回有効layoutまではnil、適用後は依存の実zoomを公開する。描画後の更新で自動fitによる変化も反映し、受理時点で未来値を作らない。
+- releaseは保留queueと公開値を失効させる。表示変更・owner callbackを必要としない受付専用APIであり、新規結果配送や通知の仕組みは持ち込まない。
+
 ## 実装段階と所有範囲
 
 | 段階／予算 | 境界と受入れgate |

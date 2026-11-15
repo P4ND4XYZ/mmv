@@ -1,9 +1,12 @@
 //! Thin PDF boundary. Loading, request adoption and host input policy live outside this module.
-use std::{fmt, rc::Rc, sync::Arc};
+use std::{collections::VecDeque, fmt, rc::Rc, sync::Arc};
+
+use crate::lua::pdf::{Operation as ZoomOperation, Target as ZoomTarget};
+use gpui_kit::{canvas, div, prelude::*};
 
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
-    Render, Subscription, Window,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, Render, Subscription,
+    Window,
 };
 
 #[derive(Clone, Default)]
@@ -155,6 +158,9 @@ pub(crate) struct BodyClicked;
 pub(crate) struct PdfView {
     inner: Entity<gpui_pdf::PdfView>,
     clicks: Option<Subscription>,
+    zoom_target: ZoomTarget,
+    pending_zoom: VecDeque<ZoomOperation>,
+    layout_established: bool,
 }
 impl EventEmitter<BodyClicked> for PdfView {}
 
@@ -179,7 +185,56 @@ impl PdfView {
         Self {
             inner,
             clicks: Some(clicks),
+            zoom_target: ZoomTarget::default(),
+            pending_zoom: VecDeque::new(),
+            layout_established: false,
         }
+    }
+
+    pub(crate) fn target(&self) -> ZoomTarget {
+        self.zoom_target.clone()
+    }
+
+    /// Keep relative operations symbolic until the preceding operation has applied.
+    pub(crate) fn request_zoom(&mut self, operation: ZoomOperation, cx: &mut Context<Self>) {
+        if self.is_released(cx) {
+            return;
+        }
+        self.pending_zoom.push_back(operation);
+        if self.layout_established {
+            self.apply_zoom_requests(cx);
+        }
+        cx.notify();
+    }
+
+    fn apply_zoom_requests(&mut self, cx: &mut Context<Self>) {
+        // A public zero-distance operation probes the child's actual scroll bounds.
+        // If unlaid, only that harmless no-op enters the dependency's own queue;
+        // our relative zooms stay here, preserving FIFO and applied-value reads.
+        let ready = self.inner.update(cx, |view, cx| {
+            matches!(view.scroll_by(0.0, cx), Ok(outcome) if outcome != gpui_pdf::OperationOutcome::DeferredUntilLayout)
+        });
+        if !ready {
+            return;
+        }
+        if !self.layout_established {
+            self.inner.update(cx, |view, cx| {
+                let _ = view.set_fit_width(cx);
+            });
+            self.layout_established = true;
+        }
+        while let Some(operation) = self.pending_zoom.pop_front() {
+            self.inner.update(cx, |view, cx| match operation {
+                ZoomOperation::SetZoom(factor) => view.set_zoom(factor, cx),
+                ZoomOperation::ZoomIn => view.set_zoom(view.zoom() * 1.1, cx),
+                ZoomOperation::ZoomOut => view.set_zoom(view.zoom() / 1.1, cx),
+                ZoomOperation::FitWidth => {
+                    let _ = view.set_fit_width(cx);
+                }
+                ZoomOperation::FitPage => view.fit_page(cx),
+            });
+        }
+        self.zoom_target.publish(self.zoom(cx));
     }
 
     pub fn scroll_by(
@@ -238,6 +293,8 @@ impl PdfView {
     /// Terminal and idempotent, including replacement or shutdown without a Window.
     pub fn release(&mut self, window: Option<&mut Window>, cx: &mut App) {
         self.clicks.take();
+        self.pending_zoom.clear();
+        self.zoom_target.release();
         self.inner
             .update(cx, |view, cx| view.release_resources(window, cx));
     }
@@ -249,8 +306,33 @@ impl Focusable for PdfView {
     }
 }
 impl Render for PdfView {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        self.inner.clone()
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let weak = cx.entity().downgrade();
+        div()
+            .size_full()
+            .relative()
+            .flex()
+            .child(self.inner.clone())
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, _, _, cx| {
+                        if f32::from(bounds.size.width) > 1.0 && f32::from(bounds.size.height) > 1.0
+                        {
+                            let weak = weak.clone();
+                            cx.defer(move |cx| {
+                                let _ = weak.update(cx, |view, cx| {
+                                    if !view.is_released(cx) {
+                                        view.apply_zoom_requests(cx);
+                                    }
+                                });
+                            });
+                        }
+                    },
+                )
+                .absolute()
+                .size_full(),
+            )
     }
 }
 

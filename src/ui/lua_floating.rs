@@ -142,20 +142,21 @@ impl Viewer {
                             {
                                 let stop = input.bound_text.len().checked_sub(current.len() - end);
                                 if let Some(stop) = stop.filter(|stop| *stop >= start)
-                                    && let Some(original) = input.bound_text.get(start..stop) {
-                                        // Restore the original marked region inside the open
-                                        // composition transaction. Its net-no-op is discarded
-                                        // by InputState without clearing prior undo history.
-                                        s.replace_and_mark_text_in_range(
-                                            Some(marked),
-                                            original,
-                                            None,
-                                            window,
-                                            cx,
-                                        );
-                                        s.unmark_text(window, cx);
-                                        s.set_selected_range(start..stop, cx);
-                                    }
+                                    && let Some(original) = input.bound_text.get(start..stop)
+                                {
+                                    // Restore the original marked region inside the open
+                                    // composition transaction. Its net-no-op is discarded
+                                    // by InputState without clearing prior undo history.
+                                    s.replace_and_mark_text_in_range(
+                                        Some(marked),
+                                        original,
+                                        None,
+                                        window,
+                                        cx,
+                                    );
+                                    s.unmark_text(window, cx);
+                                    s.set_selected_range(start..stop, cx);
+                                }
                             }
                         }
                     });
@@ -208,7 +209,7 @@ impl Viewer {
                 // ui_key=false can mean native editing, not app fallthrough.
                 // Search/Command and their real editor remain outside normal mappings.
                 if !native_input
-                    && self.app.mode == crate::app::Mode::Normal
+                    && self.pane_keys_enabled(window, cx)
                     && !self
                         .input
                         .state

@@ -323,6 +323,10 @@ mmv.navigation.open(target, {
 
 読み込み失敗時の本文/履歴保持、見出し不在時の先頭表示等の利用者向け動作は[既存の遷移規則](links-history.md#リンク)に従います。
 
+## PDFズーム
+
+`mmv.pdf.set_zoom(factor)`・`zoom_in()`・`zoom_out()`・`fit_width()`・`fit_page()` はイベント時の受付booleanを返し、options・owner・on_completeは受け付けません。`get_zoom()` は実行時のイベント・renderで適用済み倍率またはnilを返します。initでは全関数が利用不可です。ページfitは最上部ページを使うネイティブのtoggleで、中央配置・全体可視性・固定対象を保証しません。型・phase・順序・置換時の詳細と任意キープラグインは[PDFズーム仕様](pdf-zoom.md)を参照してください。
+
 ## 通知とエラー・失効
 
 `mmv.notify(message, { level = "info" })`で通知します。levelは`info` / `warning` / `error`、既定は`info`です。渡されたmessageは翻訳せず既存の通知ポリシーで表示します。アプリ生成の既定文言は英語、Search/Commandの入力は保護し、新たな固定時間上限は設けません。GUIの言語と通知規則は[画面仕様](viewer-ui.md#表示言語と通知)に従います。

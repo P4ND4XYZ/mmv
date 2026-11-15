@@ -291,6 +291,10 @@ impl Viewer {
     }
 
     pub(super) fn publish_lua_document(&mut self, cx: &mut Context<Self>) {
+        *self.lua.context().pdf.borrow_mut() = match &self.document {
+            super::document::DocumentView::Pdf { view, .. } => Some(view.read(cx).target()),
+            super::document::DocumentView::Markdown(_) => None,
+        };
         let document = self.app.document().expect("adopted document");
         let snapshot = document.markdown_source().map(|source| DocumentHandle::new(
             document.path.clone(),

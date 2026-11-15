@@ -20,7 +20,7 @@
 | ファイル表示・更新 | 文書を開き、編集結果を確認する | [ファイル表示と更新](features/file-viewing.md) |
 | ファイルツリー | ファイルのツリーをを表示する | [ファイルツリー](features/file-tree.md) |
 | Markdown描画 | 本文・表・コード・画像を読む | [Markdown描画](features/markdown-rendering.md) |
-| PDF表示 | 同じ本文領域でPDFを読み、スクロール・ズームする | [PDF表示](features/pdf-viewing.md) |
+| PDF表示 | 同じ本文領域でPDFを読み、スクロール・ズームする | [PDF表示](features/pdf-viewing.md)、[PDFズームのLua API](features/pdf-zoom.md) |
 | 画面・操作モード | 閲覧・検索・コマンド入力を切り替える | [画面と操作モード](features/viewer-ui.md) |
 | 表示・配色設定 | Lua設定で本文領域の配置・最大幅と配色、ツリー初期表示と判定マーカーを指定する | [表示・配色設定](features/display-settings.md) |
 | LuaフローティングUI | キーから一時的なUIを開き、一覧・入力・ソース・ボタンを合成する。同梱Luaでも既存リンク選択を構成する | [利用と範囲](features/lua-floating-ui.md)、[公開API](features/lua-api.md) |

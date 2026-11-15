@@ -1,6 +1,6 @@
 use super::*;
 #[cfg(feature = "ui-tests")]
-use gpui_kit::{Point, TestAppContext, div, prelude::*, px, size};
+use gpui_kit::{Point, TestAppContext, div, px, size};
 
 // Self-authored minimal PDF objects; no customer documents, fonts or external assets.
 pub(crate) fn fixture(pages: &str, count: usize, encrypted: bool) -> Arc<Vec<u8>> {
@@ -143,7 +143,11 @@ fn actual_unlaid_view_maps_operations_and_releases_without_window(cx: &mut TestA
             view.fit_width(cx).unwrap().status(),
             OperationStatus::DeferredUntilLayout
         );
+        view.request_zoom(ZoomOperation::ZoomIn, cx);
+        view.request_zoom(ZoomOperation::FitPage, cx);
+        assert_eq!(view.target().zoom(), None);
         view.release(None, cx);
+        assert!(view.pending_zoom.is_empty());
         view.release(None, cx);
         assert!(view.is_released(cx));
         assert_eq!(
@@ -243,4 +247,110 @@ fn real_layout_fit_and_release_with_window(cx: &mut TestAppContext) {
     cx.update(|window, cx| view.update(cx, |view, cx| view.release(Some(window), cx)));
     view.read_with(cx, |view, cx| assert!(view.is_released(cx)));
     cx.run_until_parked();
+}
+
+#[cfg(feature = "ui-tests")]
+#[gpui_kit::test]
+fn zoom_requests_wait_for_layout_and_apply_relative_steps_in_fifo(cx: &mut TestAppContext) {
+    let prepared = prepare(
+        fixture("3 0 R 3 0 R", 2, false),
+        &PrepareCancellation::default(),
+    )
+    .unwrap();
+    let view = cx.new(|cx| PdfView::from_prepared(prepared, cx));
+    let target = view.read_with(cx, |view, _| view.target());
+    view.update(cx, |view, cx| {
+        for operation in [
+            ZoomOperation::SetZoom(0.5),
+            ZoomOperation::ZoomIn,
+            ZoomOperation::ZoomIn,
+            ZoomOperation::ZoomOut,
+        ] {
+            view.request_zoom(operation, cx);
+        }
+        assert_eq!(target.zoom(), None);
+        assert_eq!(view.zoom(cx), 1.0);
+    });
+    let cx = cx.add_empty_window();
+    for _ in 0..4 {
+        let view = view.clone();
+        cx.draw(Point::default(), size(px(600.0), px(400.0)), |_, _| {
+            div().size_full().child(view).into_any_element()
+        });
+        cx.run_until_parked();
+    }
+    assert!((target.zoom().unwrap() - 0.55).abs() < 0.0001);
+    view.update(cx, |view, cx| {
+        assert!(view.pending_zoom.is_empty());
+        view.request_zoom(ZoomOperation::SetZoom(3.0), cx);
+        view.request_zoom(ZoomOperation::ZoomIn, cx);
+        assert_eq!(target.zoom(), Some(3.0));
+        view.request_zoom(ZoomOperation::SetZoom(0.01), cx);
+        view.request_zoom(ZoomOperation::ZoomOut, cx);
+        assert_eq!(target.zoom(), Some(0.01));
+        view.release(None, cx);
+        assert_eq!(target.zoom(), None);
+        view.request_zoom(ZoomOperation::ZoomIn, cx);
+        assert!(view.pending_zoom.is_empty());
+    });
+}
+
+#[cfg(feature = "ui-tests")]
+#[gpui_kit::test]
+fn native_page_fit_uses_topmost_not_center_and_resize_uses_current_page(cx: &mut TestAppContext) {
+    // Two valid, self-authored blank pages with distinct aspect ratios.
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 1224] >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 2448] >>",
+    ];
+    let mut bytes = b"%PDF-1.4\n".to_vec();
+    let mut offsets = Vec::new();
+    for (index, object) in objects.iter().enumerate() {
+        offsets.push(bytes.len());
+        bytes.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", index + 1).as_bytes());
+    }
+    let xref = bytes.len();
+    bytes.extend_from_slice(b"xref\n0 5\n0000000000 65535 f \n");
+    for offset in offsets {
+        bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    bytes.extend_from_slice(
+        format!("trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
+    );
+    let prepared = prepare(Arc::new(bytes), &Default::default()).unwrap();
+    assert_eq!(
+        prepared.page_dimensions(),
+        &[(612.0, 1224.0), (612.0, 2448.0)]
+    );
+    let view = cx.new(|cx| PdfView::from_prepared(prepared, cx));
+    let cx = cx.add_empty_window();
+    for _ in 0..3 {
+        let view = view.clone();
+        cx.draw(Point::default(), size(px(600.0), px(400.0)), |_, _| {
+            div().size_full().child(view).into_any_element()
+        });
+        cx.run_until_parked();
+    }
+    view.update(cx, |view, cx| {
+        view.request_zoom(ZoomOperation::SetZoom(0.5), cx);
+        // First page ends at y=836. At scroll y=740 the center is on page 2,
+        // while the viewport top remains on page 1.
+        view.scroll_by(740.0, cx).unwrap();
+        view.request_zoom(ZoomOperation::FitPage, cx);
+        assert!((view.zoom(cx) - 368.0 / (820.0 * 2.0)).abs() < 0.0001);
+        view.inner.update(cx, |inner, cx| inner.go_to_page(1, cx));
+    });
+    for _ in 0..3 {
+        let view = view.clone();
+        cx.draw(Point::default(), size(px(600.0), px(500.0)), |_, _| {
+            div().size_full().child(view).into_any_element()
+        });
+        cx.run_until_parked();
+    }
+    view.read_with(cx, |view, cx| {
+        assert!((view.zoom(cx) - 468.0 / (820.0 * 4.0)).abs() < 0.0001);
+        assert_eq!(view.target().zoom(), Some(view.zoom(cx)));
+    });
 }

@@ -1,4 +1,4 @@
-use crate::lua::{Pump, navigation::OpenRequest, notify::Notice};
+use crate::lua::{Pump, navigation::OpenRequest, notify::Notice, pdf::Request as PdfRequest};
 use gpui_kit::Context;
 
 use super::Viewer;
@@ -22,6 +22,8 @@ impl Viewer {
                         if let Some(callback) = request.delivery.callback {
                             self.lua.context().cancel(callback);
                         }
+                    } else if self.lua.take_request::<PdfRequest>().is_some() {
+                        // No new display work during shutdown.
                     } else if let Some(request) = self.lua.take_request::<Notice>() {
                         self.show_lua_notice(*request.operation.downcast::<Notice>().unwrap());
                     } else {
@@ -51,6 +53,17 @@ impl Viewer {
                             *request.operation.downcast::<OpenRequest>().unwrap(),
                             cx,
                         );
+                        continue;
+                    }
+                    if let Some(request) = self.lua.take_request::<PdfRequest>() {
+                        let request = request.operation.downcast::<PdfRequest>().unwrap();
+                        if let super::document::DocumentView::Pdf { view, .. } = &self.document {
+                            view.update(cx, |view, cx| {
+                                if view.target().same_display(&request.target) {
+                                    view.request_zoom(request.operation, cx);
+                                }
+                            });
+                        }
                         continue;
                     }
                     if let Some(request) = self.lua.take_request::<Notice>() {

@@ -1,5 +1,5 @@
 ---@meta
--- Editor-only, partial public API declarations for link_picker.lua.
+-- Editor-only, partial public API declarations for link_picker.lua and pdf_zoom.lua.
 -- Never execute this file or put its directory on package.path.
 
 ---@alias mmv.Id string|integer
@@ -139,7 +139,7 @@ function Window:source(key) end
 ---@field on_error? fun(error: {message: string, traceback: string, phase: 'event'|'render', key?: string})
 
 ---@class mmv.Api
-local mmv = { ui = { float = {} }, document = {}, keymap = {}, match = {}, navigation = {} }
+local mmv = { ui = { float = {} }, document = {}, keymap = {}, match = {}, navigation = {}, pdf = {} }
 
 -- Key registration is available in init and event callbacks, not render.
 ---@param key string Normalized app key; not a built-in key.
@@ -203,5 +203,23 @@ function mmv.navigation.open(target, options) end
 ---@param options? {level?: 'info'|'warning'|'error'}
 ---@return true
 function mmv.notify(message, options) end
+
+-- PDF modifiers are event-only; no options, owner, or completion callbacks.
+-- True means acceptance, not application; false means no PDF at call time.
+-- Requests bind the current display and are discarded if it is replaced.
+---@param factor number Finite and >0; clamped to [0.01, 3], native tolerance applies.
+---@return boolean accepted
+function mmv.pdf.set_zoom(factor) end
+---@return boolean accepted Multiplies applied zoom by 1.1; disables fit even at limits.
+function mmv.pdf.zoom_in() end
+---@return boolean accepted Divides applied zoom by 1.1; disables fit even at limits.
+function mmv.pdf.zoom_out() end
+---@return boolean accepted Idempotent width fit; tracks viewport resize.
+function mmv.pdf.fit_width() end
+---@return boolean accepted Native topmost-page fit toggle; no centering/whole-page guarantee.
+function mmv.pdf.fit_page() end
+-- Runtime event/render only, forbidden during init; never a queued future value.
+---@return number|nil zoom Actual applied zoom; nil for non-PDF / before initial usable layout.
+function mmv.pdf.get_zoom() end
 
 return mmv
