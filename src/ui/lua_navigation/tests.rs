@@ -768,6 +768,104 @@ fn reload_replacing_an_unapplied_navigation_position_completes_it_as_superseded(
 }
 
 #[gpui_kit::test]
+fn superseded_adopted_navigation_keeps_body_and_history_after_the_successor_fails(
+    cx: &mut TestAppContext,
+) {
+    let original = "[Accepted](accepted.md#bottom)";
+    let accepted = format!(
+        "[Missing](missing.md)\n\n{}# Bottom\n\nend",
+        "paragraph\n\n".repeat(100)
+    );
+    let (window, view) = super::super::tests::open(cx, original.into());
+    ready(cx, window, &view);
+    let initial_path = view.read_with(cx, |v, _| v.path.clone());
+    let reads = Rc::new(RefCell::new(Vec::<crate::app::ReadRequest>::new()));
+    let captured = reads.clone();
+    let _sub = cx.update(|cx| {
+        cx.subscribe(&view, move |_, read: &crate::app::ReadRequest, _| {
+            captured.borrow_mut().push(read.clone())
+        })
+    });
+    event(
+        &view,
+        cx,
+        "local m=require('mmv'); calls=0; m.navigation.open(m.document.current():links()[1].target,{on_complete=function(r)first=r;calls=calls+1 end})",
+    );
+    cx.run_until_parked();
+    let first_read = reads.borrow_mut().pop().unwrap();
+    let accepted_path = first_read.path.clone();
+    view.update(cx, |v, cx| {
+        v.complete(super::super::tests::success(first_read, accepted.clone()), cx);
+        assert_eq!(v.app.document().unwrap().source.as_str(), accepted);
+        let old_position = v.app.position_request().unwrap().clone();
+        // Accept the successor in the same host turn: the first body/history
+        // is already adopted, but its heading has never had a layout frame.
+        v.lua.lua().load("local m=require('mmv'); m.navigation.open(m.document.current():links()[1].target,{on_complete=function(r)result=r;calls=calls+1 end})").exec().unwrap();
+        v.pump_lua(cx);
+        assert_ne!(v.app.position_request(), Some(&old_position));
+    });
+    cx.run_until_parked();
+    let second_read = reads.borrow_mut().pop().unwrap();
+    assert_eq!(second_read.path, accepted_path.with_file_name("missing.md"));
+    view.update(cx, |v, cx| {
+        v.complete(
+            crate::app::ReadResult {
+                request: second_read,
+                content: Err("Unable to read file".into()),
+            },
+            cx,
+        )
+    });
+    outcome(cx, window, &view);
+    assert_lua(
+        &view,
+        cx,
+        "assert(first.code=='superseded' and not result.ok and calls==2)",
+    );
+    view.read_with(cx, |v, cx| {
+        assert_eq!(v.path, accepted_path);
+        assert_eq!(v.app.document().unwrap().source.as_str(), accepted);
+        assert!(v.app.position_request().is_none());
+        assert_eq!(
+            v.document.distance(cx),
+            0.,
+            "old heading must stay invalidated"
+        );
+        assert!(v.message.is_none());
+    });
+    // Observe history through actual Back/Forward rather than private entries.
+    cx.update_window(window, |_, w, cx| w.press("ctrl-o", cx))
+        .unwrap();
+    cx.run_until_parked();
+    let back = reads
+        .borrow_mut()
+        .pop()
+        .expect("adopted navigation kept its departure");
+    assert_eq!(back.path, initial_path);
+    view.update(cx, |v, cx| {
+        v.complete(super::super::tests::success(back, original.into()), cx)
+    });
+    ready(cx, window, &view);
+    cx.update_window(window, |_, w, cx| w.press("ctrl-i", cx))
+        .unwrap();
+    cx.run_until_parked();
+    let forward = reads
+        .borrow_mut()
+        .pop()
+        .expect("failed successor must not erase adopted history");
+    assert_eq!(forward.path, accepted_path);
+    view.update(cx, |v, cx| {
+        v.complete(super::super::tests::success(forward, accepted.clone()), cx)
+    });
+    ready(cx, window, &view);
+    assert_lua(
+        &view,
+        cx,
+        "assert(first.code=='superseded' and not result.ok and calls==2)",
+    );
+}
+
+#[gpui_kit::test]
 fn notify_keeps_search_and_command_input_and_validates_all_levels(cx: &mut TestAppContext) {
     let (window, view) = super::super::tests::open(cx, "body".into());
     ready(cx, window, &view);

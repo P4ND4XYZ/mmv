@@ -2,8 +2,8 @@
 use super::Viewer;
 use crate::lua::ui::list::Id;
 use gpui_kit::{
-    AnyWindowHandle, AppContext as _, Entity, EntityInputHandler as _, TestAppContext,
-    VisualTestContext, point, px, size, test::TestWindowExt as _,
+    AnyWindowHandle, AppContext as _, Entity, EntityInputHandler as _, InputEvent as _,
+    TestAppContext, VisualTestContext, point, px, size, test::TestWindowExt as _,
 };
 
 pub(in crate::ui) fn frame(cx: &mut TestAppContext, window: AnyWindowHandle) {
@@ -138,6 +138,181 @@ fn text(node: &crate::lua::ui::tree::Node) -> String {
         result.push_str(&text(child));
     }
     result
+}
+
+#[gpui_kit::test]
+fn standard_lua_pending_native_query_cannot_confirm_or_defer_the_old_target(
+    cx: &mut TestAppContext,
+) {
+    let (window, view) = crate::ui::tests::open(cx, "[Alpha](alpha.md)\n\n[Beta](beta.md)".into());
+    frame(cx, window);
+    let reads = std::rc::Rc::new(std::cell::RefCell::new(
+        Vec::<crate::app::ReadRequest>::new(),
+    ));
+    let captured = reads.clone();
+    let _sub = cx.update(|cx| {
+        cx.subscribe(&view, move |_, r: &crate::app::ReadRequest, _| {
+            captured.borrow_mut().push(r.clone())
+        })
+    });
+    press(cx, window, "f");
+    let owner = panel(cx, &view).owner;
+    let q = query(cx, &view);
+    cx.update_window(window, |_, w, cx| {
+        q.update(cx, |i, cx| {
+            i.replace_text_in_range(Some(0..0), "beta", w, cx)
+        });
+        // Dispatch before a frame or the deferred native Change callback.
+        w.dispatch_event(
+            gpui_kit::KeyDownEvent {
+                keystroke: gpui_kit::Keystroke::parse("enter").unwrap(),
+                is_held: false,
+                prefer_character_input: false,
+            }
+            .to_platform_input(),
+            cx,
+        );
+    })
+    .unwrap();
+    frame(cx, window);
+    assert_eq!(panel(cx, &view).owner, owner);
+    assert_eq!(selected(cx, &view), Some(Id::Integer(1)));
+    assert!(
+        reads.borrow().is_empty(),
+        "pending confirm must not be replayed after synchronization"
+    );
+    press(cx, window, "enter");
+    assert!(!is_open(cx, &view));
+    assert_eq!(reads.borrow().len(), 1);
+    assert_eq!(
+        reads.borrow()[0].path,
+        std::path::PathBuf::from(r"C:\fixtures\beta.md")
+    );
+}
+
+#[gpui_kit::test]
+fn standard_lua_render_failure_preserves_tree_blocks_old_confirm_and_recovers(
+    cx: &mut TestAppContext,
+) {
+    let (window, view) = crate::ui::tests::open(cx, "[Alpha](alpha.md)\n\n[Beta](beta.md)".into());
+    frame(cx, window);
+    let reads = std::rc::Rc::new(std::cell::RefCell::new(
+        Vec::<crate::app::ReadRequest>::new(),
+    ));
+    let captured = reads.clone();
+    let _sub = cx.update(|cx| {
+        cx.subscribe(&view, move |_, r: &crate::app::ReadRequest, _| {
+            captured.borrow_mut().push(r.clone())
+        })
+    });
+    press(cx, window, "f");
+    let previous = panel(cx, &view);
+    // Substitute only the pure matcher failure; the bundled render and host
+    // input/list/navigation boundaries remain real.
+    event(
+        &view,
+        cx,
+        "local m=require('mmv'); saved_fuzzy=m.match.fuzzy; m.match.fuzzy=function() error('controlled standard render failure') end",
+    );
+    replace_query(cx, window, &view, "beta");
+    assert!(std::rc::Rc::ptr_eq(&panel(cx, &view).root, &previous.root));
+    press(cx, window, "enter");
+    assert_eq!(panel(cx, &view).owner, previous.owner);
+    assert!(reads.borrow().is_empty());
+    event(
+        &view,
+        cx,
+        "require('mmv').match.fuzzy=saved_fuzzy; saved_fuzzy=nil",
+    );
+    replace_query(cx, window, &view, "bet");
+    assert_eq!(selected(cx, &view), Some(Id::Integer(1)));
+    assert!(
+        reads.borrow().is_empty(),
+        "recovery must not replay the failed confirm"
+    );
+    press(cx, window, "enter");
+    assert!(!is_open(cx, &view));
+    assert_eq!(reads.borrow().len(), 1);
+    assert_eq!(
+        reads.borrow()[0].path,
+        std::path::PathBuf::from(r"C:\fixtures\beta.md")
+    );
+}
+
+#[gpui_kit::test]
+fn standard_lua_pending_edit_close_releases_host_resources_and_subscriptions_repeatedly(
+    cx: &mut TestAppContext,
+) {
+    let (window, view) = crate::ui::tests::open(cx, "[Alpha](alpha.md)".into());
+    frame(cx, window);
+    event(
+        &view,
+        cx,
+        r#"
+        local u=require('mmv').ui
+        weak=setmetatable({}, {__mode='v'}); serial=0
+        local original=u.float.open
+        u.float.open=function(options)
+            local win=original(options)
+            serial=serial+1; weak[serial]=win
+            return win
+        end
+    "#,
+    );
+    for _ in 0..12 {
+        press(cx, window, "f");
+        assert_eq!(
+            query(cx, &view).read_with(cx, |q, _| q.value().to_string()),
+            ""
+        );
+        let q = query(cx, &view);
+        cx.update_window(window, |_, w, cx| {
+            q.update(cx, |i, cx| {
+                i.replace_text_in_range(Some(0..0), "pending", w, cx)
+            });
+            w.dispatch_event(
+                gpui_kit::KeyDownEvent {
+                    keystroke: gpui_kit::Keystroke::parse("escape").unwrap(),
+                    is_held: false,
+                    prefer_character_input: false,
+                }
+                .to_platform_input(),
+                cx,
+            );
+        })
+        .unwrap();
+        frame(cx, window);
+        assert!(!is_open(cx, &view));
+        view.read_with(cx, |v, _| {
+            assert!(v.floating_ui.inputs.is_empty());
+            assert!(v.floating_ui.sources.is_empty());
+            assert!(v.floating_ui.lists.is_empty());
+            assert!(v.floating_ui.handles.is_empty());
+            v.lua.lua().gc_collect().unwrap();
+            v.lua.lua().gc_collect().unwrap();
+        });
+        assert_lua(
+            &view,
+            cx,
+            "assert(next(weak)==nil, 'closed standard window retained')",
+        );
+    }
+    view.update(cx, |v, cx| {
+        let crate::app::OperationResult::Pending(read) =
+            v.request_document(v.path.with_file_name("after-close.md"), None, cx)
+        else {
+            panic!("replacement read")
+        };
+        v.complete(crate::ui::tests::success(read, "replacement".into()), cx);
+    });
+    frame(cx, window);
+    view.read_with(cx, |v, _| {
+        assert!(
+            v.message.is_none(),
+            "cancelled subscriptions must not notify later adoption"
+        );
+        assert_eq!(v.app.document().unwrap().source.as_str(), "replacement");
+    });
 }
 
 #[gpui_kit::test]
