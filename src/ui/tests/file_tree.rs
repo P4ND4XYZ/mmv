@@ -502,6 +502,17 @@ fn tree_keys_are_read_only_and_do_not_leak_to_body_or_history(cx: &mut TestAppCo
     ] {
         test.press(cx, key);
     }
+    // App mappings use mode, not pane focus: standard f also opens from the tree.
+    assert!(crate::ui::lua_floating::standard_links::is_open(
+        cx, &test.view
+    ));
+    test.press(cx, "escape");
+    cx.update_window(test.window, |_, window, cx| {
+        test.view.read_with(cx, |viewer, _| {
+            assert!(viewer.tree.focus.is_focused(window))
+        });
+    })
+    .unwrap();
     assert!(reads.borrow().is_empty());
     test.view.read_with(cx, |viewer, cx| {
         assert_eq!(viewer.document.text, text);
@@ -1016,7 +1027,7 @@ fn pane_shortcuts_are_suppressed_during_search_command_panel_and_composition(
     test.press(cx, "l");
     test.view.read_with(cx, |viewer, _| {
         assert!(viewer.tree.visible);
-        assert!(viewer.link_panel.is_some());
+        assert!(!viewer.lua.context().ui.borrow().windows.is_empty());
     });
     test.press(cx, "escape");
     cx.update_window(test.window, |_, window, cx| {

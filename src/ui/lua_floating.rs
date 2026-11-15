@@ -15,6 +15,10 @@ use std::collections::BTreeMap;
 mod input;
 mod source;
 
+#[cfg(all(test, feature = "ui-tests"))]
+#[path = "lua_standard_links.rs"]
+pub(super) mod standard_links;
+
 #[derive(Default)]
 struct ListEntry {
     scroll: ScrollHandle,
@@ -162,9 +166,6 @@ impl Viewer {
             }
             return;
         }
-        if context.ui.borrow().focus.is_none() {
-            return;
-        }
         let stroke = &event.keystroke;
         let mut key = String::new();
         for (active, modifier) in [
@@ -188,7 +189,54 @@ impl Viewer {
                 self.sync_lua_focus(window, cx);
                 cx.notify();
             }
-            Ok(false) => (),
+            Ok(false) => {
+                let native_input = {
+                    let ui = context.ui.borrow();
+                    ui.focus
+                        .and_then(|f| {
+                            ui.windows
+                                .iter()
+                                .find(|w| w.owner == f.owner)
+                                .and_then(|w| {
+                                    w.components
+                                        .values()
+                                        .find(|c| Some(c.identity) == f.identity)
+                                })
+                        })
+                        .is_some_and(|c| c.kind == Kind::Input)
+                        && crate::lua::ui::input::native_key(&key)
+                };
+                // ui_key=false can mean native editing, not app fallthrough.
+                // Search/Command and their real editor remain outside normal mappings.
+                if !native_input
+                    && self.app.mode == crate::app::Mode::Normal
+                    && !self
+                        .input
+                        .state
+                        .read(cx)
+                        .focus_handle(cx)
+                        .is_focused(window)
+                {
+                    match self.lua.enqueue_key(&key) {
+                        Ok(true) => {
+                            cx.stop_propagation();
+                            self.pump_lua(cx);
+                            self.sync_lua_focus(window, cx);
+                            cx.notify();
+                        }
+                        Ok(false) => (),
+                        Err(error) => {
+                            context.report_error(
+                                None,
+                                crate::lua::ErrorInfo::new(error, crate::lua::Phase::Event, None),
+                            );
+                            self.pump_lua(cx);
+                            cx.stop_propagation();
+                            cx.notify();
+                        }
+                    }
+                }
+            }
             Err(error) => {
                 context.report_error(
                     None,

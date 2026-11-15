@@ -50,15 +50,14 @@ fn load_from(local_app_data: Option<&Path>) -> ConfigLoad {
         };
         Ok(Some((source, path)))
     })();
-    // B deliberately installs no fake standard f callback. F supplies the real
-    // bundled script here once its public UI/document APIs are implemented.
+    // Standard registrations precede the isolated, atomic user candidate.
     let (runtime, error) = match result {
         Ok(source) => {
             let input = source
                 .as_ref()
                 .map(|(source, path)| (source.as_str(), path.to_string_lossy()));
             let (runtime, cause) = LuaRuntime::initialize(
-                "",
+                crate::lua::STANDARD,
                 input
                     .as_ref()
                     .map(|(source, name)| (*source, name.as_ref())),
@@ -71,7 +70,7 @@ fn load_from(local_app_data: Option<&Path>) -> ConfigLoad {
             (runtime, error)
         }
         Err(error) => (
-            LuaRuntime::initialize("", None)
+            LuaRuntime::initialize(crate::lua::STANDARD, None)
                 .expect("create standard Lua runtime")
                 .0,
             Some(error),
@@ -92,6 +91,9 @@ mod tests {
         let missing = load_from(Some(&path));
         assert_eq!(missing.runtime.config(), Config::default());
         assert!(missing.error.is_none());
+        assert!(missing.runtime.enqueue_key("f").unwrap());
+        assert_eq!(missing.runtime.pump_one(), crate::lua::Pump::Dispatched);
+        assert!(missing.runtime.context().ui.borrow().windows.is_empty());
         let unavailable = load_from(None);
         assert_eq!(unavailable.runtime.config(), Config::default());
         assert!(unavailable.error.unwrap().path.is_none());
@@ -114,6 +116,7 @@ mod tests {
         std::fs::create_dir(&path).unwrap();
         let read_error = load_from(Some(&root));
         assert_eq!(read_error.runtime.config(), Config::default());
+        assert!(read_error.runtime.enqueue_key("f").unwrap());
         assert_eq!(
             read_error.error.unwrap().path.as_deref(),
             Some(path.as_path())
@@ -126,12 +129,14 @@ mod tests {
         .unwrap();
         let execute_error = load_from(Some(&root));
         assert_eq!(execute_error.runtime.config(), Config::default());
+        assert!(execute_error.runtime.enqueue_key("f").unwrap());
         let error = execute_error.error.unwrap();
         assert_eq!(error.path.as_deref(), Some(path.as_path()));
         assert!(error.cause.contains("broken"));
         std::fs::write(&path, "local m=require('mmv'); m.setup({view={position='left'}}); pcall(function() m.set_hl('Normal',{fg='bad'}) end)").unwrap();
         let invalid = load_from(Some(&root));
         assert_eq!(invalid.runtime.config(), Config::default());
+        assert!(invalid.runtime.enqueue_key("f").unwrap());
         assert!(invalid.error.unwrap().cause.contains("color"));
         std::fs::write(&path, "local m=require('mmv'); m.setup({view={position='left'}}); local n=5; m.keymap.set('x',function() n=n+1; result=n end)").unwrap();
         let valid = load_from(Some(&root));
@@ -147,6 +152,14 @@ mod tests {
             valid.runtime.lua().globals().get::<i64>("result").unwrap(),
             6
         );
+        std::fs::write(&path, "local m=require('mmv'); assert(m.keymap.remove('f')); assert(not m.keymap.remove('f'))").unwrap();
+        let removed = load_from(Some(&root));
+        assert!(removed.error.is_none());
+        assert!(!removed.runtime.enqueue_key("f").unwrap());
+        std::fs::write(&path, "local m=require('mmv');m.keymap.remove('f');pcall(m.keymap.set,'f',function()end,{focus='body'})").unwrap();
+        let failed = load_from(Some(&root));
+        assert!(failed.error.is_some());
+        assert!(failed.runtime.enqueue_key("f").unwrap());
         std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -307,7 +307,7 @@ impl Viewer {
         let snapshot = DocumentHandle::new(
             document.path.clone(),
             document.source.clone(),
-            super::links::extract_candidates,
+            super::link_candidates::extract_candidates,
         );
         if let Err(error) = self
             .lua

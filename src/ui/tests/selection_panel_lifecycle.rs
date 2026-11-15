@@ -1,4 +1,4 @@
-use super::selection_panel::{frame, input, panel, press};
+use super::selection_panel::{capture_reads, frame, input, is_open, panel, press, query, selected};
 use super::*;
 use crate::app::{
     DocumentOperation, ExternalOperation, Mode, OperationError, OperationOrigin, OperationResult,
@@ -6,7 +6,6 @@ use crate::app::{
 };
 use gpui_kit::EntityInputHandler as _;
 
-// Embedded fixture only: no new fixture path or filesystem/network dependency.
 const PNG: &[u8] = &[
     137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 20, 0, 0, 0, 10, 8, 6,
     0, 0, 0, 180, 85, 126, 230, 0, 0, 0, 1, 115, 82, 71, 66, 0, 174, 206, 28, 233, 0, 0, 0, 4, 103,
@@ -31,44 +30,31 @@ fn selection_panel_read_request_failure_and_stale_success_preserve_query_selecti
     press(cx, window, "f");
     input(cx, window, "dsg");
     press(cx, window, "down");
-    let selection = panel(cx, &view);
-    let (generation, query, selected) = view.read_with(cx, |viewer, cx| {
-        let panel = selection.read(cx);
-        (
-            viewer.app.document().unwrap().generation,
-            panel.input.read(cx).value(),
-            panel.command.read(cx).selected_index(),
-        )
-    });
-    cx.update(|cx| {
-        view.update(cx, |viewer, cx| {
-            let old =
-                pending(viewer.request_document(viewer.path.with_file_name("old.md"), None, cx));
-            let latest = pending(viewer.request_document(
-                viewer.path.with_file_name("missing.md"),
-                None,
-                cx,
-            ));
-            assert!(viewer.link_panel.is_some(), "request alone is not adoption");
-            viewer.complete(
-                ReadResult {
-                    request: latest,
-                    content: Err("not found".into()),
-                },
-                cx,
-            );
-            viewer.complete(success(old, "stale body".into()), cx);
-        })
+    let owner = panel(cx, &view).owner;
+    let selection = selected(cx, &view);
+    let q = query(cx, &view);
+    let generation = view.read_with(cx, |v, _| v.app.document().unwrap().generation);
+    view.update(cx, |v, cx| {
+        let old = pending(v.request_document(v.path.with_file_name("old.md"), None, cx));
+        let latest = pending(v.request_document(v.path.with_file_name("missing.md"), None, cx));
+        assert_eq!(v.lua.context().ui.borrow().windows[0].owner, owner);
+        v.complete(
+            ReadResult {
+                request: latest,
+                content: Err("not found".into()),
+            },
+            cx,
+        );
+        v.complete(success(old, "stale body".into()), cx);
     });
     frame(cx, window);
-    view.read_with(cx, |viewer, cx| {
-        assert_eq!(viewer.app.document().unwrap().generation, generation);
-        assert_eq!(viewer.app.error(), Some("not found"));
-        assert_eq!(viewer.link_panel.as_ref().unwrap().panel, selection);
-        let panel = selection.read(cx);
-        assert_eq!(panel.input.read(cx).value(), query);
-        assert_eq!(panel.command.read(cx).selected_index(), selected);
-        assert!(viewer.message.is_none());
+    assert_eq!(panel(cx, &view).owner, owner);
+    assert_eq!(selected(cx, &view), selection);
+    assert_eq!(query(cx, &view), q);
+    assert_eq!(q.read_with(cx, |q, _| q.value().to_string()), "dsg");
+    view.read_with(cx, |v, _| {
+        assert_eq!(v.app.document().unwrap().generation, generation);
+        assert_eq!(v.app.error(), Some("not found"));
     });
 }
 
@@ -84,57 +70,48 @@ fn selection_panel_only_adopted_body_closes_panel_warns_and_old_ids_cannot_execu
         let (window, view) = open(cx, "[Old](old.md)".into());
         frame(cx, window);
         press(cx, window, "f");
-        let old_panel = panel(cx, &view);
-        cx.update_window(window, |_, window, cx| {
-            let query = old_panel.read(cx).input.clone();
-            query.update(cx, |query, cx| {
-                query.replace_and_mark_text_in_range(None, "old", Some(3..3), window, cx)
-            });
+        let p = panel(cx, &view);
+        let c = &p.components["links-list"];
+        let old = crate::lua::ui::list::ListHandle {
+            owner: p.owner,
+            identity: c.identity,
+            context: view.read_with(cx, |v, _| v.lua.context()),
+        };
+        let q = query(cx, &view);
+        cx.update_window(window, |_, w, cx| {
+            q.update(cx, |q, cx| {
+                q.replace_and_mark_text_in_range(None, "old", Some(3..3), w, cx)
+            })
         })
         .unwrap();
         frame(cx, window);
-        cx.update(|cx| {
-            view.update(cx, |viewer, cx| {
-                let request =
-                    pending(viewer.request_operation(DocumentOperation::Reload, origin, None, cx));
-                assert!(viewer.link_panel.is_some());
-                viewer.complete(success(request, "[New](new.md)".into()), cx);
-                assert!(viewer.link_panel.is_none());
-            })
+        view.update(cx, |v, cx| {
+            let request = pending(v.request_operation(DocumentOperation::Reload, origin, None, cx));
+            assert!(!v.lua.context().ui.borrow().windows.is_empty());
+            v.complete(success(request, "[New](new.md)".into()), cx);
         });
         frame(cx, window);
-        view.read_with(cx, |viewer, _| {
+        assert!(!is_open(cx, &view));
+        view.read_with(cx, |v, _| {
             assert_eq!(
-                viewer.message.as_deref(),
+                v.message.as_deref(),
                 Some("Link selection closed because the document changed")
             );
-            assert!(!viewer.message_is_error);
-            assert_eq!(
-                viewer.status_severity(),
-                Some(crate::config::Group::Warning)
-            );
-            assert_eq!(viewer.app.mode, Mode::Normal);
+            assert!(!v.message_is_error);
+            assert_eq!(v.app.mode, Mode::Normal);
         });
-        let reads = Rc::new(RefCell::new(Vec::new()));
-        let captured = reads.clone();
-        let _subscription = cx.update(|cx| {
-            cx.subscribe(&view, move |_, request: &ReadRequest, _| {
-                captured.borrow_mut().push(request.clone())
-            })
+        let (reads, _sub) = capture_reads(cx, &view);
+        view.update(cx, |v, cx| {
+            assert!(!old.confirm(v.lua.lua()).unwrap());
+            v.pump_lua(cx);
         });
-        // Retaining the old entity does not retain its execution subscription.
-        cx.update(|cx| {
-            old_panel.update(cx, |_, cx| {
-                cx.emit(crate::ui::selection_panel::Event::Confirm(0))
-            })
-        });
-        frame(cx, window);
         assert!(reads.borrow().is_empty());
         press(cx, window, "f");
-        panel(cx, &view).read_with(cx, |panel, cx| {
-            assert!(panel.input.read(cx).value().is_empty());
-            assert_eq!(panel.items[0].primary, "New");
-        });
+        assert_ne!(panel(cx, &view).owner, p.owner);
+        assert_eq!(
+            query(cx, &view).read_with(cx, |q, _| q.value().to_string()),
+            ""
+        );
     }
 }
 
@@ -148,57 +125,141 @@ fn selection_panel_external_movements_and_mermaid_completion_keep_panel_and_inpu
     frame(cx, window);
     press(cx, window, "f");
     input(cx, window, "dsg");
-    let selection = panel(cx, &view);
+    let owner = panel(cx, &view).owner;
     for operation in [
         ExternalOperation::Scroll(ScrollDirection::Down),
         ExternalOperation::Bottom,
         ExternalOperation::Top,
     ] {
-        cx.update(|cx| {
-            view.update(cx, |viewer, cx| {
-                let result =
-                    viewer.request_external(operation, ExternalRequestId("move".into()), cx);
-                assert!(matches!(
-                    result,
-                    OperationResult::Complete {
-                        outcome: Ok(()),
-                        ..
-                    }
-                ));
-            })
+        view.update(cx, |v, cx| {
+            assert!(matches!(
+                v.request_external(operation, ExternalRequestId("move".into()), cx),
+                OperationResult::Complete {
+                    outcome: Ok(()),
+                    ..
+                }
+            ))
         });
         frame(cx, window);
-        assert_eq!(panel(cx, &view), selection);
+        assert_eq!(panel(cx, &view).owner, owner);
     }
-    cx.update(|cx| {
-        view.update(cx, |viewer, cx| {
-            viewer.complete_diagram(
-                DiagramResult {
-                    request: running_diagram(viewer),
-                    png: Ok(PNG.to_vec()),
-                },
-                cx,
-            );
-            cx.notify();
-        })
-    });
-    frame(cx, window);
-    assert_eq!(panel(cx, &view), selection);
-    selection.read_with(cx, |panel, cx| {
-        assert_eq!(panel.input.read(cx).value().as_ref(), "dsg")
-    });
-    view.read_with(cx, |viewer, _| {
-        assert_eq!(viewer.document.diagram_images.len(), 1)
+    view.update(cx, |v, cx| {
+        v.complete_diagram(
+            DiagramResult {
+                request: running_diagram(v),
+                png: Ok(PNG.to_vec()),
+            },
+            cx,
+        )
     });
     for _ in 0..3 {
         frame(cx, window);
     }
+    assert_eq!(panel(cx, &view).owner, owner);
+    assert_eq!(
+        query(cx, &view).read_with(cx, |q, _| q.value().to_string()),
+        "dsg"
+    );
+    view.read_with(cx, |v, _| assert_eq!(v.document.diagram_images.len(), 1));
     let mut visual = gpui_kit::VisualTestContext::from_window(window, cx);
     assert_eq!(
         visual.debug_bounds("mermaid-21").unwrap().size,
-        size(px(10.), px(5.)),
-        "the completed Mermaid PNG must reach actual layout"
+        size(px(10.), px(5.))
     );
+}
+
+#[gpui_kit::test]
+fn selection_panel_confirm_then_read_failure_keeps_original_body_distance_and_history_without_reopen(
+    cx: &mut TestAppContext,
+) {
+    let source = "[Missing](missing.md)\n\n".to_owned() + &"Original body\n\n".repeat(100);
+    let (window, view) = open(cx, source.clone());
+    frame(cx, window);
+    press(cx, window, "ctrl-d");
+    let distance = view.read_with(cx, |v, cx| v.document.distance(cx));
+    let (reads, _sub) = capture_reads(cx, &view);
+    press(cx, window, "f");
+    press(cx, window, "enter");
+    let request = reads.borrow_mut().pop().unwrap();
+    view.update(cx, |v, cx| {
+        v.complete(
+            ReadResult {
+                request,
+                content: Err("missing destination".into()),
+            },
+            cx,
+        )
+    });
+    frame(cx, window);
+    assert!(!is_open(cx, &view));
+    cx.update_window(window, |_, w, cx| {
+        view.update(cx, |v, cx| {
+            assert_eq!(v.app.mode, Mode::Normal);
+            assert_eq!(v.status_text(), "missing destination");
+            assert_eq!(v.status_severity(), Some(crate::config::Group::Error));
+            assert_eq!(v.app.document().unwrap().source.as_str(), source);
+            assert_eq!(v.document.distance(cx), distance);
+            assert!(v.body_focus.is_focused(w));
+            assert!(matches!(
+                v.request_operation(DocumentOperation::Back, OperationOrigin::Keyboard, None, cx),
+                OperationResult::Complete {
+                    outcome: Err(OperationError::NoPreviousEntry),
+                    ..
+                }
+            ));
+        })
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn selection_panel_external_history_adoption_closes_only_on_success(cx: &mut TestAppContext) {
+    let (window, view) = open(cx, "[First](first.md)".into());
+    frame(cx, window);
+    view.update(cx, |v, cx| {
+        let request = pending(v.request_document(v.path.with_file_name("second.md"), None, cx));
+        v.complete(success(request, "[Second](second-link.md)".into()), cx);
+    });
+    frame(cx, window);
+    press(cx, window, "f");
+    input(cx, window, "second");
+    let owner = panel(cx, &view).owner;
+    view.update(cx, |v, cx| {
+        let request = pending(v.request_external(
+            ExternalOperation::Back,
+            ExternalRequestId("back-failed".into()),
+            cx,
+        ));
+        v.complete(
+            ReadResult {
+                request,
+                content: Err("history missing".into()),
+            },
+            cx,
+        );
+    });
+    frame(cx, window);
+    assert_eq!(panel(cx, &view).owner, owner);
+    assert_eq!(
+        query(cx, &view).read_with(cx, |q, _| q.value().to_string()),
+        "second"
+    );
+    view.update(cx, |v, cx| {
+        let request = pending(v.request_external(
+            ExternalOperation::Back,
+            ExternalRequestId("back".into()),
+            cx,
+        ));
+        v.complete(success(request, "[First](first.md)".into()), cx);
+    });
+    frame(cx, window);
+    assert!(!is_open(cx, &view));
+    view.read_with(cx, |v, _| {
+        assert_eq!(
+            v.message.as_deref(),
+            Some("Link selection closed because the document changed")
+        )
+    });
 }
 
 #[gpui_kit::test]
@@ -247,7 +308,7 @@ fn selection_panel_real_image_decode_completion_does_not_close_or_reset_panel(
     );
     press(cx, window, "f");
     input(cx, window, "dsg");
-    let selection = panel(cx, &view);
+    let selection = panel(cx, &view).owner;
     let wake = {
         let mut gate = gate.lock().unwrap();
         gate.0 = true;
@@ -257,10 +318,11 @@ fn selection_panel_real_image_decode_completion_does_not_close_or_reset_panel(
     for _ in 0..3 {
         frame(cx, window);
     }
-    assert_eq!(panel(cx, &view), selection);
-    selection.read_with(cx, |panel, cx| {
-        assert_eq!(panel.input.read(cx).value().as_ref(), "dsg")
-    });
+    assert_eq!(panel(cx, &view).owner, selection);
+    assert_eq!(
+        query(cx, &view).read_with(cx, |q, _| q.value().to_string()),
+        "dsg"
+    );
     view.read_with(cx, |viewer, cx| {
         let row = viewer
             .document
@@ -327,117 +389,6 @@ fn selection_panel_cancel_preserves_search_matches_highlights_position_and_histo
     press(cx, window, "/");
     press(cx, window, "enter");
     view.read_with(cx, |viewer, _| assert_eq!(viewer.app.matches(), matches));
-}
-
-#[gpui_kit::test]
-fn selection_panel_confirm_then_read_failure_keeps_original_body_distance_and_history_without_reopen(
-    cx: &mut TestAppContext,
-) {
-    let source = "[Missing](missing.md)\n\n".to_owned() + &"Original body\n\n".repeat(100);
-    let (window, view) = open(cx, source.clone());
-    frame(cx, window);
-    press(cx, window, "ctrl-d");
-    let distance = view.read_with(cx, |viewer, cx| viewer.document.distance(cx));
-    let reads = Rc::new(RefCell::new(Vec::new()));
-    let captured = reads.clone();
-    let _subscription = cx.update(|cx| {
-        cx.subscribe(&view, move |_, request: &ReadRequest, _| {
-            captured.borrow_mut().push(request.clone())
-        })
-    });
-    press(cx, window, "f");
-    press(cx, window, "enter");
-    let request = reads.borrow_mut().pop().unwrap();
-    cx.update(|cx| {
-        view.update(cx, |viewer, cx| {
-            viewer.complete(
-                ReadResult {
-                    request,
-                    content: Err("missing destination".into()),
-                },
-                cx,
-            )
-        })
-    });
-    frame(cx, window);
-    cx.update_window(window, |_, window, cx| {
-        view.update(cx, |viewer, cx| {
-            assert!(viewer.link_panel.is_none());
-            assert_eq!(viewer.app.mode, Mode::Normal);
-            assert_eq!(viewer.app.error(), Some("missing destination"));
-            assert_eq!(viewer.app.document().unwrap().source.as_str(), source);
-            assert_eq!(viewer.document.distance(cx), distance);
-            assert!(viewer.body_focus.is_focused(window));
-            assert!(matches!(
-                viewer.request_operation(
-                    DocumentOperation::Back,
-                    OperationOrigin::Keyboard,
-                    None,
-                    cx
-                ),
-                OperationResult::Complete {
-                    outcome: Err(OperationError::NoPreviousEntry),
-                    ..
-                }
-            ));
-        })
-    })
-    .unwrap();
-}
-
-#[gpui_kit::test]
-fn selection_panel_external_history_adoption_closes_only_on_success(cx: &mut TestAppContext) {
-    let (window, view) = open(cx, "[First](first.md)".into());
-    frame(cx, window);
-    cx.update(|cx| {
-        view.update(cx, |viewer, cx| {
-            let request =
-                pending(viewer.request_document(viewer.path.with_file_name("second.md"), None, cx));
-            viewer.complete(success(request, "[Second](second-link.md)".into()), cx);
-        })
-    });
-    frame(cx, window);
-    press(cx, window, "f");
-    input(cx, window, "second");
-    cx.update(|cx| {
-        view.update(cx, |viewer, cx| {
-            let failed = pending(viewer.request_external(
-                ExternalOperation::Back,
-                ExternalRequestId("back-failed".into()),
-                cx,
-            ));
-            viewer.complete(
-                ReadResult {
-                    request: failed,
-                    content: Err("history missing".into()),
-                },
-                cx,
-            );
-            assert!(viewer.link_panel.is_some());
-        })
-    });
-    frame(cx, window);
-    panel(cx, &view).read_with(cx, |panel, cx| {
-        assert_eq!(panel.input.read(cx).value().as_ref(), "second")
-    });
-    cx.update(|cx| {
-        view.update(cx, |viewer, cx| {
-            let request = pending(viewer.request_external(
-                ExternalOperation::Back,
-                ExternalRequestId("back".into()),
-                cx,
-            ));
-            viewer.complete(success(request, "[First](first.md)".into()), cx);
-        })
-    });
-    frame(cx, window);
-    view.read_with(cx, |viewer, _| {
-        assert!(viewer.link_panel.is_none());
-        assert_eq!(
-            viewer.message.as_deref(),
-            Some("Link selection closed because the document changed")
-        );
-    });
 }
 
 #[gpui_kit::test]

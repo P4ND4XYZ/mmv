@@ -32,7 +32,7 @@ use crate::app::{
     ReadCompletion, ReadRequest, ReadResult,
 };
 
-fn success(request: ReadRequest, source: String) -> ReadResult {
+pub(super) fn success(request: ReadRequest, source: String) -> ReadResult {
     let key = DocumentKey(request.path.clone());
     ReadResult {
         request,

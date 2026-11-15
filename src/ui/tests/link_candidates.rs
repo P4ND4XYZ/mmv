@@ -3,7 +3,7 @@ use crate::core::{
     LinkTarget,
     links::{LinkKind, LinkMatcher},
 };
-use crate::ui::links::extract_candidates;
+use crate::ui::link_candidates::extract_candidates;
 
 fn candidates(source: &str) -> Vec<crate::core::links::LinkCandidate> {
     extract_candidates(&PathBuf::from(r"C:\fixtures\sample.md"), source).unwrap()
@@ -222,7 +222,7 @@ fn round2_reference_definitions_inside_footnotes_follow_upstream_recognition_and
 }
 
 #[gpui_kit::test]
-fn document_analysis_collects_offscreen_links_without_changing_normal_rendering(
+fn document_snapshot_collects_offscreen_links_without_changing_normal_rendering(
     cx: &mut TestAppContext,
 ) {
     let source = "[Start](start.md)\n\n".to_owned()
@@ -234,15 +234,9 @@ fn document_analysis_collects_offscreen_links_without_changing_normal_rendering(
         window.render_frame(cx);
         view.update(cx, |viewer, cx| {
             viewer.analyze_document(cx).unwrap();
-            let analysis = viewer.document.analysis.as_ref().unwrap();
-            assert_eq!(
-                analysis
-                    .candidates
-                    .iter()
-                    .map(|v| v.display_name.as_str())
-                    .collect::<Vec<_>>(),
-                ["Start", "Preview"]
-            );
+            viewer.lua.lua().load(
+                "local links=require('mmv').document.current():links(); assert(#links==2); assert(links[1].display_name=='Start' and links[2].display_name=='Preview')",
+            ).exec().unwrap();
             let rendered = viewer.document.text.read(cx).rendered_text();
             assert!(rendered.as_str().contains("Start"));
             assert!(rendered.as_str().contains("Offscreen HTML"));

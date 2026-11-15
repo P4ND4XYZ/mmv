@@ -8,7 +8,6 @@ actions!(
     evaluation,
     [
         Find,
-        Links,
         Command,
         NextMatch,
         PreviousMatch,
@@ -54,7 +53,6 @@ pub fn bind_keys(cx: &mut gpui_kit::App) {
         KeyBinding::new("end", LastLine, Some("EvaluationTree")),
         KeyBinding::new("r", TreeRefresh, Some("EvaluationTree")),
         KeyBinding::new("/", Find, Some("EvaluationNormal")),
-        KeyBinding::new("f", Links, Some("EvaluationNormal")),
         KeyBinding::new(":", Command, Some("EvaluationNormal")),
         KeyBinding::new("n", NextMatch, Some("EvaluationNormal")),
         KeyBinding::new("shift-n", PreviousMatch, Some("EvaluationNormal")),
@@ -138,7 +136,14 @@ pub(super) fn bind_root_actions(root: Div, cx: &mut Context<Viewer>) -> Div {
         }))
         .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
             if event.keystroke.key == "escape"
-                && this.link_panel.is_none()
+                && this
+                    .lua
+                    .context()
+                    .ui
+                    .borrow()
+                    .windows
+                    .iter()
+                    .all(|w| !w.modal)
                 && !this.tree.focus.is_focused(window)
             {
                 this.cancel_input(window, cx);
@@ -177,10 +182,7 @@ pub(super) fn bind_tree_actions(tree: Div, cx: &mut Context<Viewer>) -> Div {
 }
 
 pub(super) fn bind_body_actions(body: Div, cx: &mut Context<Viewer>) -> Div {
-    body.on_action(cx.listener(|this, _: &Links, window, cx| {
-        this.begin_link_selection(window, cx);
-    }))
-    .on_action(cx.listener(|this, _: &Find, window, cx| {
+    body.on_action(cx.listener(|this, _: &Find, window, cx| {
         this.begin_input(false, window, cx);
     }))
     .on_action(cx.listener(|this, _: &Command, window, cx| this.begin_input(true, window, cx)))
@@ -204,7 +206,15 @@ pub(super) fn bind_body_actions(body: Div, cx: &mut Context<Viewer>) -> Div {
 
 impl Viewer {
     pub(super) fn normal_keys_enabled(&self) -> bool {
-        self.app.mode == Mode::Normal && self.link_panel.is_none()
+        self.app.mode == Mode::Normal
+            && self
+                .lua
+                .context()
+                .ui
+                .borrow()
+                .windows
+                .iter()
+                .all(|w| !w.modal)
     }
 
     pub(super) fn begin_input(

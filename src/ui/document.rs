@@ -95,8 +95,6 @@ pub(super) struct DocumentAnalysis {
     parsed_blocks: Vec<BlockNode>,
     pub blocks: Vec<Option<std::ops::Range<usize>>>,
     pub links: Vec<std::ops::Range<usize>>,
-    pub candidates: Vec<crate::core::links::LinkCandidate>,
-    pub source: Arc<super::source_preview::SourceSnapshot>,
     headings: BTreeMap<String, HeadingLocation>,
     source_lines: crate::core::source_position::SourceLines,
 }
@@ -360,11 +358,6 @@ impl Viewer {
                 .iter()
                 .filter_map(|range| snapshot.range_for_source(range.clone()))
                 .collect(),
-            candidates: super::links::extract_candidates(&document.path, &document.source)?,
-            source: Arc::new(super::source_preview::SourceSnapshot::new(
-                document.source.clone(),
-                document.generation,
-            )),
             headings,
             snapshot,
             parsed_blocks: blocks,

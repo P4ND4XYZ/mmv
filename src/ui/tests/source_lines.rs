@@ -502,20 +502,25 @@ fn same_source_line_open_keeps_prompt_and_link_selection_entities(cx: &mut TestA
         frame(cx, window);
         cx.update_window(window, |_, window, cx| {
             window.press(key, cx);
-            if key != "f" {
-                window.input("edit", cx);
-            }
+            window.input(if key == "f" { "link" } else { "edit" }, cx);
         })
         .unwrap();
         frame(cx, window);
+        let floating_input =
+            (key == "f").then(|| crate::ui::lua_floating::standard_links::query(cx, &view));
         let (input, mode, panel) = view.read_with(cx, |viewer, _| {
             (
                 viewer.input.state.clone(),
                 viewer.app.mode.clone(),
-                viewer
-                    .link_panel
-                    .as_ref()
-                    .map(|selection| selection.panel.clone()),
+                viewer.lua.context().ui.borrow().windows.last().map(|w| {
+                    (
+                        w.owner,
+                        w.components
+                            .iter()
+                            .map(|(key, c)| (key.clone(), c.identity))
+                            .collect::<Vec<_>>(),
+                    )
+                }),
             )
         });
         navigate(cx, &view, 181);
@@ -527,19 +532,32 @@ fn same_source_line_open_keeps_prompt_and_link_selection_entities(cx: &mut TestA
                 assert_eq!(viewer.input.state, input);
                 assert_eq!(viewer.app.mode, mode);
                 assert_eq!(
-                    viewer
-                        .link_panel
-                        .as_ref()
-                        .map(|selection| selection.panel.clone()),
+                    viewer.lua.context().ui.borrow().windows.last().map(|w| (
+                        w.owner,
+                        w.components
+                            .iter()
+                            .map(|(key, c)| (key.clone(), c.identity))
+                            .collect::<Vec<_>>(),
+                    )),
                     panel
                 );
                 if key != "f" {
                     assert_eq!(input.read(cx).value().as_ref(), "edit");
                     assert!(input.focus_handle(cx).is_focused(window));
+                } else {
+                    let query = floating_input.as_ref().unwrap();
+                    assert_eq!(query.read(cx).value().as_ref(), "link");
+                    assert!(query.focus_handle(cx).is_focused(window));
                 }
             })
         })
         .unwrap();
+        if let Some(original) = floating_input {
+            assert_eq!(
+                crate::ui::lua_floating::standard_links::query(cx, &view),
+                original
+            );
+        }
     }
 }
 

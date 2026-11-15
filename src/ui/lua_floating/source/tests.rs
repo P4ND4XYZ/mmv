@@ -177,3 +177,106 @@ fn raw_source_alignment_one_shot_utf8_reflow_anchor_and_full_document(cx: &mut T
         assert!(s.top_source() > range);
     });
 }
+
+fn open_raw(cx: &mut TestAppContext, model: Source) -> (AnyWindowHandle, Entity<RawSource>) {
+    let mut source = None;
+    let (window, _) = cx.update(|cx| {
+        gpui_kit::init(cx);
+        gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| {
+            let palette =
+                Palette::resolve(&Default::default(), gpui_kit::component::Theme::global(cx));
+            let entity = cx.new(|_| RawSource::new(model, palette));
+            source = Some(entity.clone());
+            cx.new(|_| Harness {
+                source: entity,
+                width: 260.,
+                font: 16.,
+            })
+        })
+        .unwrap()
+    });
+    frame(cx, window);
+    (window, source.unwrap())
+}
+
+#[gpui_kit::test]
+fn migrated_preview_long_line_preserves_every_utf8_byte_and_shapes_visible_rows(
+    cx: &mut TestAppContext,
+) {
+    let text = "Wi日本語e\u{301}👩‍💻\t".repeat(5000);
+    let total = text.len();
+    let (window, source) = open_raw(cx, model(text));
+    source.read_with(cx, |s, _| {
+        let bytes = s.model.source.text();
+        assert_eq!(s.rows.first().unwrap().start, 0);
+        assert_eq!(s.rows.last().unwrap().end, total);
+        assert!(s.rows.len() > 1000);
+        assert!(s.rows.windows(2).all(|r| r[0].end == r[1].start));
+        assert!(
+            s.rows
+                .iter()
+                .all(|r| bytes.is_char_boundary(r.start) && bytes.is_char_boundary(r.end))
+        );
+    });
+    cx.update_window(window, |_, w, cx| {
+        source.update(cx, |s, _| {
+            let lines = s.visible(
+                Bounds::new(point(px(0.), px(0.)), size(px(260.), px(150.))),
+                w,
+            );
+            assert!(lines.len() <= 8, "shape only visible rows plus one");
+            assert!(lines.iter().all(|(line, _)| line.width() <= px(260.1)));
+        })
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn migrated_preview_link_background_is_painted_and_cleared(cx: &mut TestAppContext) {
+    let text = "before [Link](target.md) after";
+    let mut m = model(text.into());
+    let start = text.find("[Link]").unwrap();
+    m.highlight = Some(start..start + "[Link](target.md)".len());
+    let (window, source) = open_raw(cx, m);
+    let background = source.read_with(cx, |s, _| {
+        gpui_kit::Background::from(
+            s.palette
+                .get(crate::config::Group::PanelSelected)
+                .bg
+                .opacity(0.35),
+        )
+    });
+    cx.update_window(window, |_, w, _| {
+        let quads = w
+            .painted_quads()
+            .into_iter()
+            .filter(|q| q.background == background)
+            .collect::<Vec<_>>();
+        assert_eq!(quads.len(), 1);
+        assert!(quads[0].bounds.origin.x.0 > 0.);
+        assert!(quads[0].bounds.size.width.0 > 0.);
+        assert!(quads[0].bounds.right().0 < 260. * w.scale_factor());
+    })
+    .unwrap();
+    source.update(cx, |s, cx| {
+        s.model.highlight = None;
+        cx.notify();
+    });
+    frame(cx, window);
+    cx.update_window(window, |_, w, _| {
+        assert!(w.painted_quads().iter().all(|q| q.background != background))
+    })
+    .unwrap();
+}
+
+#[test]
+fn migrated_preview_source_indexes_utf8_crlf_without_copying() {
+    let m = model("日本語\r\nnext\n".into());
+    let source = m.source.text();
+    assert!(std::sync::Arc::ptr_eq(&source, &m.source.text()));
+    let snapshot = RawSource::new(
+        m,
+        Palette::resolve(&Default::default(), &gpui_kit::component::Theme::default()),
+    );
+    assert_eq!(snapshot.lines, vec![0..9, 11..15, 16..16]);
+}

@@ -21,6 +21,8 @@ use crate::config::Config;
 pub(crate) use callbacks::{CallbackScope, ErrorInfo, OwnerId};
 pub(crate) use host::{HostOutput, Pump};
 
+pub(crate) const STANDARD: &str = include_str!("lua/standard.lua");
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Phase {
     Init,
@@ -114,6 +116,9 @@ impl LuaRuntime {
     /// installs the VM returned by the configuration loader instead.
     pub(crate) fn from_config(config: Config) -> Self {
         let runtime = Self::new().expect("create Lua runtime");
+        runtime
+            .run_init(STANDARD, "@mmv/standard.lua")
+            .expect("standard Lua");
         let mut state = runtime.context.shared.borrow_mut();
         state.config = config;
         state.initializing = false;

@@ -1,17 +1,14 @@
 mod document;
 mod file_tree;
-mod floating_panel;
 mod input;
-mod links;
+mod link_candidates;
 mod lua;
 mod lua_floating;
 mod lua_navigation;
 mod mermaid;
 pub(crate) mod pane;
 mod search;
-mod selection_panel;
 pub(crate) mod source_line_mapping;
-mod source_preview;
 mod status;
 mod theme;
 
@@ -39,8 +36,6 @@ pub struct Viewer {
     input: Prompt,
     body_focus: FocusHandle,
     tree: file_tree::TreePane,
-    link_panel: Option<links::LinkSelection>,
-    restore_body_focus: bool,
     focus_body_after_tree_open: bool,
     message: Option<String>,
     message_is_error: bool,
@@ -154,8 +149,6 @@ impl Viewer {
             input,
             body_focus,
             tree,
-            link_panel: None,
-            restore_body_focus: false,
             focus_body_after_tree_open: false,
             message: None,
             message_is_error: false,
@@ -473,8 +466,6 @@ impl Viewer {
         self.lua_read_completed(&completion);
         self.focus_body_after_tree_open |= completion.tree_open_succeeded;
         if completion.adopted {
-            let panel_closed = self.link_panel.take().is_some();
-            self.restore_body_focus |= panel_closed;
             let document = self.app.document().expect("accepted document");
             let generation = document.generation;
             let pending_movements = self
@@ -489,8 +480,7 @@ impl Viewer {
                 &self.config.tree.root_markers,
             );
             self.emit_tree_requests(tree_requests, cx);
-            self.message =
-                panel_closed.then(|| "Link selection closed because the document changed".into());
+            self.message = None;
             self.message_is_error = false;
             self.document.replace(generation, pending_movements, cx);
             self.display_error = None;
@@ -583,10 +573,6 @@ impl Render for Viewer {
         {
             self.body_focus.focus(window, cx);
         }
-        if std::mem::take(&mut self.restore_body_focus) {
-            // Logical focus only: never activate the OS window on external adoption.
-            self.body_focus.focus(window, cx);
-        }
         self.deferred_links.retain(|link| {
             link.order > self.latest_navigation_order
                 && self
@@ -637,10 +623,6 @@ impl Render for Viewer {
             &self.palette,
         );
 
-        let overlay = self
-            .link_panel
-            .as_ref()
-            .map(|selection| selection.overlay(&self.palette));
         let pane_keys = self.pane_keys_enabled(window, cx);
         let lua_floats = self.render_lua_floats(window, cx);
         input::bind_root_actions(div(), cx)
@@ -659,7 +641,6 @@ impl Render for Viewer {
             .child(panes)
             .child(status_line)
             .child(command_line)
-            .children(overlay)
             .children(lua_floats)
     }
 }

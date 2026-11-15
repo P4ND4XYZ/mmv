@@ -15,7 +15,14 @@ impl Viewer {
         cx: &mut Context<Self>,
     ) -> bool {
         self.app.mode == Mode::Normal
-            && self.link_panel.is_none()
+            && self
+                .lua
+                .context()
+                .ui
+                .borrow()
+                .windows
+                .iter()
+                .all(|w| !w.modal)
             && !self.input.state.update(cx, |input, cx| {
                 input.marked_text_range(window, cx).is_some()
             })
