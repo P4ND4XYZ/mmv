@@ -64,6 +64,21 @@ class CliTests(unittest.TestCase):
             "1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9",
         )
         self.assertEqual(result.stdout, (generator.SOURCE / "OFL.txt").read_bytes())
+        for relative, expected in (
+            ("scripts/generate_pdf_fixtures.py",
+             "4bead877bbcec30175f5a7bf855583291d1afa4b9298144519fc6045c0b8abb8"),
+            ("tests/fixtures/pdf/font-source.json",
+             "713d903ee0ba996a7f87deaaed20bdf9340aa000afbc252f38a354363158c654"),
+        ):
+            with self.subTest(path=relative):
+                result = subprocess.run(
+                    ["git", "-c", "core.autocrlf=true", "cat-file", "--filters",
+                     f"HEAD:{relative}"],
+                    cwd=generator.ROOT, capture_output=True, timeout=10, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(generator.sha(result.stdout), expected)
+                self.assertEqual(result.stdout, (generator.ROOT / relative).read_bytes())
 
     def test_help_and_missing_argument_exit_contract(self):
         for script in ("generate_pdf_fixtures.py", "check_pdf_fixtures.py"):

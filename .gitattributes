@@ -1,2 +1,5 @@
 # Preserve the exact upstream license bytes required by the fixture identity check.
 /tests/fixtures/pdf/OFL.txt -text
+# Keep byte-sensitive corpus inputs stable across checkout settings.
+/scripts/generate_pdf_fixtures.py text eol=lf
+/tests/fixtures/pdf/font-source.json text eol=lf
