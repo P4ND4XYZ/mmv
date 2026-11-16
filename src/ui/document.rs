@@ -929,7 +929,10 @@ impl Viewer {
                             cx.notify();
                             return;
                         }
-                        let markdown = self.document.as_markdown_mut().expect("Markdown variant checked");
+                        let markdown = self
+                            .document
+                            .as_markdown_mut()
+                            .expect("Markdown variant checked");
                         markdown.heading_reveal = Some((request.clone(), markdown.layout_serial));
                         cx.notify();
                         return;
@@ -1050,13 +1053,11 @@ impl Viewer {
             let view = view.clone();
             return input::bind_body_actions(div(), cx)
                 .debug_selector(|| "document-body".to_owned())
-                .key_context(
-                    if self.normal_keys_enabled() {
-                        "EvaluationNormal"
-                    } else {
-                        "EvaluationEditing"
-                    },
-                )
+                .key_context(if self.normal_keys_enabled() {
+                    "EvaluationNormal"
+                } else {
+                    "EvaluationEditing"
+                })
                 .track_focus(&self.body_focus)
                 .flex_1()
                 .min_w(px(super::pane::BODY_MIN_WIDTH))

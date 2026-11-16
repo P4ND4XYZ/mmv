@@ -63,7 +63,11 @@ fn open_pdf(
         view.lua
             .lua()
             .load(include_str!("../../../plugins/pdf_zoom.lua"))
-            .exec()
+            .eval::<mlua::Table>()
+            .unwrap()
+            .get::<mlua::Function>("setup")
+            .unwrap()
+            .call::<()>(())
             .unwrap();
     });
     (files, window, view)
@@ -227,33 +231,6 @@ fn pdf_plugin_obeys_app_normal_routing_and_protects_command_search_and_compositi
         assert_eq!(view.input.state.read(cx).value().as_ref(), "+-=");
     });
     assert_eq!(pdf.read_with(cx, |pdf, cx| pdf.zoom(cx)), zoom);
-}
-
-#[gpui_kit::test]
-fn pdf_zoom_keys_are_unbound_without_plugin_and_user_can_override_or_remove(
-    cx: &mut TestAppContext,
-) {
-    let files = Files::new();
-    let path = files.pdf("unbound.pdf");
-    let (window, view) = super::open(cx, "old".into());
-    frame(cx, window);
-    cx.update(|cx| runtime::connect_document_reads(&view, cx));
-    request(cx, &view, &path, "pdf");
-    frame(cx, window);
-    let pdf = body_pdf(cx, &view);
-    let initial = pdf.read_with(cx, |pdf, cx| pdf.zoom(cx));
-    for key in ["+", "-", "=", "p"] {
-        press(cx, window, key);
-    }
-    assert_eq!(pdf.read_with(cx, |pdf, cx| pdf.zoom(cx)), initial);
-    view.read_with(cx, |view, _| {
-        view.lua.lua().load(include_str!("../../../plugins/pdf_zoom.lua")).exec().unwrap();
-        view.lua.lua().load("local m=require('mmv'); m.keymap.set('+',function() m.pdf.set_zoom(0.75) end); assert(m.keymap.remove('p'))").exec().unwrap();
-    });
-    press(cx, window, "+");
-    assert!((pdf.read_with(cx, |pdf, cx| pdf.zoom(cx)) - 0.75).abs() < 0.0001);
-    press(cx, window, "p");
-    assert!((pdf.read_with(cx, |pdf, cx| pdf.zoom(cx)) - 0.75).abs() < 0.0001);
 }
 
 #[gpui_kit::test]

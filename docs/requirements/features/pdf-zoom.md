@@ -39,7 +39,7 @@
 
 ## 任意プラグイン
 
-`plugins/pdf_zoom.lua` を利用者のinit.luaから明示ロードした場合だけ、Normalで `+`：拡大、`-`：縮小、`=`：幅fit、`p`：ページfit toggleを登録します。未ロード時はこれらのPDFズーム操作を割り当てません。`standard.lua` からの自動ロードや利用者init.luaの生成はしません。ロード後に上書き・解除できます。コピーとdofileの例は[plugins README](../../../plugins/README.md)を参照してください。
+`plugins/pdf_zoom.lua` を利用者のinit.luaから明示ロードして `setup()` を呼び出した場合だけ、Normalで `+`：拡大、`-`：縮小、`=`：幅fit、`p`：ページfit toggleを登録します。未ロード時はこれらのPDFズーム操作を割り当てません。`standard.lua` からの自動ロードや利用者init.luaの生成はしません。ロード後に上書き・解除できます。コピーとdofileの例は[plugins README](../../../plugins/README.md)を参照してください。
 
 ## 受け入れ条件
 

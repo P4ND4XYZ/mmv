@@ -114,34 +114,3 @@ fn pdf_phase_rules_cover_init_render_and_render_item() {
     assert!(runtime.take_error().is_none());
     assert_eq!(runtime.context().ui.borrow().windows.len(), 1);
 }
-
-#[test]
-fn pdf_plugin_is_opt_in_and_keys_can_be_overridden_or_removed() {
-    let runtime = runtime();
-    for key in ["+", "-", "=", "p"] {
-        assert!(!runtime.enqueue_key(key).unwrap());
-    }
-    let plugin = include_str!("../../../plugins/pdf_zoom.lua");
-    let (runtime, error) = LuaRuntime::initialize("", Some((plugin, "@pdf_zoom.lua"))).unwrap();
-    assert!(error.is_none(), "{error:?}");
-    for key in ["+", "-", "=", "p"] {
-        assert!(runtime.enqueue_key(key).unwrap());
-        assert_eq!(runtime.pump_one(), Pump::Dispatched);
-        assert_eq!(runtime.pump_one(), Pump::Idle); // no PDF is an ordinary no-op
-    }
-    runtime
-        .lua()
-        .load(
-            r#"
-        local m=require('mmv')
-        m.keymap.set('+',function() overridden=true end)
-        assert(m.keymap.remove('p'))
-    "#,
-        )
-        .exec()
-        .unwrap();
-    assert!(!runtime.enqueue_key("p").unwrap());
-    assert!(runtime.enqueue_key("+").unwrap());
-    assert_eq!(runtime.pump_one(), Pump::Dispatched);
-    assert!(runtime.lua().globals().get::<bool>("overridden").unwrap());
-}

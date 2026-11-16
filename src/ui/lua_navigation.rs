@@ -213,7 +213,11 @@ impl Viewer {
         }
     }
 
-    pub(super) fn record_lua_read_failure(&mut self, id: ReadRequestId, failure: Option<crate::infra::ReadFailureKind>) {
+    pub(super) fn record_lua_read_failure(
+        &mut self,
+        id: ReadRequestId,
+        failure: Option<crate::infra::ReadFailureKind>,
+    ) {
         if let Some(pending) = self.lua_navigation.pending.as_mut()
             && matches!(pending.stage, Stage::Reading(read) if read == id)
         {
@@ -296,11 +300,13 @@ impl Viewer {
             super::document::DocumentView::Markdown(_) => None,
         };
         let document = self.app.document().expect("adopted document");
-        let snapshot = document.markdown_source().map(|source| DocumentHandle::new(
-            document.path.clone(),
-            source.clone(),
-            super::link_candidates::extract_candidates,
-        ));
+        let snapshot = document.markdown_source().map(|source| {
+            DocumentHandle::new(
+                document.path.clone(),
+                source.clone(),
+                super::link_candidates::extract_candidates,
+            )
+        });
         if let Err(error) = self
             .lua
             .context()

@@ -104,7 +104,11 @@ impl Viewer {
         lua.lua()
             .load(include_str!("../plugins/link_picker.lua"))
             .set_name("@test/link_picker.lua")
-            .exec()
+            .eval::<mlua::Table>()
+            .unwrap()
+            .get::<mlua::Function>("setup")
+            .unwrap()
+            .call::<()>(())
             .expect("load link picker test fixture");
         Self::with_lua(path, started, lua, config_notice, window, cx)
     }
@@ -569,12 +573,13 @@ impl Viewer {
     pub fn complete_diagram(&mut self, result: DiagramResult, cx: &mut Context<Self>) {
         if self.app.complete_diagram(&result)
             && let Ok(png) = result.png
-            && let Some(markdown) = self.document.as_markdown_mut() {
-                markdown.diagram_images.insert(
-                    result.request.start,
-                    Arc::new(Image::from_bytes(ImageFormat::Png, png)),
-                );
-            }
+            && let Some(markdown) = self.document.as_markdown_mut()
+        {
+            markdown.diagram_images.insert(
+                result.request.start,
+                Arc::new(Image::from_bytes(ImageFormat::Png, png)),
+            );
+        }
         self.start_next_diagram(cx);
         cx.notify();
     }

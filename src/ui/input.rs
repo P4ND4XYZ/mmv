@@ -202,7 +202,6 @@ pub(super) fn bind_body_actions(body: Div, cx: &mut Context<Viewer>) -> Div {
     }))
     .on_action(cx.listener(|this, _: &NextMatch, _, cx| this.step_match(true, cx)))
     .on_action(cx.listener(|this, _: &PreviousMatch, _, cx| this.step_match(false, cx)))
-
 }
 
 impl Viewer {

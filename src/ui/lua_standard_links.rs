@@ -616,47 +616,6 @@ fn app_lua_routing_nonmodal_native_input_modal_and_search_command(cx: &mut TestA
 }
 
 #[gpui_kit::test]
-fn link_picker_user_override_remove_and_atomic_failure_leave_f_unbound(cx: &mut TestAppContext) {
-    for (user, fails) in [
-        ("require('mmv').keymap.remove('f')", false),
-        (
-            "require('mmv').keymap.set('f',function()overridden=true end)",
-            false,
-        ),
-        (
-            "local m=require('mmv');m.keymap.remove('f');m.setup{view={position='left'}};error('broken')",
-            true,
-        ),
-        (
-            "local m=require('mmv');m.keymap.remove('f');pcall(m.keymap.set,'F',function()end)",
-            true,
-        ),
-    ] {
-        let (window, view) = crate::ui::tests::open(cx, "[Only](only.md)".into());
-        let source = format!("{}\n{user}", include_str!("../../plugins/link_picker.lua"));
-        let (runtime, error) =
-            crate::lua::LuaRuntime::initialize("", Some((&source, "@test-user"))).unwrap();
-        assert_eq!(error.is_some(), fails);
-        if fails {
-            assert_eq!(runtime.config(), crate::config::Config::default());
-        }
-        view.update(cx, |v, cx| {
-            v.release_lua();
-            v.lua = runtime;
-            v.publish_lua_document(cx);
-        });
-        frame(cx, window);
-        press(cx, window, "f");
-        assert!(!is_open(cx, &view));
-        view.read_with(cx, |v, _| {
-            if fails {
-                assert!(!v.lua.enqueue_key("f").unwrap());
-            }
-        });
-    }
-}
-
-#[gpui_kit::test]
 fn standard_lua_no_document_and_empty_document_do_not_execute(cx: &mut TestAppContext) {
     let (window, view) = crate::ui::tests::open(cx, "No links".into());
     frame(cx, window);

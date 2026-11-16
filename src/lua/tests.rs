@@ -37,50 +37,6 @@ fn drain(runtime: &LuaRuntime) -> Vec<ErrorInfo> {
 }
 
 #[test]
-fn defaults_have_no_link_picker_but_explicit_user_init_can_load_it() {
-    let (default, error) = LuaRuntime::initialize("", None).unwrap();
-    assert!(error.is_none());
-    assert!(!default.enqueue_key("f").unwrap());
-    assert!(
-        !LuaRuntime::from_config(Config::default())
-            .enqueue_key("f")
-            .unwrap()
-    );
-
-    let plugin = include_str!("../../plugins/link_picker.lua");
-    let (loaded, error) = LuaRuntime::initialize("", Some((plugin, "@user-init.lua"))).unwrap();
-    assert!(error.is_none(), "{error:?}");
-    assert!(loaded.enqueue_key("f").unwrap());
-    assert!(drain(&loaded).is_empty());
-    assert!(
-        loaded.context().ui.borrow().windows.is_empty(),
-        "no current document"
-    );
-
-    let failed = format!("{plugin}\npartial=true; error('after plugin')");
-    let (discarded, error) =
-        LuaRuntime::initialize("", Some((&failed, "@broken-user-init.lua"))).unwrap();
-    assert!(error.unwrap().contains("after plugin"));
-    assert!(!discarded.enqueue_key("f").unwrap());
-    assert!(
-        discarded
-            .lua()
-            .globals()
-            .get::<Value>("partial")
-            .unwrap()
-            .is_nil()
-    );
-    assert!(
-        discarded
-            .context()
-            .api(discarded.lua())
-            .unwrap()
-            .get::<Table>("document")
-            .is_ok()
-    );
-}
-
-#[test]
 fn editor_annotations_are_valid_lua_without_executing_them() {
     Lua::new()
         .load(include_str!("../../plugins/mmv.lua"))

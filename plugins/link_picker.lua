@@ -131,4 +131,20 @@ local function open_links()
   end)
 end
 
-mmv.keymap.set("f", open_links, { mode = "normal" })
+local M = {}
+
+-- Call once from init.lua; false skips registration without removing other mappings.
+function M.setup(opts)
+  if opts == nil then opts = {} end
+  assert(type(opts) == "table", "link_picker.setup expects a table")
+  local keys = opts.keys
+  if keys == nil then keys = {} end
+  assert(type(keys) == "table", "link_picker.setup keys must be a table")
+  local key = keys.open
+  if key == nil then key = "f" end
+  if key ~= false then
+    mmv.keymap.set(key, open_links, { mode = "normal" })
+  end
+end
+
+return M
