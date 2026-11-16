@@ -20,15 +20,16 @@ pub(crate) use watch::connect_watch;
 pub(crate) use pipe::PipeConnection;
 
 pub(crate) fn run_gui() -> std::io::Result<()> {
-    let namespace = infra::Namespace::current_user()?;
+    // Evaluate once, before live ownership or binding the configured port.
+    let loaded = infra::load_config();
+    let namespace = infra::Namespace::current_user(loaded.runtime.config().ipc_port)?;
     #[cfg(all(test, feature = "ui-tests"))]
     let namespace = infra::test_support::process_namespace().unwrap_or(namespace);
-    // Thread-owned guard outlives the window, Pipe shutdown and application run.
+    // File ownership outlives the window, transport shutdown and application run.
     let Some(_live) = infra::InstanceGuard::claim_gui(&namespace)? else {
         return Ok(());
     };
     let server = infra::PipeServer::bind(&namespace)?;
-    let loaded = infra::load_config();
     if let Some(error) = &loaded.error {
         infra::log_config_failure(error);
     }

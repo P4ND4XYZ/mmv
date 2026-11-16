@@ -3,7 +3,7 @@ use std::{
     fs::{self, OpenOptions},
     hash::{DefaultHasher, Hash, Hasher},
     io::{self, Write},
-    path::{Path, PathBuf},
+    path::Path,
     sync::{Mutex, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -139,10 +139,9 @@ fn move_if_exists(from: &Path, to: &Path) -> io::Result<()> {
 static LOGGER: OnceLock<Mutex<Logger>> = OnceLock::new();
 
 pub fn log_document_failure(path: &Path, reason: &str) {
-    let directory = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .map(|path| path.join("my-markdown-viewer").join("logs"));
+    let directory = super::paths::UserPaths::current()
+        .ok()
+        .map(|paths| paths.logs);
     LOGGER
         .get_or_init(|| Mutex::new(Logger::default()))
         .lock()
@@ -162,10 +161,9 @@ pub fn log_config_failure(error: &super::config::ConfigError) {
         .get_or_init(|| Mutex::new(Logger::default()))
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    let directory = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .map(|path| path.join("my-markdown-viewer").join("logs"));
+    let directory = super::paths::UserPaths::current()
+        .ok()
+        .map(|paths| paths.logs);
     record_config_failure(error, directory.as_deref(), &mut io::stderr().lock());
 }
 
@@ -196,9 +194,9 @@ fn record_config_failure(
 }
 
 pub fn log_diagram_failure(result: &DiagramResult) {
-    let directory = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .map(|path| path.join("my-markdown-viewer").join("logs"));
+    let directory = super::paths::UserPaths::current()
+        .ok()
+        .map(|paths| paths.logs);
     let mut logger = LOGGER
         .get_or_init(|| Mutex::new(Logger::default()))
         .lock()
@@ -219,6 +217,8 @@ pub fn log_diagram_failure(result: &DiagramResult) {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    use std::path::PathBuf;
 
     struct TempDir(PathBuf);
     impl TempDir {

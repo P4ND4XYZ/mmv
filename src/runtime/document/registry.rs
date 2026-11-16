@@ -38,9 +38,10 @@ impl ReadRegistry {
             }
         }
         if let Some(mut previous) = self.jobs.remove(&request.id)
-            && let Some(job) = previous.collector.take() {
-                job.detach();
-            }
+            && let Some(job) = previous.collector.take()
+        {
+            job.detach();
+        }
         let cancel = pdf::PrepareCancellation::default();
         self.jobs.insert(
             request.id,

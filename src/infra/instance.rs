@@ -1,62 +1,44 @@
-//! GUI lifetime ownership and CLI startup arbitration are separate mutexes.
+//! GUI lifetime and startup arbitration use distinct file locks.
 use super::{
     deadline::Deadline,
     ipc::{PipeClient, retryable},
-    security::{Handle, Namespace, UserSecurity},
+    lock,
+    paths::Namespace,
 };
 use crate::app::ExternalOperation;
-use std::{io, marker::PhantomData, os::windows::ffi::OsStrExt as _, rc::Rc, time::Instant};
-use windows_sys::Win32::{
-    Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT},
-    Security::Authorization::SE_KERNEL_OBJECT,
-    System::Threading::{
-        CREATE_NO_WINDOW, CreateMutexW, CreateProcessW, PROCESS_INFORMATION, ReleaseMutex,
-        STARTUPINFOW, WaitForSingleObject,
-    },
-};
+use std::{io, time::Instant};
 
-/// Must be dropped on the acquiring thread. Abandonment is recovered by the next
-/// caller; no process is terminated and no persistent lock file is used.
 pub struct InstanceGuard {
-    handle: Handle,
-    _thread: PhantomData<Rc<()>>,
+    _file: lock::SecureFile,
 }
 impl InstanceGuard {
     fn try_acquire(namespace: &Namespace, role: &str) -> io::Result<Option<Self>> {
-        let security = UserSecurity::current()?;
-        let attributes = security.attributes();
-        let handle =
-            Handle::new(unsafe { CreateMutexW(&attributes, 0, namespace.mutex(role).as_ptr()) })?;
-        // CreateMutex also opens pre-existing objects: never trust those silently.
-        security.verify(handle.0, SE_KERNEL_OBJECT)?;
-        match unsafe { WaitForSingleObject(handle.0, 0) } {
-            WAIT_OBJECT_0 | WAIT_ABANDONED => Ok(Some(Self {
-                handle,
-                _thread: PhantomData,
-            })),
-            WAIT_TIMEOUT => Ok(None),
-            _ => Err(io::Error::last_os_error()),
+        let file = lock::open(namespace, role)?;
+        match file.file.try_lock() {
+            Ok(()) => Ok(Some(Self { _file: file })),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+            Err(std::fs::TryLockError::Error(error)) => Err(error),
         }
     }
-    /// The internal GUI entry point must retain this guard for its full lifetime,
-    /// and refuse to create a window if another GUI already owns it.
     pub fn claim_gui(namespace: &Namespace) -> io::Result<Option<Self>> {
         Self::try_acquire(namespace, "live")
     }
 }
-impl Drop for InstanceGuard {
-    fn drop(&mut self) {
-        unsafe {
-            ReleaseMutex(self.handle.0);
-        }
-    }
-}
-/// Called by CLI threads, not recursively from the GUI lifetime-owner thread.
 pub fn gui_is_alive(namespace: &Namespace) -> io::Result<bool> {
     Ok(InstanceGuard::claim_gui(namespace)?.is_none())
 }
 
 pub const INTERNAL_GUI_ARGUMENT: &str = "--mmv-internal-gui";
+
+#[cfg(windows)]
+use super::security::Handle;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt as _;
+#[cfg(windows)]
+use windows_sys::Win32::System::Threading::{
+    CREATE_NO_WINDOW, CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW,
+};
+#[cfg(windows)]
 fn gui_command() -> io::Result<(Vec<u16>, Vec<u16>)> {
     let executable: Vec<u16> = std::env::current_exe()?.as_os_str().encode_wide().collect();
     // Windows filenames cannot contain quotes. Preserve UTF-16 without a lossy
@@ -71,6 +53,7 @@ fn gui_command() -> io::Result<(Vec<u16>, Vec<u16>)> {
 /// Start the same executable without a shell, console or ANY inherited handles.
 /// Stdio::null alone does not exclude other inheritable handles: retaining a
 /// caller's redirected pipe write-end prevents EOF even after its CLI exits.
+#[cfg(windows)]
 fn spawn_gui() -> io::Result<()> {
     let (executable, mut command) = gui_command()?;
     let startup = STARTUPINFOW {
@@ -102,27 +85,38 @@ fn spawn_gui() -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+fn spawn_gui() -> io::Result<()> {
+    use std::process::{Command, Stdio};
+    // std Files are CLOEXEC; no lock descriptor survives exec.
+    Command::new(std::env::current_exe()?)
+        .arg(INTERNAL_GUI_ARGUMENT)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    Ok(())
+}
+
 pub async fn connect_or_start(
     namespace: &Namespace,
     operation: &ExternalOperation,
 ) -> io::Result<PipeClient> {
     connect_with(namespace, operation, spawn_gui).await
 }
-// Run exactly one negotiation at a time on this current_thread runtime: Windows
-// mutex ownership is thread-owned (including across awaits), not task-owned.
 async fn connect_with(
     namespace: &Namespace,
     operation: &ExternalOperation,
     spawn: impl FnOnce() -> io::Result<()>,
 ) -> io::Result<PipeClient> {
-    let start = Instant::now();
-    match PipeClient::try_connect(namespace) {
+    let connection = Deadline::connection(Instant::now());
+    match connection.until(PipeClient::try_connect(namespace)).await {
         Ok(client) => return Ok(client),
         Err(error) if retryable(&error) => {}
         Err(error) => return Err(error),
     }
     if gui_is_alive(namespace)? {
-        return PipeClient::connect(namespace, Deadline::connection(start)).await;
+        return PipeClient::connect(namespace, connection).await;
     }
     if !matches!(operation, ExternalOperation::Open { .. }) {
         return Err(io::Error::new(
@@ -130,22 +124,17 @@ async fn connect_with(
             "GUI is not running",
         ));
     }
-    let deadline = Deadline::startup(start);
+    let deadline = Deadline::startup(Instant::now());
     let startup = loop {
         if deadline.expired(Instant::now()) {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "GUI startup deadline exceeded",
-            ));
+            return Err(Deadline::timeout());
         }
         if let Some(guard) = InstanceGuard::try_acquire(namespace, "startup")? {
             break guard;
         }
         deadline.pause().await?;
     };
-    // Another CLI may have started a GUI while we waited for arbitration.
-    // Recheck both its ownership and endpoint before exercising the startup right.
-    match PipeClient::try_connect(namespace) {
+    match deadline.until(PipeClient::try_connect(namespace)).await {
         Ok(client) => return Ok(client),
         Err(error) if retryable(&error) => {}
         Err(error) => return Err(error),
@@ -163,7 +152,6 @@ mod tests {
     use super::super::ipc::PipeServer;
     use super::*;
     use std::{
-        os::windows::process::CommandExt,
         process::{Child, Command, Stdio},
         sync::{
             Arc, Barrier,
@@ -174,7 +162,7 @@ mod tests {
         time::Duration,
     };
 
-    fn connect_with(
+    fn connect(
         namespace: &Namespace,
         operation: &ExternalOperation,
         spawn: impl FnOnce() -> io::Result<()>,
@@ -183,32 +171,46 @@ mod tests {
             .enable_all()
             .build()
             .unwrap()
-            .block_on(super::connect_with(namespace, operation, spawn))
+            .block_on(connect_with(namespace, operation, spawn))
+    }
+    struct Fixture(Namespace);
+    impl Fixture {
+        fn new() -> Self {
+            Self(Namespace::isolated())
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0.directory);
+        }
     }
 
     #[test]
-    fn real_mutex_lifetime_is_thread_owned_and_released() {
-        let namespace = Namespace::isolated();
-        let (ready, ready_rx) = mpsc::channel();
-        let (done, done_rx) = mpsc::channel();
-        let other = namespace.clone();
-        let owner = thread::spawn(move || {
-            let guard = InstanceGuard::claim_gui(&other).unwrap().unwrap();
-            ready.send(()).unwrap();
-            done_rx.recv().unwrap();
-            drop(guard);
-        });
-        ready_rx.recv_timeout(Duration::from_secs(3)).unwrap();
-        assert!(gui_is_alive(&namespace).unwrap());
-        assert!(InstanceGuard::claim_gui(&namespace).unwrap().is_none());
-        done.send(()).unwrap();
-        owner.join().unwrap();
-        assert!(!gui_is_alive(&namespace).unwrap());
+    fn file_lock_lifetime_stale_files_and_error_classification() {
+        let fixture = Fixture::new();
+        let n = &fixture.0;
+        let guard = InstanceGuard::claim_gui(n).unwrap().unwrap();
+        assert!(gui_is_alive(n).unwrap());
+        assert!(InstanceGuard::claim_gui(n).unwrap().is_none());
+        drop(guard);
+        assert!(n.directory.join("live.lock").exists());
+        assert!(!gui_is_alive(n).unwrap());
+        // A directory is not a stale lock file or a not-running signal.
+        std::fs::remove_file(n.directory.join("live.lock")).unwrap();
+        std::fs::create_dir(n.directory.join("live.lock")).unwrap();
+        assert!(gui_is_alive(n).is_err());
+        assert!(
+            connect(n, &ExternalOperation::Top, || panic!(
+                "must not spawn on IO failure"
+            ))
+            .is_err()
+        );
     }
 
     #[test]
-    fn simultaneous_open_converges_under_real_startup_mutex_and_rechecks_liveness() {
-        let namespace = Namespace::isolated();
+    fn simultaneous_open_converges_and_rechecks_liveness() {
+        let fixture = Fixture::new();
+        let namespace = &fixture.0;
         let barrier = Arc::new(Barrier::new(5));
         let spawned = Arc::new(AtomicUsize::new(0));
         let (finish, finish_rx) = mpsc::channel();
@@ -216,28 +218,32 @@ mod tests {
         let (owner_tx, owner_rx) = mpsc::channel();
         let mut callers = Vec::new();
         for _ in 0..4 {
-            let namespace = namespace.clone();
+            let n = namespace.clone();
             let barrier = barrier.clone();
             let spawned = spawned.clone();
             let owner_tx = owner_tx.clone();
             let finish_rx = finish_rx.clone();
             callers.push(thread::spawn(move || {
                 barrier.wait();
-                connect_with(
-                    &namespace,
+                connect(
+                    &n,
                     &ExternalOperation::Open {
-                        path: r"C:\test.md".into(),
+                        path: std::env::temp_dir().join("test.md"),
                         line: None,
                     },
                     || {
                         spawned.fetch_add(1, Ordering::SeqCst);
                         let (ready, rx) = mpsc::channel();
-                        let other = namespace.clone();
+                        let other = n.clone();
                         let owner = thread::spawn(move || {
                             let _live = InstanceGuard::claim_gui(&other).unwrap().unwrap();
                             let _server = PipeServer::bind(&other).unwrap();
                             ready.send(()).unwrap();
-                            finish_rx.lock().unwrap().recv().unwrap();
+                            finish_rx
+                                .lock()
+                                .unwrap()
+                                .recv_timeout(Duration::from_secs(10))
+                                .unwrap();
                         });
                         owner_tx.send(owner).unwrap();
                         rx.recv_timeout(Duration::from_secs(3)).unwrap();
@@ -261,113 +267,295 @@ mod tests {
     }
 
     #[test]
-    fn live_but_unconnectable_gui_never_spawns_another_process() {
-        let namespace = Namespace::isolated();
-        let other = namespace.clone();
-        let (ready, ready_rx) = mpsc::channel();
-        let (finish, finish_rx) = mpsc::channel();
-        let owner = thread::spawn(move || {
-            let _live = InstanceGuard::claim_gui(&other).unwrap().unwrap();
-            ready.send(()).unwrap();
-            finish_rx.recv().unwrap();
-        });
-        ready_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    fn live_but_unreachable_or_changed_port_never_spawns() {
+        let fixture = Fixture::new();
+        let n = &fixture.0;
+        let _live = InstanceGuard::claim_gui(n).unwrap().unwrap();
+        let mut other_port = Namespace::isolated();
+        other_port.directory = n.directory.clone();
         let start = Instant::now();
-        let error = connect_with(
-            &namespace,
+        let error = connect(
+            &other_port,
             &ExternalOperation::Open {
-                path: r"C:\test.md".into(),
+                path: std::env::temp_dir().join("test.md"),
                 line: None,
             },
             || panic!("live GUI must not spawn"),
         )
         .err()
         .unwrap();
-        finish.send(()).unwrap();
-        owner.join().unwrap();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert!(start.elapsed() >= Duration::from_secs(5));
         assert!(start.elapsed() < Duration::from_secs(8));
     }
 
-    // Invoked in a separate test executable process only with an isolated name.
     #[test]
-    fn isolated_mutex_child() {
-        let Ok(stem) = std::env::var("MMV_TEST_INSTANCE_CHILD") else {
+    fn missing_gui_non_open_never_spawns() {
+        let fixture = Fixture::new();
+        for operation in [
+            ExternalOperation::Top,
+            ExternalOperation::Bottom,
+            ExternalOperation::Back,
+            ExternalOperation::Forward,
+            ExternalOperation::Scroll(crate::app::ScrollDirection::Down),
+        ] {
+            let error = connect(&fixture.0, &operation, || panic!("must not launch"))
+                .err()
+                .unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::NotConnected);
+        }
+    }
+
+    struct TestChild(Child);
+    impl Drop for TestChild {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    // Test executable helper, never enabled by production arguments.
+    #[test]
+    fn isolated_lock_child() {
+        let Some(directory) = std::env::var_os("MMV_TEST_INSTANCE_CHILD") else {
             return;
         };
-        assert!(stem.starts_with("mmv-test-"));
-        let namespace = Namespace { stem };
-        let _live = InstanceGuard::claim_gui(&namespace).unwrap().unwrap();
+        let directory = std::path::PathBuf::from(directory);
+        assert!(
+            directory
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("mmv-test-")
+        );
+        let n = Namespace { directory, port: 1 };
+        if std::env::var_os("MMV_TEST_INSTANCE_IDLE").is_some() {
+            std::fs::write(n.directory.join("idle.ready"), b"ready").unwrap();
+            thread::sleep(Duration::from_secs(15));
+            return;
+        }
+        let _live = InstanceGuard::claim_gui(&n).unwrap().unwrap();
         loop {
             thread::sleep(Duration::from_secs(1));
         }
     }
 
     #[test]
-    fn child_exit_releases_real_mutex_and_abandoned_ownership_is_recoverable() {
-        struct TestChild(Child);
-        impl Drop for TestChild {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
+    fn crash_releases_lock_and_child_does_not_inherit_ownership() {
+        let fixture = Fixture::new();
+        let n = &fixture.0;
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", "infra::instance::tests::isolated_lock_child"])
+            .env("MMV_TEST_INSTANCE_CHILD", &n.directory)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(CREATE_NO_WINDOW);
         }
-        let namespace = Namespace::isolated();
-        let mut child = TestChild(
-            Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "infra::instance::tests::isolated_mutex_child"])
-                .env("MMV_TEST_INSTANCE_CHILD", &namespace.stem)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .creation_flags(CREATE_NO_WINDOW)
-                .spawn()
-                .unwrap(),
-        );
+        let mut child = TestChild(command.spawn().unwrap());
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !gui_is_alive(&namespace).unwrap() {
-            assert!(
-                Instant::now() < deadline,
-                "child did not acquire lifetime mutex"
-            );
+        while !gui_is_alive(n).unwrap() {
+            assert!(Instant::now() < deadline, "child did not acquire lock");
             assert!(
                 child.0.try_wait().unwrap().is_none(),
                 "child exited before acquiring"
             );
             thread::sleep(Duration::from_millis(5));
         }
-        // Keep the named mutex object alive even after its owning process exits.
-        let user = UserSecurity::current().unwrap();
-        let retained = Handle::new(unsafe {
-            CreateMutexW(&user.attributes(), 0, namespace.mutex("live").as_ptr())
-        })
-        .unwrap();
         child.0.kill().unwrap();
         child.0.wait().unwrap();
-        assert_eq!(
-            unsafe { WaitForSingleObject(retained.0, 0) },
-            WAIT_ABANDONED
+        let parent = InstanceGuard::claim_gui(n).unwrap().unwrap();
+        // Spawn while holding the lock; child must not keep it alive after Drop.
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", "infra::instance::tests::isolated_lock_child"])
+            .env("MMV_TEST_INSTANCE_CHILD", &n.directory)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+        command.env("MMV_TEST_INSTANCE_IDLE", "1");
+        let mut other = TestChild(command.spawn().unwrap());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !n.directory.join("idle.ready").exists() {
+            assert!(Instant::now() < deadline, "idle child did not start");
+            assert!(other.0.try_wait().unwrap().is_none());
+            thread::sleep(Duration::from_millis(5));
+        }
+        drop(parent);
+        assert!(other.0.try_wait().unwrap().is_none());
+        assert!(
+            !gui_is_alive(n).unwrap(),
+            "live lock inherited by unrelated running child"
         );
-        assert_ne!(unsafe { ReleaseMutex(retained.0) }, 0);
-        let recovered = InstanceGuard::claim_gui(&namespace).unwrap().unwrap();
-        drop(recovered);
-        assert!(!gui_is_alive(&namespace).unwrap());
+        let _ = other.0.kill();
+        let _ = other.0.wait();
+        assert!(!gui_is_alive(n).unwrap());
+    }
+
+    fn process_command(n: &Namespace, mode: &str) -> Command {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "infra::instance::tests::isolated_startup_process_child",
+            ])
+            .env("MMV_TEST_STARTUP_DIRECTORY", &n.directory)
+            .env("MMV_TEST_STARTUP_PORT", n.port.to_string())
+            .env("MMV_TEST_STARTUP_MODE", mode)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+        command
     }
 
     #[test]
-    fn missing_gui_navigation_never_spawns_and_command_is_current_executable_only() {
-        let namespace = Namespace::isolated();
-        let error = connect_with(&namespace, &ExternalOperation::Back, || {
-            panic!("must not launch")
-        })
-        .err()
-        .unwrap();
-        assert_eq!(error.kind(), io::ErrorKind::NotConnected);
+    fn isolated_startup_process_child() {
+        let Some(directory) = std::env::var_os("MMV_TEST_STARTUP_DIRECTORY") else {
+            return;
+        };
+        let directory = std::path::PathBuf::from(directory);
+        assert!(
+            directory
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("mmv-test-")
+        );
+        let n = Namespace {
+            directory,
+            port: std::env::var("MMV_TEST_STARTUP_PORT")
+                .unwrap()
+                .parse()
+                .unwrap(),
+        };
+        let limit = Instant::now() + Duration::from_secs(20);
+        if std::env::var("MMV_TEST_STARTUP_MODE").unwrap() == "gui" {
+            let _live = InstanceGuard::claim_gui(&n).unwrap().unwrap();
+            let _server = PipeServer::bind(&n).unwrap();
+            std::fs::write(
+                n.directory.join(format!("gui-{}", std::process::id())),
+                b"ready",
+            )
+            .unwrap();
+            while !n.directory.join("stop").exists() {
+                assert!(
+                    Instant::now() < limit,
+                    "process fixture did not receive shutdown"
+                );
+                thread::sleep(Duration::from_millis(5));
+            }
+        } else {
+            let mut owner = None;
+            connect(
+                &n,
+                &ExternalOperation::Open {
+                    path: std::env::temp_dir().join("process.md"),
+                    line: None,
+                },
+                || {
+                    owner = Some(TestChild(process_command(&n, "gui").spawn()?));
+                    Ok(())
+                },
+            )
+            .unwrap();
+            std::fs::write(
+                n.directory.join(format!("caller-{}", std::process::id())),
+                b"connected",
+            )
+            .unwrap();
+            if let Some(mut child) = owner {
+                loop {
+                    if let Some(status) = child.0.try_wait().unwrap() {
+                        assert!(status.success());
+                        break;
+                    }
+                    assert!(Instant::now() < limit, "spawned GUI fixture did not exit");
+                    thread::sleep(Duration::from_millis(5));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn independent_cli_processes_start_only_one_service_process() {
+        let fixture = Fixture::new();
+        let n = &fixture.0;
+        drop(lock::open(n, "live").unwrap());
+        let mut children = Vec::new();
+        // Declare after children so shutdown is signalled before kill/wait during unwind.
+        struct Stop(std::path::PathBuf);
+        impl Drop for Stop {
+            fn drop(&mut self) {
+                let _ = std::fs::write(self.0.join("stop"), b"stop");
+            }
+        }
+        let stop = Stop(n.directory.clone());
+        for _ in 0..4 {
+            children.push(TestChild(process_command(n, "caller").spawn().unwrap()));
+        }
+        let limit = Instant::now() + Duration::from_secs(10);
+        loop {
+            let names: Vec<_> = std::fs::read_dir(&n.directory)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            if names
+                .iter()
+                .filter(|name| name.starts_with("caller-"))
+                .count()
+                == 4
+            {
+                assert_eq!(
+                    names.iter().filter(|name| name.starts_with("gui-")).count(),
+                    1
+                );
+                break;
+            }
+            assert!(Instant::now() < limit, "CLI processes did not converge");
+            thread::sleep(Duration::from_millis(5));
+        }
+        drop(stop);
+        for child in &mut children {
+            loop {
+                if let Some(status) = child.0.try_wait().unwrap() {
+                    assert!(status.success());
+                    break;
+                }
+                assert!(Instant::now() < limit, "child did not stop");
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+        assert!(!gui_is_alive(n).unwrap());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn gui_command_is_current_executable_only() {
         let (executable, command) = gui_command().unwrap();
         let expected = std::env::current_exe().unwrap();
-        let units: Vec<u16> = expected.as_os_str().encode_wide().chain(Some(0)).collect();
-        assert_eq!(executable, units);
+        assert_eq!(
+            executable,
+            expected
+                .as_os_str()
+                .encode_wide()
+                .chain(Some(0))
+                .collect::<Vec<_>>()
+        );
         assert_eq!(
             String::from_utf16(&command[..command.len() - 1]).unwrap(),
             format!("\"{}\" {INTERNAL_GUI_ARGUMENT}", expected.display())

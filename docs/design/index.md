@@ -10,6 +10,8 @@ Markdownの初期版には、自動更新、スクロール距離の維持、見
 
 PDF追加では、既存の文書操作・要求管理を共通入口として維持し、形式別の本文表示を`DocumentView`のenumで分けます。アプリが入力とモードを所有し、PDF描画にはgpui-pdfのforkを使います。Markdown中心の既存詳細設計に対するPDFの差分・適用範囲は[PDF表示の基本設計](components/pdf-viewing.md)を参照してください。PDFの自動更新・履歴位置復元・検索は初期範囲に含めません。
 
+[OS抽象化と共通契約](../requirements/features/os-abstraction.md)に従い、通信・起動・設定配置を[ローカル通信・起動制御](components/local-control.md)へ集約します。CLI・GUIで設定読込を先行させ、共通TCP・ファイルロックの状態遷移を共有し、OS差はネイティブパス・安全なファイル操作・プロセス起動の境界へ分離します。本書のNamed Pipe・名前付きMutexに関する記述は移行前の構成であり、競合する通信・安全性の旧記述は適用しません。LinuxのGUI全面対応を意味しません。
+
 ## 参照する要件・機能仕様
 
 - [要求・要件の全体像](../requirements/index.md)

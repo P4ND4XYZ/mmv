@@ -21,7 +21,7 @@ fn main() -> std::process::ExitCode {
     if args.len() == 2 && args[1] == infra::INTERNAL_GUI_ARGUMENT {
         return print_output(cli::execution_output(runtime::run_gui()));
     }
-    // Help/version/usage are handled before any GUI or Windows resources exist.
+    // Help/version/usage are handled before configuration or OS resources exist.
     let cwd = std::env::current_dir();
     let operation = match cli::parse_from(args, cwd.as_deref().unwrap_or(std::path::Path::new("")))
     {
@@ -35,9 +35,14 @@ fn main() -> std::process::ExitCode {
         Ok(runtime) => runtime,
         Err(error) => return print_output(cli::execution_output(Err(error.to_string()))),
     };
-    // One CLI negotiation on this thread; never move its InstanceGuard to a worker.
+    // Configuration (including all Lua validation) precedes connection/liveness.
+    let loaded = infra::load_config();
+    let port = loaded.runtime.config().ipc_port;
+    // CLI never pumps GUI callbacks or reapplies settings to an existing GUI.
+    drop(loaded);
+    // One invocation sends exactly one operation.
     let result = runtime.block_on(async {
-        let namespace = infra::Namespace::current_user().map_err(|error| error.to_string())?;
+        let namespace = infra::Namespace::current_user(port).map_err(|error| error.to_string())?;
         // Only a cfg(test) build can isolate the actual process/main startup path.
         #[cfg(all(test, feature = "ui-tests"))]
         let namespace = infra::test_support::process_namespace().unwrap_or(namespace);

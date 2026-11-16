@@ -2,6 +2,7 @@
 name = "my-markdown-viewer"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.89"
 
 [[bin]]
 name = "mmv"
@@ -17,8 +18,12 @@ notify = "=8.2.1"
 mlua = { version = "=0.12.2", features = ["lua54", "vendored"] }
 nucleo-matcher = "=0.3.1"
 
-[target.'cfg(windows)'.dependencies]
 tokio = { version = "=1.54.1", features = ["rt", "net", "io-util", "sync", "time", "macros"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "=0.2.191"
+
+[target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [features]

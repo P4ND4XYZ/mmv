@@ -1,9 +1,8 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::{fs, path::PathBuf};
 
 use crate::lua::LuaRuntime;
+#[cfg(test)]
+use std::path::Path;
 
 pub struct ConfigLoad {
     pub runtime: LuaRuntime,
@@ -16,26 +15,27 @@ pub struct ConfigError {
 }
 
 pub fn load_config() -> ConfigLoad {
-    load_from(
-        std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .as_deref(),
+    load_path(super::paths::UserPaths::current().map(|paths| paths.config))
+}
+
+#[cfg(test)]
+fn load_from(local_app_data: Option<&Path>) -> ConfigLoad {
+    load_path(
+        local_app_data
+            .filter(|base| base.is_absolute())
+            .map(|base| base.join("mmv/init.lua"))
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "user base unavailable")
+            }),
     )
 }
 
-fn load_from(local_app_data: Option<&Path>) -> ConfigLoad {
+fn load_path(path: std::io::Result<PathBuf>) -> ConfigLoad {
     let result = (|| {
-        let base = local_app_data.ok_or_else(|| ConfigError {
+        let path = path.map_err(|error| ConfigError {
             path: None,
-            cause: "LOCALAPPDATA is not set".into(),
+            cause: error.to_string(),
         })?;
-        if !base.is_absolute() {
-            return Err(ConfigError {
-                path: None,
-                cause: "LOCALAPPDATA is not an absolute path".into(),
-            });
-        }
-        let path = base.join("mmv").join("init.lua");
         let source = match fs::read_to_string(&path) {
             Ok(source) => source,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

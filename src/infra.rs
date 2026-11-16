@@ -2,23 +2,22 @@ pub(crate) mod browser;
 mod config;
 mod document;
 pub mod file_tree;
+mod lock;
 mod logging;
 mod mermaid;
+mod paths;
 mod watch;
 
-#[cfg(windows)]
 mod deadline;
-#[cfg(windows)]
 mod instance;
-#[cfg(windows)]
 mod ipc;
 #[cfg(windows)]
 mod security;
 
-#[cfg(all(windows, test, feature = "ui-tests"))]
+#[cfg(all(test, feature = "ui-tests"))]
 pub use test_support::BlockingPipeClient as PipeClient;
 
-#[cfg(all(windows, test, feature = "ui-tests"))]
+#[cfg(all(test, feature = "ui-tests"))]
 pub(crate) mod test_support {
     use super::{Deadline, Namespace};
 
@@ -48,13 +47,15 @@ pub(crate) mod test_support {
 
     /// Only test executables can select an isolated process-probe namespace.
     pub fn process_namespace() -> Option<Namespace> {
-        let stem = std::env::var("MMV_TEST_GUI_STEM").ok()?;
-        assert!(stem.starts_with("mmv-test-") && stem.len() <= 200);
-        assert!(
-            stem.bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        );
-        Some(Namespace { stem })
+        let directory = std::path::PathBuf::from(std::env::var_os("MMV_TEST_GUI_DIRECTORY")?);
+        assert!(directory.is_absolute());
+        assert!(directory.file_name()?.to_str()?.starts_with("mmv-test-"));
+        let port = std::env::var("MMV_TEST_GUI_PORT")
+            .ok()?
+            .parse::<std::num::NonZeroU16>()
+            .ok()?
+            .get();
+        Some(Namespace { directory, port })
     }
 
     pub fn namespace() -> Namespace {
@@ -65,12 +66,11 @@ pub(crate) mod test_support {
         Deadline::after(duration)
     }
 }
-#[cfg(windows)]
 pub use {
     deadline::Deadline,
     instance::{INTERNAL_GUI_ARGUMENT, InstanceGuard, connect_or_start},
     ipc::{PipeServer, Reply, Request, Response},
-    security::Namespace,
+    paths::Namespace,
 };
 
 pub use config::load_config;

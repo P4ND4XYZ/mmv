@@ -88,6 +88,34 @@ pub(super) fn success(request: ReadRequest, source: String) -> ReadResult {
     }
 }
 
+// Synthetic files need not exist, but paths sent over production IPC must be
+// absolute in the host OS's representation, not Windows spelling on Unix.
+pub(super) fn native_fixture_path(name: &str) -> PathBuf {
+    #[cfg(windows)]
+    let base = PathBuf::from(r"C:\fixtures");
+    #[cfg(not(windows))]
+    let base = std::env::temp_dir().join("mmv-ui-fixtures");
+    base.join(name)
+}
+
+#[test]
+fn gui_fixture_paths_are_native_absolute() {
+    for name in ["sample.md", "never-finishes.md"] {
+        let path = native_fixture_path(name);
+        assert!(
+            path.is_absolute(),
+            "fixture path must be native absolute: {path:?}"
+        );
+        assert!(path.with_file_name("a.md").is_absolute());
+        assert_eq!(path.file_name().unwrap(), std::ffi::OsStr::new(name));
+        #[cfg(unix)]
+        assert!(matches!(
+            path.components().next(),
+            Some(std::path::Component::RootDir)
+        ));
+    }
+}
+
 pub(super) fn open(
     cx: &mut TestAppContext,
     source: String,
@@ -106,12 +134,7 @@ pub(super) fn open(
             cx,
             |window, cx| {
                 let view = cx.new(|cx| {
-                    Viewer::new(
-                        PathBuf::from(r"C:\fixtures\sample.md"),
-                        Instant::now(),
-                        window,
-                        cx,
-                    )
+                    Viewer::new(native_fixture_path("sample.md"), Instant::now(), window, cx)
                 });
                 view.update(cx, |view, cx| {
                     let request = view.app.open(view.path.clone());
@@ -720,7 +743,7 @@ mod pipe_notifications {
                 infra::Request {
                     id: ExternalRequestId("same-external-id".into()),
                     operation: ExternalOperation::Open {
-                        path: r"C:\fixtures\never-finishes.md".into(),
+                        path: native_fixture_path("never-finishes.md"),
                         line: None,
                     },
                 },

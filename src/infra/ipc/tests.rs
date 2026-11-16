@@ -1,6 +1,6 @@
 use super::*;
 use crate::app::{ExternalOperation, ExternalRequestId, ScrollDirection};
-use std::{os::windows::io::AsRawHandle, time::Duration};
+use std::time::Duration;
 use tokio::{io::AsyncWriteExt, time::timeout};
 
 fn request(id: &str) -> Request {
@@ -49,7 +49,9 @@ fn assert_closed_error(error: stdio::Error) {
     assert!(
         matches!(
             error.kind(),
-            stdio::ErrorKind::UnexpectedEof | stdio::ErrorKind::BrokenPipe
+            stdio::ErrorKind::UnexpectedEof
+                | stdio::ErrorKind::BrokenPipe
+                | stdio::ErrorKind::ConnectionReset
         ),
         "expected peer closure, got {error:?}"
     );
@@ -88,6 +90,10 @@ async fn round_trip(server: &mut PipeServer, namespace: &Namespace, id: &str) {
     );
 }
 
+fn absolute_path(name: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(name)
+}
+
 #[test]
 fn fixed_stage_deadlines_use_supplied_time_without_retry_extension() {
     let start = Instant::now();
@@ -113,7 +119,7 @@ fn fixed_stage_deadlines_use_supplied_time_without_retry_extension() {
 fn protocol_round_trips_every_public_operation_and_failure_reason() {
     let mut operations = vec![
         ExternalOperation::Open {
-            path: r"C:\日本語 space\memo.md".into(),
+            path: absolute_path("日本語 space/memo.md"),
             line: None,
         },
         ExternalOperation::Top,
@@ -122,7 +128,7 @@ fn protocol_round_trips_every_public_operation_and_failure_reason() {
         ExternalOperation::Forward,
     ];
     operations.push(ExternalOperation::Open {
-        path: r"C:\日本語 space\memo.md".into(),
+        path: absolute_path("日本語 space/memo.md"),
         line: std::num::NonZeroU64::new(u64::MAX),
     });
     for direction in [
@@ -159,13 +165,13 @@ fn protocol_round_trips_every_public_operation_and_failure_reason() {
 #[test]
 fn protocol_rejects_versions_operations_trailing_bytes_and_invalid_fields() {
     let encoded = request("a").encode().unwrap();
-    assert_eq!(&encoded[..], &[9, 0, 0, 0, 2, 0, 1, 1, 0, 0, 0, b'a', 7]);
+    assert_eq!(&encoded[..], &[9, 0, 0, 0, 3, 0, 1, 1, 0, 0, 0, b'a', 7]);
     for bytes in [
         vec![],
         vec![1, 0, 1],
-        vec![2, 0, 3],
-        vec![2, 0, 1, 255, 255, 255, 255],
-        vec![2, 0, 1, 1, 0, 0, 0, 0xff, 7],
+        vec![3, 0, 3],
+        vec![3, 0, 1, 255, 255, 255, 255],
+        vec![3, 0, 1, 1, 0, 0, 0, 0xff, 7],
     ] {
         assert!(Request::decode(&bytes).is_err());
     }
@@ -198,7 +204,7 @@ fn protocol_rejects_versions_operations_trailing_bytes_and_invalid_fields() {
         .encode()
         .is_err()
     );
-    assert!(Response::decode(&[2, 0, 2, 1, 0, 0, 0, b'a', 2]).is_err());
+    assert!(Response::decode(&[3, 0, 2, 1, 0, 0, 0, b'a', 2]).is_err());
 }
 
 #[test]
@@ -206,7 +212,7 @@ fn open_rejects_invalid_line_flags_zero_truncation_extra_data_and_old_versions()
     let original = Request {
         id: ExternalRequestId("line".into()),
         operation: ExternalOperation::Open {
-            path: r"C:\memo.md".into(),
+            path: absolute_path("memo.md"),
             line: std::num::NonZeroU64::new(42),
         },
     }
@@ -235,7 +241,7 @@ fn open_rejects_invalid_line_flags_zero_truncation_extra_data_and_old_versions()
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn real_pipe_parallel_requests_receive_reverse_order_results_with_original_ids() {
+async fn real_tcp_parallel_requests_receive_reverse_order_results_with_original_ids() {
     let namespace = Namespace::isolated();
     let mut server = PipeServer::bind(&namespace).unwrap();
     let mut clients = Vec::new();
@@ -299,77 +305,6 @@ async fn silent_client_does_not_block_accept_and_disconnect_releases_reply_waite
 // Start serve only after a complete request (and its invalid tail) is readable.
 // This fixes the ordering rather than depending on the accept/runtime race.
 #[tokio::test(flavor = "current_thread")]
-async fn already_readable_extra_byte_is_rejected_before_dispatch() {
-    let namespace = Namespace::isolated();
-    let pipe = listener(&namespace, true).unwrap();
-    let mut client = PipeClient::try_connect(&namespace).unwrap();
-    pipe.connect().await.unwrap();
-    let mut bytes = request("must-not-dispatch").encode().unwrap();
-    bytes.push(0x42);
-    client.pipe.write_all(&bytes).await.unwrap();
-    stage().until(pipe.readable()).await.unwrap();
-    let (sender, mut incoming) = mpsc::channel(CAPACITY);
-    let peer = Arc::new(Peer {
-        id: ConnectionId(1),
-        alive: AtomicBool::new(true),
-        disconnected: Arc::new(Notify::new()),
-    });
-    let error = stage()
-        .until(serve(pipe, sender, peer.clone()))
-        .await
-        .unwrap_err();
-    assert_eq!(error.kind(), stdio::ErrorKind::InvalidData);
-    assert!(
-        matches!(
-            incoming.try_recv(),
-            Err(mpsc::error::TryRecvError::Disconnected)
-        ),
-        "invalid request reached dispatcher"
-    );
-    assert!(!peer.alive.load(Ordering::Acquire));
-    assert_closed(&mut client).await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn already_disconnected_peer_is_rejected_before_dispatch() {
-    let namespace = Namespace::isolated();
-    let pipe = listener(&namespace, true).unwrap();
-    let mut client = PipeClient::try_connect(&namespace).unwrap();
-    pipe.connect().await.unwrap();
-    send_raw(&mut client, "must-not-dispatch").await;
-    stage().until(pipe.readable()).await.unwrap();
-    let raw = client.pipe.as_raw_handle();
-    drop(client);
-    wait_until(|| {
-        let mut flags = 0;
-        unsafe { windows_sys::Win32::Foundation::GetHandleInformation(raw, &mut flags) == 0 }
-    })
-    .await;
-    let (sender, mut incoming) = mpsc::channel(CAPACITY);
-    let peer = Arc::new(Peer {
-        id: ConnectionId(2),
-        alive: AtomicBool::new(true),
-        disconnected: Arc::new(Notify::new()),
-    });
-    let error = stage()
-        .until(serve(pipe, sender, peer.clone()))
-        .await
-        .unwrap_err();
-    assert!(matches!(
-        error.kind(),
-        stdio::ErrorKind::BrokenPipe | stdio::ErrorKind::UnexpectedEof
-    ));
-    assert!(
-        matches!(
-            incoming.try_recv(),
-            Err(mpsc::error::TryRecvError::Disconnected)
-        ),
-        "departed peer reached dispatcher"
-    );
-    assert!(!peer.alive.load(Ordering::Acquire));
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn extra_data_during_response_wait_closes_connection_and_notifies_without_app_completion() {
     let namespace = Namespace::isolated();
     let mut server = PipeServer::bind(&namespace).unwrap();
@@ -392,7 +327,7 @@ async fn extra_data_during_response_wait_closes_connection_and_notifies_without_
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn real_pipe_rejects_bad_boundaries_and_truncated_requests_without_dispatch() {
+async fn real_tcp_rejects_bad_boundaries_and_truncated_requests_without_dispatch() {
     let namespace = Namespace::isolated();
     let mut server = PipeServer::bind(&namespace).unwrap();
     for bytes in [
@@ -459,215 +394,6 @@ async fn shutdown_cancels_pending_accept_reads_and_app_response_waits_and_joins(
     );
     assert_closed(&mut silent).await;
     assert_closed(&mut client).await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn client_rejects_mismatched_response_and_truncated_response() {
-    for wrong_id in [true, false] {
-        let namespace = Namespace::isolated();
-        let mut pipe = listener(&namespace, true).unwrap();
-        let worker = tokio::spawn(async move {
-            pipe.connect().await.unwrap();
-            io::read_frame(&mut pipe, stage()).await.unwrap();
-            let bytes = if wrong_id {
-                Response {
-                    id: ExternalRequestId("wrong".into()),
-                    outcome: Ok(()),
-                }
-                .encode()
-                .unwrap()
-            } else {
-                vec![9, 0, 0, 0, 1]
-            };
-            io::write_all(&mut pipe, &bytes, stage()).await.unwrap();
-            // The client either rejects or times out on this incomplete frame.
-            let _ = io::read_exact(
-                &mut pipe,
-                &mut [0],
-                Deadline::after(Duration::from_millis(200)),
-            )
-            .await;
-        });
-        let error = PipeClient::connect(&namespace, stage())
-            .await
-            .unwrap()
-            .request(request("expected"), short())
-            .await
-            .unwrap_err();
-        assert_eq!(
-            error.kind(),
-            if wrong_id {
-                stdio::ErrorKind::InvalidData
-            } else {
-                stdio::ErrorKind::TimedOut
-            }
-        );
-        worker.await.unwrap();
-    }
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn preaccept_disconnect_and_cancelled_idle_accept_are_rearmed_deterministically() {
-    let namespace = Namespace::isolated();
-    let mut pipe = listener(&namespace, true).unwrap();
-    let early = PipeClient::try_connect(&namespace).unwrap();
-    let raw = early.pipe.as_raw_handle();
-    drop(early);
-    // Mio holds its handle until the cancelled background read's IOCP completion.
-    // Establish actual OS closure, not just Rust Drop, before ConnectNamedPipe.
-    wait_until(|| {
-        let mut flags = 0;
-        unsafe { windows_sys::Win32::Foundation::GetHandleInformation(raw, &mut flags) == 0 }
-    })
-    .await;
-    // Mio can report a preaccept disconnect either at connect or at the first
-    // read, because it eagerly registers a background read. Both paths must
-    // reject this peer without decoding a request, then accept the next client.
-    match stage().until(pipe.connect()).await {
-        Ok(()) => {
-            let error = io::read_frame(&mut pipe, stage()).await.unwrap_err();
-            assert!(matches!(
-                error.kind(),
-                stdio::ErrorKind::BrokenPipe | stdio::ErrorKind::UnexpectedEof
-            ));
-        }
-        Err(error) => assert!(matches!(
-            error.kind(),
-            stdio::ErrorKind::BrokenPipe | stdio::ErrorKind::UnexpectedEof
-        )),
-    }
-    let replacement = listener(&namespace, false).unwrap();
-    drop(pipe);
-    // Tokio's connect future is cancellation-safe, and the service replaces a
-    // pre-disconnected instance without ever relinquishing the secure pipe name.
-    assert_eq!(
-        short()
-            .until(replacement.connect())
-            .await
-            .unwrap_err()
-            .kind(),
-        stdio::ErrorKind::TimedOut
-    );
-    let worker = tokio::spawn(async move {
-        replacement.connect().await.unwrap();
-        let mut replacement = replacement;
-        Request::decode(&io::read_frame(&mut replacement, stage()).await.unwrap()).unwrap()
-    });
-    let mut client = PipeClient::connect(&namespace, stage()).await.unwrap();
-    send_raw(&mut client, "after-rearm").await;
-    assert_eq!(worker.await.unwrap(), request("after-rearm"));
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn unreading_client_write_is_cancelled_on_deadline_and_releases_kernel_handle() {
-    use windows_sys::Win32::Foundation::GetHandleInformation;
-    let namespace = Namespace::isolated();
-    let mut pipe = listener(&namespace, true).unwrap();
-    let _client = PipeClient::try_connect(&namespace).unwrap();
-    pipe.connect().await.unwrap();
-    // Mio queues the first write and reports it accepted before kernel completion.
-    pipe.write_all(&vec![0x42; 1024 * 1024]).await.unwrap();
-    let error = io::write_all(&mut pipe, &[1], short()).await.unwrap_err();
-    assert_eq!(error.kind(), stdio::ErrorKind::TimedOut);
-    let raw = pipe.as_raw_handle();
-    drop(pipe); // Wrapper cancels even Mio's internally retained buffered write.
-    wait_until(|| {
-        let mut flags = 0;
-        unsafe { GetHandleInformation(raw, &mut flags) == 0 }
-    })
-    .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn partial_read_timeout_closes_connection_without_restarting_frame() {
-    let namespace = Namespace::isolated();
-    let mut pipe = listener(&namespace, true).unwrap();
-    let mut client = PipeClient::try_connect(&namespace).unwrap();
-    pipe.connect().await.unwrap();
-    client.pipe.write_all(&[9, 0]).await.unwrap();
-    assert_eq!(
-        io::read_frame(&mut pipe, short()).await.unwrap_err().kind(),
-        stdio::ErrorKind::TimedOut
-    );
-    drop(pipe);
-    assert_closed(&mut client).await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn shutdown_releases_response_receipt_wait_without_flush() {
-    let namespace = Namespace::isolated();
-    let mut server = PipeServer::bind(&namespace).unwrap();
-    let mut client = PipeClient::connect(&namespace, stage()).await.unwrap();
-    send_raw(&mut client, "no-receipt").await;
-    respond(receive(&mut server).await, Ok(())).unwrap();
-    let payload = io::read_frame(&mut client.pipe, stage()).await.unwrap();
-    assert_eq!(Response::decode(&payload).unwrap().outcome, Ok(()));
-    let start = Instant::now();
-    server.shutdown();
-    assert!(start.elapsed() < Duration::from_secs(2));
-    assert_closed(&mut client).await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn client_sqos_limits_server_to_identification_and_handles_are_noninheritable() {
-    use windows_sys::Win32::{
-        Foundation::{GetHandleInformation, HANDLE_FLAG_INHERIT},
-        Security::{
-            GetTokenInformation, RevertToSelf, SecurityIdentification, TOKEN_QUERY,
-            TokenImpersonationLevel,
-        },
-        System::{
-            Pipes::ImpersonateNamedPipeClient,
-            Threading::{GetCurrentThread, OpenThreadToken},
-        },
-    };
-    struct Revert;
-    impl Drop for Revert {
-        fn drop(&mut self) {
-            unsafe {
-                RevertToSelf();
-            }
-        }
-    }
-    let namespace = Namespace::isolated();
-    let mut pipe = listener(&namespace, true).unwrap();
-    let mut client = PipeClient::try_connect(&namespace).unwrap();
-    pipe.connect().await.unwrap();
-    io::write_all(&mut client.pipe, &[1], stage())
-        .await
-        .unwrap();
-    io::read_exact(&mut pipe, &mut [0], stage()).await.unwrap();
-    for raw in [pipe.as_raw_handle(), client.pipe.as_raw_handle()] {
-        let mut flags = 0;
-        assert_ne!(unsafe { GetHandleInformation(raw, &mut flags) }, 0);
-        assert_eq!(flags & HANDLE_FLAG_INHERIT, 0);
-    }
-    assert_ne!(
-        unsafe { ImpersonateNamedPipeClient(pipe.as_raw_handle()) },
-        0
-    );
-    let _revert = Revert;
-    let mut raw = ptr::null_mut();
-    assert_ne!(
-        unsafe { OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 1, &mut raw) },
-        0
-    );
-    let token = Handle::new(raw).unwrap();
-    let mut level = 0u32;
-    let mut length = 0;
-    assert_ne!(
-        unsafe {
-            GetTokenInformation(
-                token.0,
-                TokenImpersonationLevel,
-                (&mut level as *mut u32).cast(),
-                4,
-                &mut length,
-            )
-        },
-        0
-    );
-    assert_eq!(level, SecurityIdentification as u32);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -831,8 +557,200 @@ async fn completion_disconnect_race_notifies_and_keeps_accepting_requests() {
 }
 
 #[test]
-fn bind_reports_first_pipe_failure_synchronously() {
+fn bind_reports_port_conflict_synchronously() {
     let namespace = Namespace::isolated();
     let _server = PipeServer::bind(&namespace).unwrap();
     assert!(PipeServer::bind(&namespace).is_err());
+}
+
+#[test]
+fn native_paths_are_lossless_and_other_representations_are_rejected() {
+    #[cfg(windows)]
+    let path = {
+        use std::os::windows::ffi::OsStringExt;
+        let mut units: Vec<_> = r"C:\native-".encode_utf16().collect();
+        units.extend([0xd800, b'.' as u16, b'm' as u16, b'd' as u16]);
+        std::path::PathBuf::from(std::ffi::OsString::from_wide(&units))
+    };
+    #[cfg(target_os = "linux")]
+    let path = {
+        use std::os::unix::ffi::OsStringExt;
+        std::path::PathBuf::from(std::ffi::OsString::from_vec(
+            b"/tmp/native-\xff.md".to_vec(),
+        ))
+    };
+    let original = Request {
+        id: ExternalRequestId("native".into()),
+        operation: ExternalOperation::Open { path, line: None },
+    };
+    let encoded = original.encode().unwrap();
+    assert_eq!(Request::decode(&encoded[4..]).unwrap(), original);
+    let encoding_index = 3 + 4 + "native".len() + 1;
+    for encoding in [0, 255, if cfg!(windows) { 2 } else { 1 }] {
+        let mut payload = encoded[4..].to_vec();
+        payload[encoding_index] = encoding;
+        assert!(Request::decode(&payload).is_err());
+    }
+    #[cfg(windows)]
+    {
+        let mut payload = encoded[4..].to_vec();
+        let length = encoding_index + 1;
+        payload[length..length + 4].copy_from_slice(&1u32.to_le_bytes());
+        assert!(Request::decode(&payload).is_err());
+    }
+}
+
+async fn pair() -> (TcpStream, PipeClient) {
+    let n = Namespace::isolated();
+    let listener = TcpListener::bind(n.address()).await.unwrap();
+    let client = PipeClient::try_connect(&n).await.unwrap();
+    let (server, _) = listener.accept().await.unwrap();
+    (server, client)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn readable_extra_byte_is_rejected_before_dispatch() {
+    let (pipe, mut client) = pair().await;
+    let mut bytes = request("must-not-dispatch").encode().unwrap();
+    bytes.push(0x42);
+    client.pipe.write_all(&bytes).await.unwrap();
+    stage().until(pipe.readable()).await.unwrap();
+    let (sender, mut incoming) = mpsc::channel(CAPACITY);
+    let peer = Arc::new(Peer {
+        id: ConnectionId(1),
+        alive: AtomicBool::new(true),
+        disconnected: Arc::new(Notify::new()),
+    });
+    let error = stage()
+        .until(serve(pipe, sender, peer.clone()))
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), stdio::ErrorKind::InvalidData);
+    assert!(incoming.try_recv().is_err());
+    assert!(!peer.alive.load(Ordering::Acquire));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn disconnected_before_dispatch_is_rejected() {
+    let (pipe, mut client) = pair().await;
+    send_raw(&mut client, "must-not-dispatch").await;
+    client.pipe.shutdown().await.unwrap();
+    stage().until(pipe.readable()).await.unwrap();
+    let (sender, mut incoming) = mpsc::channel(CAPACITY);
+    let peer = Arc::new(Peer {
+        id: ConnectionId(2),
+        alive: AtomicBool::new(true),
+        disconnected: Arc::new(Notify::new()),
+    });
+    let result = stage().until(serve(pipe, sender, peer.clone())).await;
+    assert!(result.is_err());
+    assert!(incoming.try_recv().is_err());
+    assert!(!peer.alive.load(Ordering::Acquire));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn mismatched_truncated_or_old_response_fails_without_resend() {
+    for mode in 0..3 {
+        let n = Namespace::isolated();
+        let listener = TcpListener::bind(n.address()).await.unwrap();
+        let worker = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            io::read_frame(&mut stream, stage()).await.unwrap();
+            let mut bytes = Response {
+                id: ExternalRequestId(if mode == 0 { "wrong" } else { "expected" }.into()),
+                outcome: Ok(()),
+            }
+            .encode()
+            .unwrap();
+            if mode == 1 {
+                bytes.truncate(6);
+            }
+            if mode == 2 {
+                bytes[4] = 2;
+            }
+            io::write_all(&mut stream, &bytes, stage()).await.unwrap();
+            stream.shutdown().await.unwrap();
+            // One request per connection, and no second connection/resend.
+            assert!(
+                timeout(Duration::from_millis(120), listener.accept())
+                    .await
+                    .is_err()
+            );
+        });
+        let error = PipeClient::connect(&n, stage())
+            .await
+            .unwrap()
+            .request(request("expected"), stage())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.kind(),
+            if mode == 1 {
+                stdio::ErrorKind::UnexpectedEof
+            } else {
+                stdio::ErrorKind::InvalidData
+            }
+        );
+        worker.await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn partial_frame_timeout_and_unreading_peer_do_not_block_teardown() {
+    let (mut stream, mut client) = pair().await;
+    client.pipe.write_all(&[9, 0]).await.unwrap();
+    assert_eq!(
+        io::read_frame(&mut stream, short())
+            .await
+            .unwrap_err()
+            .kind(),
+        stdio::ErrorKind::TimedOut
+    );
+    drop(stream);
+    drop(client);
+    let (mut stream, _client) = pair().await;
+    let bytes = vec![0x42; 65536];
+    let deadline = short();
+    let error = loop {
+        if let Err(error) = io::write_all(&mut stream, &bytes, deadline).await {
+            break error;
+        }
+    };
+    assert_eq!(error.kind(), stdio::ErrorKind::TimedOut);
+    let start = Instant::now();
+    drop(stream);
+    assert!(start.elapsed() < Duration::from_secs(1));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn complete_response_needs_no_receipt_or_server_disconnect() {
+    let n = Namespace::isolated();
+    let listener = TcpListener::bind(n.address()).await.unwrap();
+    let worker = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        io::read_frame(&mut stream, stage()).await.unwrap();
+        let bytes = Response {
+            id: ExternalRequestId("no-receipt".into()),
+            outcome: Ok(()),
+        }
+        .encode()
+        .unwrap();
+        io::write_all(&mut stream, &bytes, stage()).await.unwrap();
+        // Keep stream open until the CLI has returned and closed it.
+        assert_eq!(
+            io::read_exact(&mut stream, &mut [0], stage())
+                .await
+                .unwrap_err()
+                .kind(),
+            stdio::ErrorKind::UnexpectedEof
+        );
+    });
+    let response = PipeClient::connect(&n, stage())
+        .await
+        .unwrap()
+        .request(request("no-receipt"), short())
+        .await
+        .unwrap();
+    assert_eq!(response.outcome, Ok(()));
+    worker.await.unwrap();
 }

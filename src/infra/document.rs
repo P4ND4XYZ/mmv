@@ -70,7 +70,10 @@ fn read_document_with_classified(
     };
     let key = resolve_key(&request).map_err(&mut report);
     if request.phase == ReadPhase::Resolve {
-        return (DocumentRead::Response(ReadResponse::Resolved { request, key }), failure);
+        return (
+            DocumentRead::Response(ReadResponse::Resolved { request, key }),
+            failure,
+        );
     }
     let content = key.and_then(|key| {
         let bytes = read(&request.path).map_err(&mut report)?;
@@ -78,7 +81,11 @@ fn read_document_with_classified(
     });
     let result = match content {
         Ok((key, bytes)) if DocumentFormat::for_path(&request.path) == DocumentFormat::Pdf => {
-            DocumentRead::PdfBytes { request, key, bytes: Arc::new(bytes) }
+            DocumentRead::PdfBytes {
+                request,
+                key,
+                bytes: Arc::new(bytes),
+            }
         }
         content => {
             let content = content.and_then(|(key, bytes)| {
@@ -86,7 +93,11 @@ fn read_document_with_classified(
                     report(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
                 })?;
                 Ok(LoadedDocument::markdown(
-                    key, source.strip_prefix('\u{feff}').unwrap_or(&source).to_owned(),
+                    key,
+                    source
+                        .strip_prefix('\u{feff}')
+                        .unwrap_or(&source)
+                        .to_owned(),
                 ))
             });
             DocumentRead::Response(ReadResponse::Loaded(ReadResult { request, content }))
@@ -102,7 +113,9 @@ pub fn read_document(request: ReadRequest) -> ReadResponse {
 }
 
 #[cfg(test)]
-pub(crate) fn read_document_classified(request: ReadRequest) -> (ReadResponse, Option<ReadFailureKind>) {
+pub(crate) fn read_document_classified(
+    request: ReadRequest,
+) -> (ReadResponse, Option<ReadFailureKind>) {
     let (result, failure) = read_document_input_classified(request);
     let response = match result {
         DocumentRead::Response(response) => response,
@@ -112,7 +125,6 @@ pub(crate) fn read_document_classified(request: ReadRequest) -> (ReadResponse, O
         }),
     };
     (response, failure)
-
 }
 
 fn resolve_key(request: &ReadRequest) -> std::io::Result<DocumentKey> {

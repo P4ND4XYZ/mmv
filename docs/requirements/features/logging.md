@@ -17,7 +17,7 @@ Mermaid図の生成失敗やLua設定の読み込み・実行・検証の失敗�
 
 ## 保存先とローテーション
 
-保存先は`%LOCALAPPDATA%\my-markdown-viewer\logs\viewer.log`とする。
+保存先はWindowsでは`%LOCALAPPDATA%\my-markdown-viewer\logs\viewer.log`（既存配置）、Linuxでは`<home>/.local/state/mmv/viewer.log`とする。Linuxの`XDG_STATE_HOME`は使用しない。基準ディレクトリ不明時にカレントディレクトリへ代替しない。OS別配置の詳細は[配置と安全なファイル操作](../../design/components/local-control.md#配置と安全なファイル操作)を参照する。
 
 - 容量ベースのローテーションとし、1ファイルの上限を5 MiB、バックアップを3世代とする。
 - 上限に達したら現在のログをバックアップへ移し、新しい`viewer.log`へ記録する。最古のバックアップは削除する。

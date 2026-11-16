@@ -11,8 +11,9 @@ use windows_sys::Win32::{
             ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
             GetSecurityInfo, SE_OBJECT_TYPE,
         },
-        DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetTokenInformation,
-        OWNER_SECURITY_INFORMATION, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
+        DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetSecurityDescriptorControl,
+        GetTokenInformation, OWNER_SECURITY_INFORMATION, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES,
+        TOKEN_QUERY, TOKEN_USER, TokenUser,
     },
     System::Threading::{GetCurrentProcess, OpenProcessToken},
 };
@@ -146,6 +147,14 @@ impl UserSecurity {
                 return Err(io::Error::from_raw_os_error(code as i32));
             }
             let _sd = LocalAllocation(sd);
+            let mut control = 0;
+            let mut revision = 0;
+            if GetSecurityDescriptorControl(sd, &mut control, &mut revision) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if control & SE_DACL_PROTECTED == 0 {
+                return Err(invalid("unprotected instance access list"));
+            }
             let sid = (*(self.token_user.as_ptr().cast::<TOKEN_USER>())).User.Sid;
             if owner.is_null() || EqualSid(owner, sid) == 0 || acl.is_null() || (*acl).AceCount != 1
             {
@@ -170,41 +179,5 @@ impl UserSecurity {
             }
             Ok(())
         }
-    }
-}
-
-/// Stable across processes and sessions for this Windows user. Test suffixes must
-/// be unique and never use the production object names.
-#[derive(Clone, Debug)]
-pub struct Namespace {
-    pub(super) stem: String,
-}
-impl Namespace {
-    pub fn current_user() -> io::Result<Self> {
-        Ok(Self {
-            stem: format!("mmv-v1-{}", UserSecurity::current()?.sid_text),
-        })
-    }
-    #[cfg(test)]
-    pub(super) fn isolated() -> Self {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        Self {
-            stem: format!(
-                "mmv-test-{}-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ),
-        }
-    }
-    pub(super) fn pipe(&self) -> Vec<u16> {
-        wide(&format!(r"\\.\pipe\{}", self.stem))
-    }
-    pub(super) fn mutex(&self, role: &str) -> Vec<u16> {
-        wide(&format!(r"Global\{}-{role}", self.stem))
     }
 }

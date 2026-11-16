@@ -1,11 +1,9 @@
 //! The sole IPC runtime thread. Tasks/channels are bounded independently.
 use super::*;
-use tokio::{net::windows::named_pipe::NamedPipeServer, task::JoinSet};
-use windows_sys::Win32::Foundation::{ERROR_BROKEN_PIPE, ERROR_NO_DATA};
+use tokio::task::JoinSet;
 
 pub(super) async fn run(
-    namespace: Namespace,
-    mut next: io::Pipe<NamedPipeServer>,
+    listener: TcpListener,
     sender: mpsc::Sender<stdio::Result<Incoming>>,
     mut stopped: watch::Receiver<bool>,
     disconnected: Arc<Notify>,
@@ -17,40 +15,20 @@ pub(super) async fn run(
             biased;
             _ = stopped.changed() => break,
             _ = tasks.join_next(), if !tasks.is_empty() => {},
-            connected = next.connect() => {
-                match connected {
-                    Ok(()) => {},
-                    Err(error) if matches!(error.raw_os_error(), Some(code) if code == ERROR_NO_DATA as i32 || code == ERROR_BROKEN_PIPE as i32) => {
-                        // A client may close before ConnectNamedPipe. Replace the
-                        // instance while the old handle still protects the name.
-                        match listener(&namespace, false) {
-                            Ok(replacement) => { next = replacement; continue; },
-                            Err(error) => { let _ = sender.try_send(Err(error)); break; }
-                        }
-                    },
-                    Err(error) => { let _ = sender.try_send(Err(error)); break; },
-                }
-                let replacement = match listener(&namespace, false) {
-                    Ok(pipe) => pipe,
+            connected = listener.accept() => {
+                let (stream, _) = match connected {
+                    Ok(connection) => connection,
                     Err(error) => { let _ = sender.try_send(Err(error)); break; }
                 };
-                let pipe = std::mem::replace(&mut next, replacement);
-                if tasks.len() >= CAPACITY {
-                    drop(pipe); // Rejection, not an await-space task or an extra queue.
-                    continue;
-                }
+                if tasks.len() >= CAPACITY { drop(stream); continue; }
                 let Some(id) = next_id.checked_add(1) else { break; };
                 next_id = id;
                 let peer = Arc::new(Peer { id: ConnectionId(id), alive: AtomicBool::new(true), disconnected: disconnected.clone() });
                 let incoming = sender.clone();
-                tasks.spawn(async move {
-                    let _ = serve(pipe, incoming, peer).await;
-                });
+                tasks.spawn(async move { let _ = serve(stream, incoming, peer).await; });
             }
         }
     }
-    // No listener remains when cancellation starts. Drop all futures (including
-    // partial I/O), then reap their completion before letting the runtime end.
-    drop(next);
+    drop(listener);
     tasks.shutdown().await;
 }

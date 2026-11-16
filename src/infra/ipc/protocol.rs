@@ -1,17 +1,63 @@
-//! One request and one response per connection, followed by a one-byte receipt.
-//! u32 LE payload length, u16 LE version, u8 kind, length-prefixed request ID,
-//! then an enumerated operation or outcome. Paths are lossless Windows UTF-16LE.
-use super::super::security::invalid;
+//! One request and one response per TCP connection, no receipt.
+//! Version 3 adds a native path encoding discriminator; no old-version fallback.
+use super::invalid;
 use crate::app::{ExternalOperation, ExternalRequestId, ScrollDirection};
-use std::{
-    ffi::OsString,
-    io,
-    os::windows::ffi::{OsStrExt, OsStringExt},
-    path::PathBuf,
-};
+use std::{ffi::OsString, io, path::PathBuf};
 
 pub(super) const MAX_FRAME: usize = 65536;
-const VERSION: u16 = 2;
+const VERSION: u16 = 3;
+#[cfg(windows)]
+const PATH_ENCODING: u8 = 1;
+#[cfg(target_os = "linux")]
+const PATH_ENCODING: u8 = 2;
+
+#[cfg(windows)]
+fn native_bytes(path: &std::path::Path) -> Vec<u8> {
+    use std::os::windows::ffi::OsStrExt;
+    path.as_os_str()
+        .encode_wide()
+        .flat_map(u16::to_le_bytes)
+        .collect()
+}
+#[cfg(target_os = "linux")]
+fn native_bytes(path: &std::path::Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt;
+    path.as_os_str().as_bytes().to_vec()
+}
+fn native_path(encoding: u8, bytes: &[u8]) -> io::Result<PathBuf> {
+    if encoding != PATH_ENCODING {
+        return Err(invalid("unsupported native path encoding"));
+    }
+    #[cfg(windows)]
+    let path = {
+        use std::os::windows::ffi::OsStringExt;
+        if !bytes.len().is_multiple_of(2) {
+            return Err(invalid("odd UTF-16 path length"));
+        }
+        let units: Vec<_> = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| u16::from_le_bytes(*b))
+            .collect();
+        if units.contains(&0) {
+            return Err(invalid("NUL in path"));
+        }
+        PathBuf::from(OsString::from_wide(&units))
+    };
+    #[cfg(target_os = "linux")]
+    let path = {
+        use std::os::unix::ffi::OsStringExt;
+        if bytes.contains(&0) {
+            return Err(invalid("NUL in path"));
+        }
+        PathBuf::from(OsString::from_vec(bytes.to_vec()))
+    };
+    if !path.is_absolute() {
+        return Err(invalid("invalid absolute path"));
+    }
+    Ok(path)
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Request {
     pub id: ExternalRequestId,
@@ -75,11 +121,9 @@ impl Request {
             if !path.is_absolute() {
                 return Err(invalid("open requires an absolute CLI path"));
             }
-            let units: Vec<u16> = path.as_os_str().encode_wide().collect();
-            if units.contains(&0) {
-                return Err(invalid("NUL in path"));
-            }
-            let bytes: Vec<u8> = units.iter().flat_map(|u| u.to_le_bytes()).collect();
+            let bytes = native_bytes(path);
+            native_path(PATH_ENCODING, &bytes)?;
+            out.push(PATH_ENCODING);
             field(&mut out, &bytes)?;
             out.push(u8::from(line.is_some()));
             if let Some(line) = line {
@@ -92,20 +136,8 @@ impl Request {
         let (mut input, id) = Decoder::new(payload, 1)?;
         let operation = match input.byte()? {
             0 => {
-                let raw = input.field()?;
-                if raw.len() % 2 != 0 {
-                    return Err(invalid("odd UTF-16 path length"));
-                }
-                let units: Vec<u16> = raw
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .map(|b| u16::from_le_bytes([b[0], b[1]]))
-                    .collect();
-                let path = PathBuf::from(OsString::from_wide(&units));
-                if !path.is_absolute() || units.contains(&0) {
-                    return Err(invalid("invalid absolute path"));
-                }
+                let encoding = input.byte()?;
+                let path = native_path(encoding, input.field()?)?;
                 let line = match input.byte()? {
                     0 => None,
                     1 => Some(

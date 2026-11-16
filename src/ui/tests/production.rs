@@ -1,4 +1,4 @@
-//! Real Named Pipe -> production delivery -> Viewer -> production reply wiring.
+//! Real TCP -> production delivery -> Viewer -> production reply wiring.
 use crate::{
     app::{ExternalOperation, ExternalRequestId, ReadRequest},
     infra, runtime,
@@ -34,6 +34,12 @@ fn request(
     thread::JoinHandle<()>,
     mpsc::Receiver<std::io::Result<infra::Response>>,
 ) {
+    if let ExternalOperation::Open { path, .. } = &operation {
+        assert!(
+            path.is_absolute(),
+            "production request fixture must be native absolute: {path:?}"
+        );
+    }
     let namespace = namespace.clone();
     let id = ExternalRequestId(id.into());
     let (tx, rx) = mpsc::channel();

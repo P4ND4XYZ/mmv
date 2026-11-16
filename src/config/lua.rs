@@ -75,6 +75,26 @@ fn setup(config: &mut Config, args: MultiValue) -> Result<(), String> {
                     }
                 }
             }
+            "ipc" => {
+                for pair in table(value, "ipc")?.pairs::<Value, Value>() {
+                    let (key, value) = pair.map_err(|e| e.to_string())?;
+                    if string(key, "ipc key")? != "port" {
+                        return Err("unknown ipc key".into());
+                    }
+                    let number = match value {
+                        Value::Integer(n) => n as f64,
+                        Value::Number(n) => n,
+                        _ => return Err("ipc.port: expected integer 1..65535".into()),
+                    };
+                    if !number.is_finite()
+                        || number.fract() != 0.0
+                        || !(1.0..=65535.0).contains(&number)
+                    {
+                        return Err("ipc.port: expected integer 1..65535".into());
+                    }
+                    config.ipc_port = std::num::NonZeroU16::new(number as u16).unwrap();
+                }
+            }
             "tree" => setup_tree(config, table(value, "tree")?)?,
             "colorscheme" => {
                 config.colorscheme = match string(value, "colorscheme")?.as_str() {

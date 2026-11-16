@@ -3,6 +3,7 @@
 ## 対象範囲と制約
 
 - 読み取り専用のviewer。
+- WindowsとLinuxのOS差を境界へ分離する。[OS抽象化と共通契約](features/os-abstraction.md)は通信・設定・単一起動の共通契約を定め、Linuxの全面的な動作保証や対応ロードマップは扱わない。
 
 ## 機能一覧
 

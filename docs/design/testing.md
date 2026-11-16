@@ -223,7 +223,7 @@ cargo test --locked --features ui-tests real_ -- --ignored --nocapture
 
 ### 責務・通知・状態保持の追加観点
 
-以下も変更後の契約を実装するときの検証計画であり、現行APIや検証済みの結果を示さない。通知／API名は[通知と指示の契約](components/selection-panel.md#通知と指示の契約)の仮称を使う。
+以下も変更後の契約を実装するときの検証計画であり、現行APIや検証済みの結果を示さない。通知／API名は[選択パネルの設計](components/selection-panel.md)の仮称を使う。
 
 | 境界 | 条件・操作 | 期待結果・確認方法 |
 |---|---|---|
@@ -245,3 +245,43 @@ cargo test --locked --features ui-tests real_ -- --ignored --nocapture
 独立した判定・候補整理は単体テスト、通知順序・注入描画・実際の位置保持はGPUI結合テスト、実IME・DPI・最小ウィンドウ・OSフォーカスはWindows実機で分けて確認する。全文スクロールと極端な長行の描画方式、左右幅比率、位置不明案内の具体的英語文言は未確定のままとし、特定方式や未合意の文言を期待値にしない。
 
 仕様と設計の更新だけでは、実装やこれらの検証が完了したとは扱わない。
+
+## ローカル通信・起動制御の検証
+
+契約は[OS抽象化](../requirements/features/os-abstraction.md)と[ローカル通信・起動制御](components/local-control.md)を参照する。単体・隔離TCP・別プロセスの起動調停・GPUIのheadless境界試験と、ネイティブGUIの実機確認を区別する。テスト内のGUI代替サービスは実ウィンドウやOSフォーカスを検証しない。
+
+```sh
+cargo test --locked -- --test-threads=1
+cargo check --locked --all-targets --features ui-tests
+cargo fmt --all -- --check
+cargo test --locked --features ui-tests -- ui::tests::production:: ui::tests::external:: ui::tests::config:: ui::tests::pdf:: --test-threads=1
+```
+
+自動試験は隔離ディレクトリ・test-onlyのephemeral portを使い、通常ユーザーのポートやinstanceロックを使わない。プロトコルのnative path試験・Linux権限試験は実行OSの表現を対象とするため、Windowsでの成功をLinux実行済みの証拠にしない。
+
+### Linuxユーザーによる実機確認
+
+以下は実機で実行するための手順であり、実行済みの結果やLinux全面対応の保証ではない。GPUIのビルド・表示に必要なネイティブ環境を用意し、使用ディストリビューション、`uname -m`のCPUアーキテクチャ、Rust版、X11／Wayland、実行コマンド・終了コード・結果を記録する。Linuxのファイル操作は対象ABIのlibc定義を使うため、x86_64での成功をAArch64等の実機実行済みの証拠にしない。通常利用の設定・GUIと干渉しない、専用OSユーザーのローカルhomeで行う。
+
+1. 上のcargoコマンドと`cargo build --locked`を実行する。Linuxのnative byte path、0700／0600、symlink拒否、crash後のロック再取得も自動試験で確認する。失敗や環境不足をスキップ成功とは扱わない。
+2. 専用ユーザーで未使用のポートを選ぶ。以下の54321は例であり、`ss -ltn`等で使用中でないことを確認してから設定する。別ポートへの自動fallbackを試験手順で補わない。
+
+   ```sh
+   mmv="$PWD/target/debug/mmv"
+   mkdir -p "$HOME/.config/mmv"
+   printf 'require("mmv").setup({ipc={port=54321}})\n' > "$HOME/.config/mmv/init.lua"
+   doc="$HOME/mmv-local-check.md"
+   printf '# Local control check\n\nfirst\n\nsecond\n' > "$doc"
+   "$mmv" open "$doc"
+   ```
+
+3. `XDG_CONFIG_HOME`・`XDG_STATE_HOME`を別の絶対パスにしても、設定は`$HOME/.config/mmv/init.lua`、ログは`$HOME/.local/state/mmv/viewer.log`、ロックは`$HOME/.local/state/mmv/instance/`を使うことを確認する。ログはエラー発生時に確認する。`XDG_RUNTIME_DIR`はmmvの配置計算では無視するが、Wayland等のGUI基盤が使用し得るため、実GUI試験では表示環境に必要な有効値を保持する。基準home不明・XDG無視の判定はfresh-process自動試験でも確認する。
+4. GUIを閉じた状態から、複数の`open`を同時に実行する。GUIが1個だけ起動し、各CLIが自身の読込結果を返すことを確認する。GUI起動中・別端末／同一ユーザーの別セッションでも追加GUIを起動しないことを確認する。
+5. 外部端末のフォーカスを保ったまま`scroll down`・`scroll half-up`・`top`・`bottom`・`back`・`forward`を実行する。GUIのSearch／Commandで入力途中の文字列が失われず、CLI操作が入力の確定・取消をしないことを確認する。MarkdownとPDFの切替、読込・PDF解析失敗も確認する。`open --line`の応答成功と指定行の実表示完了は区別する。
+6. GUI生存中に設定のポートだけを未使用の別値へ変更し、CLIを実行する。5秒の接続期限内で失敗し、別GUIを起動しないことを確認する。設定を元へ戻せば既存GUIへ接続でき、GUIの設定自体は再起動まで変わらないことを確認する。
+7. GUI終了後に`top`等の非Openを実行し、起動しないことを確認する。`stat -c '%a %U %F %n'`でinstanceディレクトリ0700、通常ロックファイル0600と現在ユーザー所有を確認する。ロックファイルが残っていても、次のOpenで起動できることを確認する。
+8. 専用ユーザーのGUIのPIDと実行ファイル・内部GUI引数を確認したうえで、そのGUIだけを異常終了させる。次のOpenで残存ロックを再取得できることを確認する。他のGUIやプロセスを一括終了しない。
+9. GUI終了中に専用fixtureのロック権限を緩める、またはsymlinkへ置き換えると、CLIがI/O／保護エラーとして失敗しGUIを起動しないことを確認する。試験後はfixtureを元へ戻す。別プロセスで設定ポートを占有した場合もbindが失敗し、代替ポートへ移らないことを確認する。占有用プロセスは自身のものだけ停止する。
+10. GUIと試験用プロセスを終了する。終了・異常終了・timeoutの結果、残存プロセス、未確認の入力／フォーカス／表示環境を記録する。timeoutは操作未実行やGUI終了を保証せず、送信済み操作を自動再送しないことに注意する。
+
+ループバックTCPは相手ユーザーの認証ではない。別ユーザーや偽サーバーを排除できたという試験期待値にせず、共有home・ネットワークファイルシステムのホスト間制約も通常のローカル試験と分ける。

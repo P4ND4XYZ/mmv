@@ -5,6 +5,55 @@ fn run(script: &str) -> Result<Config, String> {
 }
 
 #[test]
+fn ipc_port_boundaries_and_strict_validation() {
+    assert_eq!(run("").unwrap().ipc_port.get(), 43210);
+    for port in ["1", "43210", "65535", "1.0"] {
+        let config = run(&format!("require('mmv').setup({{ipc={{port={port}}}}})")).unwrap();
+        assert_eq!(config.ipc_port.get(), port.parse::<f64>().unwrap() as u16);
+    }
+    for value in [
+        "0", "-1", "65536", "1.5", "0/0", "1/0", "'43210'", "false", "{}",
+    ] {
+        assert!(
+            run(&format!("require('mmv').setup({{ipc={{port={value}}}}})")).is_err(),
+            "{value}"
+        );
+    }
+    for source in ["m.setup({ipc=false})", "m.setup({ipc={other=5}})"] {
+        assert!(run(&format!("local m=require('mmv'); {source}")).is_err());
+    }
+}
+
+#[test]
+fn init_failure_discards_port_settings_globals_and_registrations_atomically() {
+    for failure in [
+        "error('broken')",
+        "pcall(m.setup,{ipc={port=0}})",
+        "pcall(m.keymap.set,'x',function()end,{focus='body'})",
+        "m.notify('GUI unavailable during init')",
+    ] {
+        let source = format!(
+            "local m=require('mmv'); m.setup({{ipc={{port=65535}},tree={{visible=true}},view={{position='left'}}}}); poison=42; local s=m.ui.state(1); s:set(9); m.keymap.set('z',function() poison=s:get() end); {failure}"
+        );
+        let (runtime, error) =
+            crate::lua::LuaRuntime::initialize("", Some((&source, "@rollback.lua"))).unwrap();
+        assert!(error.is_some(), "{failure}");
+        assert_eq!(runtime.config(), Config::default());
+        assert!(!runtime.enqueue_key("z").unwrap());
+        assert!(
+            runtime
+                .lua()
+                .globals()
+                .get::<mlua::Value>("poison")
+                .unwrap()
+                .is_nil()
+        );
+        assert_eq!(runtime.pump_one(), crate::lua::Pump::Idle);
+        assert!(runtime.context().ui.borrow().windows.is_empty());
+    }
+}
+
+#[test]
 fn defaults_and_partial_updates_preserve_prior_values() {
     assert_eq!(run("").unwrap(), Config::default());
     let config = run(r##"

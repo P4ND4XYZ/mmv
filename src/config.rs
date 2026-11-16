@@ -66,6 +66,7 @@ impl Default for TreeConfig {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
+    pub ipc_port: std::num::NonZeroU16,
     pub position: Position,
     pub max_width: f64,
     pub font_size: f32,
@@ -77,6 +78,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            ipc_port: std::num::NonZeroU16::new(43210).unwrap(),
             position: Position::Center,
             max_width: 960.0,
             font_size: 16.0,
