@@ -68,6 +68,7 @@ impl Default for TreeConfig {
 pub struct Config {
     pub position: Position,
     pub max_width: f64,
+    pub font_size: f32,
     pub colorscheme: ColorScheme,
     pub highlights: BTreeMap<Group, Highlight>,
     pub tree: TreeConfig,
@@ -78,6 +79,7 @@ impl Default for Config {
         Self {
             position: Position::Center,
             max_width: 960.0,
+            font_size: 16.0,
             colorscheme: ColorScheme::Dark,
             highlights: BTreeMap::new(),
             tree: TreeConfig::default(),

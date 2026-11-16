@@ -139,7 +139,7 @@ function Window:source(key) end
 ---@field on_error? fun(error: {message: string, traceback: string, phase: 'event'|'render', key?: string})
 
 ---@class mmv.Api
-local mmv = { ui = { float = {} }, document = {}, keymap = {}, match = {}, navigation = {}, pdf = {} }
+local mmv = { ui = { float = {} }, document = {}, keymap = {}, match = {}, navigation = {}, pdf = {}, markdown = {} }
 
 -- Key registration is available in init and event callbacks, not render.
 ---@param key string Normalized app key; not a built-in key.
@@ -203,6 +203,25 @@ function mmv.navigation.open(target, options) end
 ---@param options? {level?: 'info'|'warning'|'error'}
 ---@return true
 function mmv.notify(message, options) end
+
+-- Init-only; invalid settings reject the entire user configuration.
+---@param options {view?: {position?: 'center'|'left', max_width?: number, font_size?: number}, colorscheme?: 'dark'|'light', tree?: {visible?: boolean, root_markers?: string[]}}
+---@return true
+function mmv.setup(options) end
+
+-- Markdown modifiers are event-only; accepted requests survive document replacement.
+-- Finite numbers only, exact arity; no options/owner/completion callbacks.
+---@param size number Logical px in [8,48], default 16; no string coercion.
+---@return boolean accepted False if no Markdown at call time.
+function mmv.markdown.set_font_size(size) end
+---@param delta number Finite, including negative/zero; result clamped to [8,48].
+---@return boolean accepted
+function mmv.markdown.adjust_font_size(delta) end
+---@return boolean accepted Restores configured initial size, not necessarily 16.
+function mmv.markdown.reset_font_size() end
+-- Runtime event/render only; all runtime font APIs are forbidden in init.
+---@return number|nil size Applied body size, not queued; nil for no document/PDF.
+function mmv.markdown.get_font_size() end
 
 -- PDF modifiers are event-only; no options, owner, or completion callbacks.
 -- True means acceptance, not application; false means no PDF at call time.

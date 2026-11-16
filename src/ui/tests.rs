@@ -6,6 +6,7 @@ mod headings;
 mod history;
 mod layout;
 mod link_candidates;
+mod markdown_font_size;
 mod modes;
 mod operations;
 mod pdf;

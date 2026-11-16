@@ -1043,6 +1043,31 @@ impl Viewer {
         }
     }
 
+    pub(super) fn apply_markdown_font_size(
+        &mut self,
+        request: crate::lua::markdown::Request,
+        cx: &mut Context<Self>,
+    ) {
+        let size = request.apply(self.markdown_font_size, self.config.font_size);
+        if size != self.markdown_font_size {
+            if let Some(markdown) = self.document.as_markdown_mut() {
+                markdown.resize_distance = None;
+                markdown
+                    .text
+                    .update(cx, |text, cx| text.invalidate_inline_layout(cx));
+            }
+            self.markdown_font_size = size;
+            cx.notify();
+        }
+        // Applied state is viewer-owned, including when a previously accepted
+        // request crosses a PDF/Markdown replacement before host application.
+        *self.lua.context().markdown.borrow_mut() = self
+            .document
+            .as_markdown()
+            .filter(|_| self.app.document().is_some())
+            .map(|_| self.markdown_font_size);
+    }
+
     pub(super) fn render_document(
         &mut self,
         path: PathBuf,
@@ -1162,6 +1187,17 @@ impl Viewer {
         code_style.display = Some(Display::Flex);
         code_style.flex_direction = Some(FlexDirection::Row);
         code_style.text.white_space = Some(WhiteSpace::Nowrap);
+        let font_size = self.markdown_font_size;
+        // Base fenced code uses mono_md rather than inheriting body typography.
+        // Preserve its actual default code/body ratio without scaling rem or UI.
+        code_style = code_style.text_size(
+            gpui_kit::base::Theme::global(cx)
+                .tokens
+                .typography
+                .mono_md
+                .size
+                * (font_size / 16.0),
+        );
         let style = self.palette.text_style(cx.theme(), table_style, code_style);
 
         input::bind_body_actions(div(), cx)
@@ -1193,6 +1229,7 @@ impl Viewer {
                                 .text,
                         )
                         .style(style)
+                        .text_size(px(font_size))
                         .plugin(MermaidPlugin {
                             discovered: self
                                 .document

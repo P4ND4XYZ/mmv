@@ -1,3 +1,4 @@
+use crate::lua::markdown::Request as MarkdownRequest;
 use crate::lua::{Pump, navigation::OpenRequest, notify::Notice, pdf::Request as PdfRequest};
 use gpui_kit::Context;
 
@@ -22,6 +23,8 @@ impl Viewer {
                         if let Some(callback) = request.delivery.callback {
                             self.lua.context().cancel(callback);
                         }
+                    } else if self.lua.take_request::<MarkdownRequest>().is_some() {
+                        // Viewer-owned requests are not applied during shutdown.
                     } else if self.lua.take_request::<PdfRequest>().is_some() {
                         // No new display work during shutdown.
                     } else if let Some(request) = self.lua.take_request::<Notice>() {
@@ -53,6 +56,11 @@ impl Viewer {
                             *request.operation.downcast::<OpenRequest>().unwrap(),
                             cx,
                         );
+                        continue;
+                    }
+                    if let Some(request) = self.lua.take_request::<MarkdownRequest>() {
+                        let request = *request.operation.downcast::<MarkdownRequest>().unwrap();
+                        self.apply_markdown_font_size(request, cx);
                         continue;
                     }
                     if let Some(request) = self.lua.take_request::<PdfRequest>() {
