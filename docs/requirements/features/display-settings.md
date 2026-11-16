@@ -34,6 +34,7 @@ mmv.setup({
   view = {
     position = "center",
     max_width = 960,
+    font_size = 16,
   },
   colorscheme = "dark",
   tree = {
@@ -64,6 +65,7 @@ mmv.set_hl("SearchCurrent", {
 |---|---|---|
 | `view.position` | `"center"`は本文領域を横方向に中央配置、`"left"`は左側に配置する | `"center"` |
 | `view.max_width` | 本文領域の最大幅。単位は論理pxで、左右の外側余白は含めない。正の有限数を指定する | `960` |
+| `view.font_size` | Markdown本文の基準サイズ。8〜48の有限number、単位は論理px。実行時変更は[文字サイズAPI](markdown-font-size.md)を参照 | `16` |
 | `colorscheme` | 標準カラースキームの`"dark"`または`"light"`を選ぶ | `"dark"` |
 | `tree.visible` | 起動時にツリーを表示するかをbooleanで指定する | `false` |
 | `tree.root_markers` | ルート判定に使う直下名の文字列配列。指定時は既定配列を置換する | `{ ".marksman.toml", ".git" }` |

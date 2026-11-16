@@ -6,6 +6,8 @@
 
 [LuaによるフローティングUI](lua-floating-ui.md)を利用するための、追加する公開APIの入力・結果・順序・寿命を扱います。現行Rust実装のAPI一覧ではありません。既存の`mmv.setup`・`mmv.set_hl`は[表示・配色設定](display-settings.md#lua-api)を参照してください。`local mmv = require("mmv")`でAPIを取得し、`local ui = mmv.ui`でUI APIを取得します。
 
+Markdown本文の文字サイズは[Markdown文字サイズのLua API](markdown-font-size.md)を参照してください。`mmv.markdown`は引数形式・phase・受理結果を同文書で定義します。
+
 ## 共通規則
 
 - optionsは名前付きtableで渡す。不明なパラメータ、不正な型・値はLuaエラーとする。

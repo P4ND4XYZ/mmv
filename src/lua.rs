@@ -3,6 +3,7 @@ pub(crate) mod callbacks;
 pub(crate) mod document;
 pub(crate) mod host;
 pub(crate) mod keymap;
+pub(crate) mod markdown;
 pub(crate) mod matching;
 pub(crate) mod navigation;
 pub(crate) mod notify;
@@ -47,6 +48,7 @@ pub(crate) struct LuaContext {
     pub(crate) readonly: readonly::ReadonlyTypes,
     pub(crate) documents: Rc<RefCell<document::Documents>>,
     pub(crate) pdf: Rc<RefCell<Option<pdf::Target>>>,
+    pub(crate) markdown: Rc<RefCell<Option<f32>>>,
 }
 
 pub(crate) struct LuaRuntime {
@@ -69,6 +71,7 @@ impl LuaRuntime {
             readonly: Default::default(),
             documents: Default::default(),
             pdf: Default::default(),
+            markdown: Default::default(),
         };
         let api = lua.create_table()?;
         crate::config::lua::install(&lua, &api, &context)?;
@@ -79,6 +82,7 @@ impl LuaRuntime {
         navigation::install(&lua, &api, &context)?;
         notify::install(&lua, &api, &context)?;
         pdf::install(&lua, &api, &context)?;
+        markdown::install(&lua, &api, &context)?;
         install(&lua, &api, &context)?;
         lua.register_module("mmv", api)?;
         Ok(Self { lua, context })

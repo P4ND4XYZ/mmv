@@ -299,6 +299,8 @@ impl Viewer {
             super::document::DocumentView::Pdf { view, .. } => Some(view.read(cx).target()),
             super::document::DocumentView::Markdown(_) => None,
         };
+        *self.lua.context().markdown.borrow_mut() =
+            self.document.as_markdown().map(|_| self.markdown_font_size);
         let document = self.app.document().expect("adopted document");
         let snapshot = document.markdown_source().map(|source| {
             DocumentHandle::new(

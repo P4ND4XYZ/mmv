@@ -56,6 +56,10 @@ fn setup(config: &mut Config, args: MultiValue) -> Result<(), String> {
                                 _ => return Err("position: expected center or left".into()),
                             }
                         }
+                        "font_size" => {
+                            config.font_size = crate::lua::markdown::font_size(value)
+                                .map_err(|error| error.to_string())?;
+                        }
                         "max_width" => {
                             let n = match value {
                                 Value::Integer(n) => n as f64,

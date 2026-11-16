@@ -10,7 +10,7 @@
 |---|---|---|
 | ファイル表示・更新 | 文書を開き、編集結果を確認する | [ファイル表示と更新](features/file-viewing.md) |
 | ファイルツリー | ファイルのツリーをを表示する | [ファイルツリー](features/file-tree.md) |
-| Markdown描画 | 本文・表・コード・画像を読む | [Markdown描画](features/markdown-rendering.md) |
+| Markdown描画 | 本文・表・コード・画像を読む | [Markdown描画](features/markdown-rendering.md)、[文字サイズのLua API](features/markdown-font-size.md) |
 | PDF表示 | 同じ本文領域でPDFを読み、スクロール・ズームする | [PDF表示](features/pdf-viewing.md)、[PDFズームのLua API](features/pdf-zoom.md) |
 | 画面・操作モード | 閲覧・検索・コマンド入力を切り替える | [画面と操作モード](features/viewer-ui.md) |
 | 表示・配色設定 | Lua設定で本文領域の配置・最大幅と配色、ツリー初期表示と判定マーカーを指定する | [表示・配色設定](features/display-settings.md) |
