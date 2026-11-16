@@ -158,7 +158,7 @@ pub(crate) fn connect_document_reads(
         let identity = request.clone();
         let result = cx.background_executor().spawn(async move {
             let result = read_and_prepare(request, &background_cancel);
-            #[cfg(test)]
+            #[cfg(all(test, feature = "ui-tests"))]
             tests::after_prepare(result.request()).await;
             result
         });

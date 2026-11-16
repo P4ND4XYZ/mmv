@@ -47,7 +47,7 @@ fn dedup_requires_both_name_and_resolved_destination_and_keeps_first_identity() 
 }
 
 #[test]
-fn first_duplicate_retains_its_source_range_after_reranking() {
+fn first_duplicate_retains_its_source_range() {
     let values = candidates(
         &document(),
         [
@@ -58,49 +58,11 @@ fn first_duplicate_retains_its_source_range_after_reranking() {
     );
     assert_eq!(values.len(), 2);
     assert_eq!(values[0].source_range, Some(3..22));
-    let ranked = LinkMatcher::default().rank(&values, "dsg");
-    assert_eq!(ranked[0].id, values[0].id);
-    assert_eq!(values[0].source_range, Some(3..22));
+    assert_eq!(values[0].id, CandidateId(0));
 }
 
 #[test]
-fn empty_query_and_equal_scores_follow_document_order_even_if_input_is_reordered() {
-    let mut values = links(&[("design", "#one"), ("design", "#two"), ("other", "#three")]);
-    values.reverse();
-    let mut matcher = LinkMatcher::default();
-    assert_eq!(
-        matcher
-            .rank(&values, "")
-            .iter()
-            .map(|m| m.id.0)
-            .collect::<Vec<_>>(),
-        [0, 1, 2]
-    );
-    let ranked = matcher.rank(&values, "dsg");
-    assert_eq!(ranked.iter().map(|m| m.id.0).collect::<Vec<_>>(), [0, 1]);
-    assert_eq!(ranked[0].score, ranked[1].score);
-    assert_eq!(ranked[0].name_ranges, [0..1, 2..3, 4..5]);
-}
-
-#[test]
-fn ranking_uses_best_field_score_and_preserves_ids_after_filtering() {
-    let values = links(&[
-        ("distant slow gap", "#else"),
-        ("DSG", "#else"),
-        ("Other", "design.md"),
-    ]);
-    let mut matcher = LinkMatcher::default();
-    let ranked = matcher.rank(&values, "dsg");
-    assert_eq!(ranked[0].id, values[1].id);
-    assert!(ranked.windows(2).all(|pair| pair[0].score >= pair[1].score));
-    let destination = ranked.iter().find(|m| m.id == values[2].id).unwrap();
-    assert!(destination.name_ranges.is_empty());
-    assert!(!destination.destination_ranges.is_empty());
-    assert_eq!(matcher.rank(&values, "DSG"), ranked);
-}
-
-#[test]
-fn public_fuzzy_uses_the_ranker_calculation_and_empty_query_is_uniform() {
+fn fuzzy_is_case_insensitive_and_empty_query_is_uniform() {
     let mut matcher = LinkMatcher::default();
     assert_eq!(
         matcher.fuzzy("", "日本語").unwrap(),
@@ -109,51 +71,40 @@ fn public_fuzzy_uses_the_ranker_calculation_and_empty_query_is_uniform() {
     assert_eq!(matcher.fuzzy("不存在", "design"), None);
     let (score, ranges) = matcher.fuzzy("日本dsg", "日本語design").unwrap();
     assert_eq!(ranges, [0..6, 9..10, 11..12, 13..14]);
-    let values = links(&[("日本語design", "#other")]);
-    let ranked = matcher.rank(&values, "日本dsg");
-    assert_eq!(score, ranked[0].score);
-    assert_eq!(ranges, ranked[0].name_ranges);
+    assert_eq!(
+        matcher.fuzzy("日本DSG", "日本語design"),
+        Some((score, ranges))
+    );
 }
 
 #[test]
 fn literal_queries_do_not_enable_fzf_operators_or_word_reordering() {
-    let values = links(&[
-        ("^a$b!c'd|e\\f g", "#target"),
-        ("abcdefg", "#target"),
-        ("g f", "#target"),
-    ]);
     let mut matcher = LinkMatcher::default();
     for query in ["^", "$", "!", "'", "|", "\\", "f g", "^a$b!c'd|e\\f g"] {
-        let found = matcher.rank(&values, query);
-        assert_eq!(found.len(), 1, "{query:?}");
-        assert_eq!(found[0].id, values[0].id);
+        assert!(
+            matcher.fuzzy(query, "^a$b!c'd|e\\f g").is_some(),
+            "{query:?}"
+        );
+        assert!(matcher.fuzzy(query, "abcdefg").is_none(), "{query:?}");
+        assert!(matcher.fuzzy(query, "g f").is_none(), "{query:?}");
     }
-    assert!(matcher.rank(&values, "不存在").is_empty());
+    assert!(matcher.fuzzy("不存在", "abcdefg").is_none());
 }
 
 #[test]
 fn japanese_combining_and_emoji_indices_convert_to_valid_utf8_byte_highlights() {
-    let values = links(&[("e\u{301}👩‍💻日本語design", "#e\u{301}👩‍💻日本語design")]);
+    let text = "e\u{301}👩‍💻日本語design";
     let mut matcher = LinkMatcher::default();
     for (query, expected) in [
-        ("日本", std::iter::once(14..20).collect::<Vec<_>>()),
-        ("e\u{301}", std::iter::once(0..3).collect::<Vec<_>>()),
-        ("👩‍💻", std::iter::once(3..14).collect::<Vec<_>>()),
+        ("日本", vec![14..20]),
+        ("e\u{301}", vec![0..3]),
+        ("👩‍💻", vec![3..14]),
         ("dsg", vec![23..24, 25..26, 27..28]),
     ] {
-        let result = matcher.rank(&values, query);
-        assert_eq!(result.len(), 1, "{query:?}");
-        assert_eq!(result[0].name_ranges, expected, "{query:?}");
-        for range in &result[0].name_ranges {
-            assert!(values[0].display_name.get(range.clone()).is_some());
+        let (_, ranges) = matcher.fuzzy(query, text).unwrap();
+        assert_eq!(ranges, expected, "{query:?}");
+        for range in ranges {
+            assert!(text.get(range).is_some());
         }
-        assert_eq!(
-            result[0].destination_ranges,
-            result[0]
-                .name_ranges
-                .iter()
-                .map(|r| r.start + 1..r.end + 1)
-                .collect::<Vec<_>>()
-        );
     }
 }

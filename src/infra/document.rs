@@ -440,7 +440,13 @@ mod tests {
             std::fs::write(&path, source).unwrap();
             let result = loaded(read_document(app.open(path.clone())));
             assert_eq!(
-                result.content.unwrap().markdown_source().unwrap().as_str(),
+                result
+                    .content
+                    .unwrap()
+                    .content
+                    .markdown_source()
+                    .unwrap()
+                    .as_str(),
                 "# 日本語\r\n本文"
             );
         }

@@ -136,7 +136,7 @@ fn runtime_prepared_adoption_moves_once_same_open_does_not_read_parse_or_reset(
         view.app.document().unwrap().generation
     });
     first.update(cx, |view, cx| {
-        view.set_zoom(1.7, cx).unwrap();
+        view.request_zoom(crate::lua::pdf::Operation::SetZoom(1.7), cx);
     });
     frame(cx, window);
     std::fs::write(&path, b"now invalid; same open must not read this").unwrap();
@@ -323,7 +323,7 @@ fn pdf_history_recreates_top_fit_but_failed_switch_does_not_release(cx: &mut Tes
     frame(cx, window);
     let old = body_pdf(cx, &view);
     old.update(cx, |view, cx| {
-        view.set_zoom(1.7, cx).unwrap();
+        view.request_zoom(crate::lua::pdf::Operation::SetZoom(1.7), cx);
         view.scroll_to_edge(true, cx).unwrap();
     });
     cx.update(|cx| {

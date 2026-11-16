@@ -50,38 +50,6 @@ impl SourceLines {
         }
         Some(self.lines[(line.get() - 1) as usize].clone())
     }
-
-    pub fn nearest_block(
-        &self,
-        line: NonZeroU64,
-        blocks: &[Option<Range<usize>>],
-    ) -> Option<usize> {
-        let wanted = (line.get() - 1).min((self.count - 1) as u64) as usize;
-        blocks
-            .iter()
-            .enumerate()
-            .filter_map(|(ix, span)| {
-                let span = span.as_ref()?;
-                let first = self
-                    .lines
-                    .partition_point(|row| row.start <= span.start)
-                    .saturating_sub(1);
-                let last = self
-                    .lines
-                    .partition_point(|row| row.start < span.end)
-                    .saturating_sub(1)
-                    .max(first);
-                let distance = if wanted < first {
-                    first - wanted
-                } else {
-                    wanted.saturating_sub(last)
-                };
-                // A following block wins ties; source order is not rendered-text search.
-                Some(((distance, std::cmp::Reverse(first)), ix))
-            })
-            .min_by_key(|(key, _)| *key)
-            .map(|(_, ix)| ix)
-    }
 }
 
 #[cfg(test)]
@@ -111,19 +79,5 @@ mod tests {
         assert!(index.matches_source("one\r\n"));
         assert!(!index.matches_source("two\r\n"));
         assert_eq!(index.logical_count(), 1);
-    }
-
-    #[test]
-    fn blank_lines_choose_the_nearest_block_and_following_ties() {
-        let index = SourceLines::new("a\n\n\nb\n\n\nc");
-        let blocks = vec![Some(0..1), Some(5..6), Some(10..11)];
-        assert_eq!(index.nearest_block(line(2), &blocks), Some(0));
-        assert_eq!(index.nearest_block(line(3), &blocks), Some(1));
-        let index = SourceLines::new("a\n\nb");
-        assert_eq!(
-            index.nearest_block(line(2), &[Some(0..1), Some(3..4)]),
-            Some(1)
-        );
-        assert_eq!(index.nearest_block(line(2), &[None]), None);
     }
 }

@@ -28,12 +28,6 @@ pub(crate) struct PreparedPdf {
     inner: gpui_pdf::PreparedPdf,
 }
 
-impl PreparedPdf {
-    pub fn page_dimensions(&self) -> &[(f32, f32)] {
-        self.inner.page_dimensions()
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PrepareErrorKind {
     Locked,
@@ -110,12 +104,6 @@ pub(crate) enum OperationStatus {
 pub(crate) struct OperationOutcome {
     status: OperationStatus,
 }
-impl OperationOutcome {
-    pub fn status(self) -> OperationStatus {
-        self.status
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OperationErrorKind {
     Released,
@@ -125,12 +113,6 @@ pub(crate) enum OperationErrorKind {
 pub(crate) struct OperationError {
     kind: OperationErrorKind,
 }
-impl OperationError {
-    pub fn kind(self) -> OperationErrorKind {
-        self.kind
-    }
-}
-
 fn operation_result(
     result: Result<gpui_pdf::OperationOutcome, gpui_pdf::OperationError>,
 ) -> Result<OperationOutcome, OperationError> {
@@ -269,19 +251,6 @@ impl PdfView {
                 view.scroll_to_start(cx)
             }
         }))
-    }
-    pub fn set_zoom(
-        &mut self,
-        factor: f32,
-        cx: &mut Context<Self>,
-    ) -> Result<OperationOutcome, OperationError> {
-        operation_result(self.inner.update(cx, |view, cx| view.zoom_to(factor, cx)))
-    }
-    pub fn fit_width(
-        &mut self,
-        cx: &mut Context<Self>,
-    ) -> Result<OperationOutcome, OperationError> {
-        operation_result(self.inner.update(cx, |view, cx| view.set_fit_width(cx)))
     }
     pub fn zoom(&self, cx: &App) -> f32 {
         self.inner.read(cx).zoom()

@@ -51,7 +51,7 @@ fn real_prepare_measures_every_page_and_reclaims_shared_bytes_without_window() {
     let weak = Arc::downgrade(&bytes);
     let prepared = prepare(bytes.clone(), &PrepareCancellation::default()).unwrap();
     assert_eq!(
-        prepared.page_dimensions(),
+        prepared.inner.page_dimensions(),
         &[(612.0, 792.0), (612.0, 792.0)]
     );
     drop(bytes);
@@ -116,33 +116,23 @@ fn actual_unlaid_view_maps_operations_and_releases_without_window(cx: &mut TestA
     view.update(cx, |view, cx| {
         assert_eq!(view.inner.read(cx).controls(), gpui_pdf::Controls::Host);
         assert_eq!(
-            view.scroll_by(f32::NAN, cx).unwrap_err().kind(),
+            view.scroll_by(f32::NAN, cx).unwrap_err().kind,
             OperationErrorKind::InvalidArgument
         );
+
         assert_eq!(
-            view.set_zoom(f32::INFINITY, cx).unwrap_err().kind(),
-            OperationErrorKind::InvalidArgument
-        );
-        assert_eq!(
-            view.scroll_by(40.0, cx).unwrap().status(),
+            view.scroll_by(40.0, cx).unwrap().status,
             OperationStatus::DeferredUntilLayout
         );
         assert_eq!(
-            view.scroll_viewport(0.5, cx).unwrap().status(),
+            view.scroll_viewport(0.5, cx).unwrap().status,
             OperationStatus::DeferredUntilLayout
         );
         assert_eq!(
-            view.scroll_to_edge(true, cx).unwrap().status(),
+            view.scroll_to_edge(true, cx).unwrap().status,
             OperationStatus::DeferredUntilLayout
         );
-        assert_eq!(
-            view.set_zoom(1.1, cx).unwrap().status(),
-            OperationStatus::DeferredUntilLayout
-        );
-        assert_eq!(
-            view.fit_width(cx).unwrap().status(),
-            OperationStatus::DeferredUntilLayout
-        );
+
         view.request_zoom(ZoomOperation::ZoomIn, cx);
         view.request_zoom(ZoomOperation::FitPage, cx);
         assert_eq!(view.target().zoom(), None);
@@ -150,12 +140,9 @@ fn actual_unlaid_view_maps_operations_and_releases_without_window(cx: &mut TestA
         assert!(view.pending_zoom.is_empty());
         view.release(None, cx);
         assert!(view.is_released(cx));
+
         assert_eq!(
-            view.fit_width(cx).unwrap_err().kind(),
-            OperationErrorKind::Released
-        );
-        assert_eq!(
-            view.scroll_to_edge(false, cx).unwrap_err().kind(),
+            view.scroll_to_edge(false, cx).unwrap_err().kind,
             OperationErrorKind::Released
         );
     });
@@ -220,29 +207,23 @@ fn real_layout_fit_and_release_with_window(cx: &mut TestAppContext) {
         });
     }
     view.update(cx, |view, cx| {
+        view.request_zoom(ZoomOperation::FitWidth, cx);
         assert_eq!(
-            view.fit_width(cx).unwrap().status(),
-            OperationStatus::Unchanged
-        );
-        assert_eq!(
-            view.scroll_by(40.0, cx).unwrap().status(),
+            view.scroll_by(40.0, cx).unwrap().status,
             OperationStatus::Applied
         );
         assert_eq!(
-            view.scroll_to_edge(false, cx).unwrap().status(),
+            view.scroll_to_edge(false, cx).unwrap().status,
             OperationStatus::Applied
         );
         assert_eq!(
-            view.scroll_to_edge(false, cx).unwrap().status(),
+            view.scroll_to_edge(false, cx).unwrap().status,
             OperationStatus::Unchanged
         );
-        view.set_zoom(1.1, cx).unwrap();
+        view.request_zoom(ZoomOperation::SetZoom(1.1), cx);
         assert!((view.zoom(cx) - 1.1).abs() < 0.0001);
-        view.fit_width(cx).unwrap();
-        assert_eq!(
-            view.fit_width(cx).unwrap().status(),
-            OperationStatus::Unchanged
-        );
+        view.request_zoom(ZoomOperation::FitWidth, cx);
+        view.request_zoom(ZoomOperation::FitWidth, cx);
     });
     cx.update(|window, cx| view.update(cx, |view, cx| view.release(Some(window), cx)));
     view.read_with(cx, |view, cx| assert!(view.is_released(cx)));
@@ -321,7 +302,7 @@ fn native_page_fit_uses_topmost_not_center_and_resize_uses_current_page(cx: &mut
     );
     let prepared = prepare(Arc::new(bytes), &Default::default()).unwrap();
     assert_eq!(
-        prepared.page_dimensions(),
+        prepared.inner.page_dimensions(),
         &[(612.0, 1224.0), (612.0, 2448.0)]
     );
     let view = cx.new(|cx| PdfView::from_prepared(prepared, cx));

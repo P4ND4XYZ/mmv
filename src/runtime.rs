@@ -10,7 +10,7 @@ use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc, time::Instant};
 use crate::{infra, ui};
 use diagram::connect_diagrams;
 pub(crate) use document::{PreparedRead, connect_document_reads};
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-tests"))]
 pub(crate) use document::{test_read, tests::pause_after_prepare};
 pub(crate) use file_tree::connect_file_tree;
 pub(crate) use pipe::connect_pipe;

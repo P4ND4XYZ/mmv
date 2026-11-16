@@ -137,13 +137,6 @@ impl DocumentContent {
             Self::Pdf { .. } => None,
         }
     }
-
-    pub fn pdf_bytes(&self) -> Option<&Arc<Vec<u8>>> {
-        match self {
-            Self::Markdown { .. } => None,
-            Self::Pdf { bytes } => Some(bytes),
-        }
-    }
 }
 
 pub struct LoadedDocument {
@@ -159,10 +152,6 @@ impl LoadedDocument {
                 source: Arc::new(source),
             },
         }
-    }
-
-    pub fn markdown_source(&self) -> Option<&Arc<String>> {
-        self.content.markdown_source()
     }
 }
 
@@ -431,7 +420,7 @@ mod tests {
             let cloned = content.clone();
             assert_eq!(content.markdown_source().unwrap().as_str(), text);
             assert!(Arc::ptr_eq(cloned.markdown_source().unwrap(), &source));
-            assert!(content.pdf_bytes().is_none());
+            assert!(matches!(content, DocumentContent::Markdown { .. }));
         }
     }
 
@@ -442,12 +431,18 @@ mod tests {
             bytes: bytes.clone(),
         };
         let cloned = content.clone();
-        assert!(Arc::ptr_eq(cloned.pdf_bytes().unwrap(), &bytes));
+        let DocumentContent::Pdf {
+            bytes: cloned_bytes,
+        } = cloned
+        else {
+            panic!("PDF content");
+        };
+        assert!(Arc::ptr_eq(&cloned_bytes, &bytes));
         let loaded = LoadedDocument {
             key: DocumentKey("sample.pdf".into()),
             content,
         };
-        assert!(loaded.markdown_source().is_none());
+        assert!(loaded.content.markdown_source().is_none());
         let document = Document {
             generation: Generation(1),
             path: "sample.pdf".into(),
@@ -455,10 +450,13 @@ mod tests {
             content: loaded.content,
         };
         assert!(document.markdown_source().is_none());
-        assert_eq!(
-            document.content.pdf_bytes().unwrap().as_slice(),
-            bytes.as_slice()
-        );
+        let DocumentContent::Pdf {
+            bytes: adopted_bytes,
+        } = document.content
+        else {
+            panic!("PDF content");
+        };
+        assert_eq!(adopted_bytes.as_slice(), bytes.as_slice());
     }
 
     #[test]
@@ -473,7 +471,7 @@ mod tests {
             false,
         );
         let loaded = LoadedDocument::markdown(DocumentKey("sample.md".into()), "body".into());
-        let source = loaded.markdown_source().unwrap().clone();
+        let source = loaded.content.markdown_source().unwrap().clone();
         assert!(
             state
                 .complete(ReadResult {

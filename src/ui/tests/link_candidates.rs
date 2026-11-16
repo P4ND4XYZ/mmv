@@ -116,7 +116,10 @@ fn extraction_deduplicates_only_equal_names_and_resolved_targets_and_is_determin
         [0, 2, 3, 4]
     );
     let mut matcher = LinkMatcher::default();
-    let filtered = matcher.rank(&values, "Different");
+    let filtered: Vec<_> = values
+        .iter()
+        .filter(|value| matcher.fuzzy("Different", &value.display_name).is_some())
+        .collect();
     assert_eq!(filtered.len(), 1);
     assert_eq!(filtered[0].id, values[2].id);
     assert_eq!(
@@ -143,8 +146,10 @@ fn html_anchor_fragments_are_excluded_without_splitting_markdown_image_links() {
     assert_eq!(markdown[0].display_name, "beforepreviewafter");
     assert_eq!(markdown[0].source_range, Some(0..source.len()));
     assert_eq!(
-        LinkMatcher::default().rank(&markdown, "beforeafter").len(),
-        1
+        LinkMatcher::default()
+            .fuzzy("beforeafter", &markdown[0].display_name)
+            .is_some(),
+        true
     );
 }
 

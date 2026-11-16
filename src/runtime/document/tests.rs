@@ -6,18 +6,22 @@ use std::path::{Path, PathBuf};
 
 // Deterministically delay delivery only after the production I/O and real parser.
 // This test-only gate makes reverse completion and late-result cleanup reproducible.
+#[cfg(feature = "ui-tests")]
 struct Gate {
     open: std::sync::atomic::AtomicBool,
     reached: std::sync::atomic::AtomicBool,
     waker: std::sync::Mutex<Option<std::task::Waker>>,
 }
+#[cfg(feature = "ui-tests")]
 static PREPARE_GATES: std::sync::Mutex<std::collections::BTreeMap<PathBuf, Arc<Gate>>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
+#[cfg(feature = "ui-tests")]
 pub(crate) struct PrepareGateGuard {
     path: PathBuf,
     gate: Arc<Gate>,
 }
+#[cfg(feature = "ui-tests")]
 impl PrepareGateGuard {
     pub(crate) fn reached(&self) -> bool {
         self.gate.reached.load(std::sync::atomic::Ordering::SeqCst)
@@ -31,12 +35,14 @@ impl PrepareGateGuard {
         }
     }
 }
+#[cfg(feature = "ui-tests")]
 impl Drop for PrepareGateGuard {
     fn drop(&mut self) {
         self.release();
         PREPARE_GATES.lock().unwrap().remove(&self.path);
     }
 }
+#[cfg(feature = "ui-tests")]
 pub(crate) fn pause_after_prepare(path: PathBuf) -> PrepareGateGuard {
     let gate = Arc::new(Gate {
         open: std::sync::atomic::AtomicBool::new(false),
@@ -50,6 +56,7 @@ pub(crate) fn pause_after_prepare(path: PathBuf) -> PrepareGateGuard {
     );
     PrepareGateGuard { path, gate }
 }
+#[cfg(feature = "ui-tests")]
 pub(super) async fn after_prepare(request: &app::ReadRequest) {
     let gate = PREPARE_GATES
         .lock()
@@ -143,25 +150,21 @@ fn actual_io_prepare_envelope_shares_bytes_and_requires_parse_before_adoption() 
     assert_eq!(pdf::prepare_calls(), before);
     let (result, prepared) = loaded(test_read(request));
     assert_eq!(pdf::prepare_calls(), before + 1);
-    assert_eq!(
-        prepared.as_ref().unwrap().page_dimensions(),
-        &[(612., 792.); 2]
-    );
-    let bytes = result
-        .content
-        .as_ref()
-        .unwrap()
-        .content
-        .pdf_bytes()
-        .unwrap()
-        .clone();
+    assert!(prepared.is_some());
+    let app::DocumentContent::Pdf { bytes } = &result.content.as_ref().unwrap().content else {
+        panic!("PDF content");
+    };
+    let bytes = bytes.clone();
     let weak = Arc::downgrade(&bytes);
     let completion = app.complete_at(result, 0.).unwrap();
     assert!(completion.adopted && completion.outcome.is_ok());
-    assert!(Arc::ptr_eq(
-        app.document().unwrap().content.pdf_bytes().unwrap(),
-        &bytes
-    ));
+    let app::DocumentContent::Pdf {
+        bytes: adopted_bytes,
+    } = &app.document().unwrap().content
+    else {
+        panic!("PDF content");
+    };
+    assert!(Arc::ptr_eq(adopted_bytes, &bytes));
     assert_eq!(pdf::prepare_calls(), before + 1);
     drop(prepared);
     drop(bytes);
