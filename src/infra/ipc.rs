@@ -19,7 +19,7 @@ use std::{
         mpsc as std_mpsc,
     },
     thread::{self, JoinHandle},
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -205,23 +205,53 @@ async fn serve(
         .await
 }
 
+const CONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(100);
+
+// Only this timeout is retryable. A stage deadline or OS TimedOut stays terminal.
+#[derive(Debug)]
+struct ConnectAttemptTimedOut;
+impl std::fmt::Display for ConnectAttemptTimedOut {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("IPC connection attempt timed out")
+    }
+}
+impl std::error::Error for ConnectAttemptTimedOut {}
+
+async fn connect_attempt<T>(
+    future: impl std::future::Future<Output = stdio::Result<T>>,
+) -> stdio::Result<T> {
+    tokio::time::timeout(CONNECT_ATTEMPT_TIMEOUT, future)
+        .await
+        .map_err(|_| stdio::Error::new(stdio::ErrorKind::TimedOut, ConnectAttemptTimedOut))?
+}
+
+async fn connect_with<T, F, Fut>(deadline: Deadline, mut connect: F) -> stdio::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = stdio::Result<T>>,
+{
+    loop {
+        match deadline.until(connect_attempt(connect())).await {
+            Ok(client) => return Ok(client),
+            Err(error) if retryable(&error) => deadline.pause().await?,
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 pub struct PipeClient {
     pipe: TcpStream,
 }
 impl PipeClient {
     pub(super) async fn try_connect(namespace: &Namespace) -> stdio::Result<Self> {
         Ok(Self {
-            pipe: TcpStream::connect(namespace.address()).await?,
+            pipe: connect_attempt(TcpStream::connect(namespace.address())).await?,
         })
     }
     pub async fn connect(namespace: &Namespace, deadline: Deadline) -> stdio::Result<Self> {
-        loop {
-            match deadline.until(Self::try_connect(namespace)).await {
-                Ok(client) => return Ok(client),
-                Err(error) if retryable(&error) => deadline.pause().await?,
-                Err(error) => return Err(error),
-            }
-        }
+        Ok(Self {
+            pipe: connect_with(deadline, || TcpStream::connect(namespace.address())).await?,
+        })
     }
     /// Consumes the connection. A sent request is never retried, including when
     /// its outcome is lost. No Pipe-specific receipt or disconnect wait on TCP.
@@ -249,5 +279,7 @@ pub(super) fn retryable(error: &stdio::Error) -> bool {
             | stdio::ErrorKind::ConnectionReset
             | stdio::ErrorKind::ConnectionAborted
             | stdio::ErrorKind::NotConnected
-    )
+    ) || error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<ConnectAttemptTimedOut>())
 }

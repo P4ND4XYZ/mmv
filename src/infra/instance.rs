@@ -1,10 +1,5 @@
 //! GUI lifetime and startup arbitration use distinct file locks.
-use super::{
-    deadline::Deadline,
-    ipc::{PipeClient, retryable},
-    lock,
-    paths::Namespace,
-};
+use super::{deadline::Deadline, ipc::PipeClient, lock, paths::Namespace};
 use crate::app::ExternalOperation;
 use std::{io, time::Instant};
 
@@ -110,11 +105,6 @@ async fn connect_with(
     spawn: impl FnOnce() -> io::Result<()>,
 ) -> io::Result<PipeClient> {
     let connection = Deadline::connection(Instant::now());
-    match connection.until(PipeClient::try_connect(namespace)).await {
-        Ok(client) => return Ok(client),
-        Err(error) if retryable(&error) => {}
-        Err(error) => return Err(error),
-    }
     if gui_is_alive(namespace)? {
         return PipeClient::connect(namespace, connection).await;
     }
@@ -134,12 +124,12 @@ async fn connect_with(
         }
         deadline.pause().await?;
     };
-    match deadline.until(PipeClient::try_connect(namespace)).await {
-        Ok(client) => return Ok(client),
-        Err(error) if retryable(&error) => {}
-        Err(error) => return Err(error),
-    }
+    // Another CLI may have started the GUI while we waited for startup.
+    // TCP reachability is not a substitute for the GUI's lifetime lock.
     if !gui_is_alive(namespace)? {
+        if deadline.expired(Instant::now()) {
+            return Err(Deadline::timeout());
+        }
         spawn()?;
     }
     let client = PipeClient::connect(namespace, deadline).await;
@@ -304,6 +294,174 @@ mod tests {
                 .unwrap();
             assert_eq!(error.kind(), io::ErrorKind::NotConnected);
         }
+    }
+
+    #[test]
+    fn absent_live_non_open_ignores_tcp_listener() {
+        let fixture = Fixture::new();
+        let listener = std::net::TcpListener::bind(fixture.0.address()).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let result = connect(&fixture.0, &ExternalOperation::Top, || {
+            panic!("non-Open must not launch")
+        });
+        assert_eq!(result.err().unwrap().kind(), io::ErrorKind::NotConnected);
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert!(!fixture.0.directory.join("startup.lock").exists());
+    }
+
+    #[test]
+    fn absent_live_open_reaches_spawn_without_tcp_attempts() {
+        let fixture = Fixture::new();
+        let n = &fixture.0;
+        let listener = std::net::TcpListener::bind(n.address()).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut spawned = false;
+        let result = connect(
+            n,
+            &ExternalOperation::Open {
+                path: std::env::temp_dir().join("test.md"),
+                line: None,
+            },
+            || {
+                spawned = true;
+                assert!(InstanceGuard::try_acquire(n, "startup").unwrap().is_none());
+                assert!(!gui_is_alive(n).unwrap());
+                assert_eq!(
+                    listener.accept().unwrap_err().kind(),
+                    io::ErrorKind::WouldBlock
+                );
+                Err(io::Error::other("fixture stops before spawning"))
+            },
+        );
+        assert!(
+            spawned,
+            "TCP-only listener must not bypass startup arbitration"
+        );
+        assert_eq!(result.err().unwrap().kind(), io::ErrorKind::Other);
+        assert!(InstanceGuard::try_acquire(n, "startup").unwrap().is_some());
+    }
+
+    #[test]
+    fn invalid_locks_fail_closed_before_tcp() {
+        for role in ["live", "startup"] {
+            let fixture = Fixture::new();
+            let n = &fixture.0;
+            drop(lock::open(n, "live").unwrap());
+            if role == "live" {
+                std::fs::remove_file(n.directory.join("live.lock")).unwrap();
+            }
+            std::fs::create_dir(n.directory.join(format!("{role}.lock"))).unwrap();
+            let listener = std::net::TcpListener::bind(n.address()).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let result = connect(
+                n,
+                &ExternalOperation::Open {
+                    path: std::env::temp_dir().join("test.md"),
+                    line: None,
+                },
+                || panic!("invalid lock must not launch"),
+            );
+            assert!(result.is_err(), "{role} failure was bypassed by TCP");
+            assert_eq!(
+                listener.accept().unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+        }
+    }
+
+    #[test]
+    fn startup_wait_rechecks_live_before_tcp() {
+        let fixture = Fixture::new();
+        let n = &fixture.0;
+        let startup = InstanceGuard::try_acquire(n, "startup").unwrap().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let operation = ExternalOperation::Open {
+                path: std::env::temp_dir().join("test.md"),
+                line: None,
+            };
+            let connecting = connect_with(n, &operation, || panic!("must recheck live"));
+            tokio::pin!(connecting);
+            // The first live probe creates live.lock; with startup held, the
+            // connection future then yields while waiting for arbitration.
+            Deadline::after(Duration::from_secs(2))
+                .until(async {
+                    tokio::select! {
+                        biased;
+                        _ = &mut connecting => panic!("startup lock was bypassed"),
+                        _ = async {
+                            while !n.directory.join("live.lock").exists() {
+                                tokio::task::yield_now().await;
+                            }
+                        } => Ok(()),
+                    }
+                })
+                .await
+                .unwrap();
+            std::fs::remove_file(n.directory.join("live.lock")).unwrap();
+            std::fs::create_dir(n.directory.join("live.lock")).unwrap();
+            let listener = std::net::TcpListener::bind(n.address()).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            drop(startup);
+            let result = Deadline::after(Duration::from_secs(2))
+                .until(connecting)
+                .await;
+            let error = result
+                .err()
+                .expect("startup recheck must reject a TCP-only listener");
+            assert_ne!(
+                error.kind(),
+                io::ErrorKind::TimedOut,
+                "live recheck must fail immediately"
+            );
+            assert_eq!(
+                listener.accept().unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+            assert!(InstanceGuard::try_acquire(n, "startup").unwrap().is_some());
+        });
+    }
+
+    #[test]
+    fn isolated_new_and_existing_gui_connection_measurements() {
+        let fixture = Fixture::new();
+        let n = &fixture.0;
+        let mut owner = None;
+        let start = Instant::now();
+        let client = connect(
+            n,
+            &ExternalOperation::Open {
+                path: std::env::temp_dir().join("test.md"),
+                line: None,
+            },
+            || {
+                let live = InstanceGuard::claim_gui(n)?.unwrap();
+                let server = PipeServer::bind(n)?;
+                owner = Some((server, live));
+                Ok(())
+            },
+        )
+        .unwrap();
+        eprintln!("isolated new GUI-equivalent connect: {:?}", start.elapsed());
+        assert!(owner.is_some());
+        assert!(gui_is_alive(n).unwrap());
+        assert!(InstanceGuard::try_acquire(n, "startup").unwrap().is_some());
+        drop(client);
+        let start = Instant::now();
+        let client = connect(n, &ExternalOperation::Top, || panic!("must not launch")).unwrap();
+        eprintln!(
+            "isolated existing GUI-equivalent connect: {:?}",
+            start.elapsed()
+        );
+        drop(client);
+        drop(owner);
+        assert!(!gui_is_alive(n).unwrap());
     }
 
     struct TestChild(Child);

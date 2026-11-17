@@ -115,6 +115,149 @@ fn fixed_stage_deadlines_use_supplied_time_without_retry_extension() {
         );
     }
 }
+// A pending future models the slow Windows connect without relying on the OS's
+// refusal delay. Its lifetime also proves that cancellation releases the attempt.
+struct PendingConnect<'a>(&'a std::cell::Cell<usize>);
+impl Drop for PendingConnect<'_> {
+    fn drop(&mut self) {
+        self.0.set(self.0.get() + 1);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pending_connection_attempt_times_out_and_drops_its_future() {
+    let dropped = std::cell::Cell::new(0);
+    let attempt = PendingConnect(&dropped);
+    let result = timeout(
+        Duration::from_millis(400),
+        connect_attempt(async move {
+            let _attempt = attempt;
+            std::future::pending::<stdio::Result<()>>().await
+        }),
+    )
+    .await
+    .expect("one connect attempt must finish before the stage deadline");
+    let error = result.unwrap_err();
+    assert_eq!(error.kind(), stdio::ErrorKind::TimedOut);
+    assert!(
+        retryable(&error),
+        "only this attempt's timeout is retryable"
+    );
+    assert_eq!(dropped.get(), 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pending_connection_attempt_is_dropped_before_retry_and_success() {
+    let attempts = std::cell::Cell::new(0);
+    let dropped = std::cell::Cell::new(0);
+    let result = timeout(
+        Duration::from_secs(1),
+        connect_with(Deadline::after(Duration::from_millis(700)), || {
+            let index = attempts.get();
+            attempts.set(index + 1);
+            let dropped = &dropped;
+            async move {
+                if index == 0 {
+                    let _attempt = PendingConnect(dropped);
+                    std::future::pending::<()>().await;
+                }
+                assert_eq!(dropped.get(), 1);
+                Ok(42)
+            }
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(result, 42);
+    assert_eq!(attempts.get(), 2);
+    assert_eq!(dropped.get(), 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pending_connection_retries_preserve_the_original_stage_deadline() {
+    for duration in [Duration::from_millis(35), Duration::from_millis(275)] {
+        let attempts = std::cell::Cell::new(0);
+        let dropped = std::cell::Cell::new(0);
+        let deadline = Deadline::after(duration);
+        let error = timeout(
+            duration + Duration::from_millis(50),
+            connect_with(deadline, || {
+                attempts.set(attempts.get() + 1);
+                let dropped = &dropped;
+                async move {
+                    let _attempt = PendingConnect(dropped);
+                    std::future::pending::<stdio::Result<()>>().await
+                }
+            }),
+        )
+        .await
+        .expect("retries must not extend the original stage deadline")
+        .unwrap_err();
+        assert!(deadline.expired(Instant::now()));
+        assert_eq!(error.kind(), stdio::ErrorKind::TimedOut);
+        assert!(!retryable(&error), "stage expiry is terminal");
+        assert_eq!(dropped.get(), attempts.get());
+        if duration < Duration::from_millis(100) {
+            assert_eq!(attempts.get(), 1, "respect the shorter stage remainder");
+        } else {
+            assert!(attempts.get() > 1, "attempt timeouts must allow retry");
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn connection_non_retryable_errors_fail_immediately() {
+    for kind in [
+        stdio::ErrorKind::PermissionDenied,
+        stdio::ErrorKind::InvalidInput,
+        stdio::ErrorKind::TimedOut,
+    ] {
+        let attempts = std::cell::Cell::new(0);
+        let error = connect_with(stage(), || {
+            attempts.set(attempts.get() + 1);
+            std::future::ready(Err::<(), _>(stdio::Error::new(kind, "connector error")))
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), kind);
+        assert_eq!(attempts.get(), 1);
+        assert!(!retryable(&error));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn real_tcp_single_attempt_to_closed_port_is_bounded_and_retryable() {
+    let namespace = Namespace::isolated();
+    let error = timeout(
+        Duration::from_millis(400),
+        PipeClient::try_connect(&namespace),
+    )
+    .await
+    .expect("single attempt must not wait for the OS refusal delay")
+    .err()
+    .expect("isolated port has no listener");
+    assert!(retryable(&error));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn real_tcp_connect_retries_until_delayed_listener_is_ready() {
+    let namespace = Namespace::isolated();
+    timeout(Duration::from_secs(3), async {
+        let connect = PipeClient::connect(&namespace, stage());
+        let listen = async {
+            tokio::time::sleep(Duration::from_millis(140)).await;
+            let listener = TcpListener::bind(namespace.address()).await.unwrap();
+            let (stream, _) = listener.accept().await.unwrap();
+            (listener, stream)
+        };
+        let (client, (_listener, _stream)) = tokio::join!(connect, listen);
+        assert!(client.is_ok());
+    })
+    .await
+    .expect("client did not connect after delayed listener readiness");
+}
+
 #[test]
 fn protocol_round_trips_every_public_operation_and_failure_reason() {
     let mut operations = vec![
