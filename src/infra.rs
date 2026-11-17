@@ -45,19 +45,6 @@ pub(crate) mod test_support {
         }
     }
 
-    /// Only test executables can select an isolated process-probe namespace.
-    pub fn process_namespace() -> Option<Namespace> {
-        let directory = std::path::PathBuf::from(std::env::var_os("MMV_TEST_GUI_DIRECTORY")?);
-        assert!(directory.is_absolute());
-        assert!(directory.file_name()?.to_str()?.starts_with("mmv-test-"));
-        let port = std::env::var("MMV_TEST_GUI_PORT")
-            .ok()?
-            .parse::<std::num::NonZeroU16>()
-            .ok()?
-            .get();
-        Some(Namespace { directory, port })
-    }
-
     pub fn namespace() -> Namespace {
         Namespace::isolated()
     }

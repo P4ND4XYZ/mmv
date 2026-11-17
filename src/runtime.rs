@@ -23,8 +23,6 @@ pub(crate) fn run_gui() -> std::io::Result<()> {
     // Evaluate once, before live ownership or binding the configured port.
     let loaded = infra::load_config();
     let namespace = infra::Namespace::current_user(loaded.runtime.config().ipc_port)?;
-    #[cfg(all(test, feature = "ui-tests"))]
-    let namespace = infra::test_support::process_namespace().unwrap_or(namespace);
     // File ownership outlives the window, transport shutdown and application run.
     let Some(_live) = infra::InstanceGuard::claim_gui(&namespace)? else {
         return Ok(());

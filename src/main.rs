@@ -43,9 +43,6 @@ fn main() -> std::process::ExitCode {
     // One invocation sends exactly one operation.
     let result = runtime.block_on(async {
         let namespace = infra::Namespace::current_user(port).map_err(|error| error.to_string())?;
-        // Only a cfg(test) build can isolate the actual process/main startup path.
-        #[cfg(all(test, feature = "ui-tests"))]
-        let namespace = infra::test_support::process_namespace().unwrap_or(namespace);
         let client = infra::connect_or_start(&namespace, &operation)
             .await
             .map_err(|error| error.to_string())?;
