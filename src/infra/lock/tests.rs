@@ -50,10 +50,13 @@ fn windows_security_and_noninheritance_and_pinned_ancestor() {
     let user = crate::infra::security::UserSecurity::current().unwrap();
     for handle in std::iter::once(&file.file).chain(&file._directories) {
         let mut flags = 0;
-        assert_ne!(
-            unsafe { GetHandleInformation(handle.as_raw_handle(), &mut flags) },
-            0
-        );
+        #[allow(
+            unsafe_code,
+            reason = "check Windows handle inheritance flags through Win32"
+        )]
+        // SAFETY: The borrowed File keeps its handle open, and flags is writable.
+        let result = unsafe { GetHandleInformation(handle.as_raw_handle(), &mut flags) };
+        assert_ne!(result, 0);
         assert_eq!(flags & HANDLE_FLAG_INHERIT, 0);
     }
     user.verify(file.file.as_raw_handle(), SE_FILE_OBJECT)
@@ -103,6 +106,9 @@ fn linux_native_handles_are_cloexec_and_ancestor_symlinks_are_rejected() {
     let fixture = Fixture::new();
     let file = open(&fixture.0, "live").unwrap();
     for handle in std::iter::once(&file.file).chain(&file._directories) {
+        #[allow(unsafe_code, reason = "inspect close-on-exec flags through libc")]
+        // SAFETY: The borrowed File keeps its descriptor live; F_GETFD does not
+        // take a variadic argument.
         let flags = unsafe { libc::fcntl(handle.as_raw_fd(), libc::F_GETFD) };
         assert!(
             flags >= 0,

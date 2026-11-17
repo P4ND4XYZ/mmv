@@ -3,11 +3,11 @@
 
 use std::{
     ffi::c_void,
-    mem::{size_of, zeroed},
     os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle},
     process::Child,
 };
 
+#[derive(Default)]
 #[repr(C)]
 struct BasicLimits {
     process_time: i64,
@@ -21,6 +21,7 @@ struct BasicLimits {
     scheduling_class: u32,
 }
 
+#[derive(Default)]
 #[repr(C)]
 struct ExtendedLimits {
     basic: BasicLimits,
@@ -31,7 +32,10 @@ struct ExtendedLimits {
     peak_job_memory: usize,
 }
 
+#[allow(unsafe_code, reason = "declare the Win32 job APIs without changing dependency features")]
 #[link(name = "kernel32")]
+// SAFETY: These kernel32 declarations use the Win32 system ABI and matching
+// pointer, DWORD, information-class enum, and BOOL types.
 unsafe extern "system" {
     fn CreateJobObjectW(attributes: *const c_void, name: *const u16) -> *mut c_void;
     fn SetInformationJobObject(job: *mut c_void, class: i32, info: *const c_void, size: u32)
@@ -45,39 +49,52 @@ pub struct ChildJob {
 
 impl ChildJob {
     pub fn attach(child: &Child) -> Result<Self, String> {
-        // SAFETY: unnamed job, default security attributes, valid ABI structures,
-        // and borrowed process/job handles that remain open throughout each call.
-        unsafe {
-            let raw = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-            if raw.is_null() {
-                return Err(format!(
-                    "creating Mermaid job: {}",
-                    std::io::Error::last_os_error()
-                ));
-            }
-            let handle = OwnedHandle::from_raw_handle(raw);
-            let mut limits: ExtendedLimits = zeroed();
-            limits.basic.flags = 0x2000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-            if SetInformationJobObject(
+        #[allow(unsafe_code, reason = "create a Win32 job object")]
+        // SAFETY: Null security attributes and a null name are allowed and
+        // request a non-inheritable handle to an unnamed job.
+        let raw = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if raw.is_null() {
+            return Err(format!(
+                "creating Mermaid job: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        #[allow(unsafe_code, reason = "take ownership of the new Win32 job handle")]
+        // SAFETY: A non-null return is a new job handle owned by this caller.
+        // Ownership is transferred exactly once and OwnedHandle closes it.
+        let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
+
+        let mut limits = ExtendedLimits::default();
+        limits.basic.flags = 0x2000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        #[allow(unsafe_code, reason = "configure Win32 job termination on handle close")]
+        // SAFETY: The job handle is open. The input is an initialized C-layout
+        // extended limits structure with the layout and size required by class 9.
+        let configured = unsafe {
+            SetInformationJobObject(
                 handle.as_raw_handle(),
                 9, // JobObjectExtendedLimitInformation
-                &limits as *const _ as *const c_void,
+                std::ptr::from_ref(&limits).cast(),
                 size_of::<ExtendedLimits>() as u32,
-            ) == 0
-            {
-                return Err(format!(
-                    "configuring Mermaid job: {}",
-                    std::io::Error::last_os_error()
-                ));
-            }
-            if AssignProcessToJobObject(handle.as_raw_handle(), child.as_raw_handle()) == 0 {
-                return Err(format!(
-                    "assigning Mermaid job: {}",
-                    std::io::Error::last_os_error()
-                ));
-            }
-            Ok(Self { _handle: handle })
+            )
+        };
+        if configured == 0 {
+            return Err(format!(
+                "configuring Mermaid job: {}",
+                std::io::Error::last_os_error()
+            ));
         }
+        #[allow(unsafe_code, reason = "assign the child process to the Win32 job")]
+        // SAFETY: OwnedHandle and Child keep their job and process handles
+        // open for this call, which does not take ownership of either handle.
+        let assigned =
+            unsafe { AssignProcessToJobObject(handle.as_raw_handle(), child.as_raw_handle()) };
+        if assigned == 0 {
+            return Err(format!(
+                "assigning Mermaid job: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        Ok(Self { _handle: handle })
     }
 }
 

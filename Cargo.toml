@@ -38,3 +38,28 @@ gpui-base = { git = "https://github.com/P4ND4XYZ/gpui-kit.git", rev = "1a2539f67
 
 [profile.dev]
 debug = "limited"
+
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+unfulfilled_lint_expectations = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+unwrap_used = "warn"
+expect_used = "warn"
+
+# unsafe の根拠と警告抑制の理由
+undocumented_unsafe_blocks = "warn"
+allow_attributes_without_reason = "warn"
+
+# エラーなどの意図しない破棄
+let_underscore_must_use = "warn"
+
+# 開発途中のコードの残存
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"

@@ -57,7 +57,11 @@ fn spawn_gui() -> io::Result<()> {
     };
     let mut process = PROCESS_INFORMATION::default();
     // No STARTF_USESTDHANDLES, no inherited handles; GPUI separately uses focus:false.
-    if unsafe {
+    #[allow(unsafe_code, reason = "start the Windows GUI without inheriting handles")]
+    // SAFETY: The executable and writable command buffers are NUL-terminated
+    // and live through the call. Startup is initialized with the proper size;
+    // process is writable, and the remaining pointer arguments may be null.
+    let created = unsafe {
         CreateProcessW(
             executable.as_ptr(),
             command.as_mut_ptr(),
@@ -70,8 +74,8 @@ fn spawn_gui() -> io::Result<()> {
             &startup,
             &mut process,
         )
-    } == 0
-    {
+    };
+    if created == 0 {
         return Err(io::Error::last_os_error());
     }
     // The GUI lives independently; neither handle is needed for arbitration.

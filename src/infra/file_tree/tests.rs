@@ -48,15 +48,16 @@ fn real_listing_includes_hidden_and_all_extensions_sorts_without_natural_order()
             .encode_wide()
             .chain(Some(0))
             .collect();
-        assert_ne!(
-            unsafe {
-                windows_sys::Win32::Storage::FileSystem::SetFileAttributesW(
-                    name.as_ptr(),
-                    windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN,
-                )
-            },
-            0
-        );
+        #[allow(unsafe_code, reason = "set the Windows hidden attribute on the test file")]
+        // SAFETY: The fixture path is NUL-terminated UTF-16 and its buffer
+        // remains live through the call. FILE_ATTRIBUTE_HIDDEN is a valid flag.
+        let result = unsafe {
+            windows_sys::Win32::Storage::FileSystem::SetFileAttributesW(
+                name.as_ptr(),
+                windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN,
+            )
+        };
+        assert_ne!(result, 0);
     }
     let entries = list_directory(&request(fixture.0.clone())).unwrap();
     let names: Vec<_> = entries.iter().map(|e| e.name.to_str().unwrap()).collect();

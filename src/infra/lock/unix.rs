@@ -27,6 +27,12 @@ fn open_at(
     flags: libc::c_int,
     mode: libc::mode_t,
 ) -> io::Result<File> {
+    #[allow(
+        unsafe_code,
+        reason = "open relative to a live directory descriptor through libc"
+    )]
+    // SAFETY: parent keeps the directory FD live, name is NUL-terminated, and
+    // mode has the target ABI type required when the flags include O_CREAT.
     let fd = unsafe {
         libc::openat(
             parent.as_raw_fd(),
@@ -38,13 +44,19 @@ fn open_at(
     if fd < 0 {
         Err(io::Error::last_os_error())
     } else {
-        Ok(unsafe { File::from_raw_fd(fd) })
+        #[allow(unsafe_code, reason = "transfer the newly opened descriptor to File")]
+        // SAFETY: A nonnegative result from openat is a new owned descriptor;
+        // File takes sole responsibility for closing it.
+        let file = unsafe { File::from_raw_fd(fd) };
+        Ok(file)
     }
 }
 pub(super) fn open(directory: &Path, role: &str) -> io::Result<SecureFile> {
     if !directory.is_absolute() {
         return Err(invalid());
     }
+    #[allow(unsafe_code, reason = "query the effective user ID through libc")]
+    // SAFETY: geteuid takes no arguments and has no caller-side preconditions.
     let uid = unsafe { libc::geteuid() };
     let mut parents = vec![File::open("/")?];
     let components: Vec<_> = directory.components().collect();
@@ -57,7 +69,15 @@ pub(super) fn open(directory: &Path, role: &str) -> io::Result<SecureFile> {
                 let next = match open_at(parent, &part, O_RDONLY | O_DIRECTORY, 0) {
                     Ok(file) => file,
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                        if unsafe { libc::mkdirat(parent.as_raw_fd(), part.as_ptr(), 0o700) } != 0 {
+                        #[allow(
+                            unsafe_code,
+                            reason = "create a directory relative to the live parent FD"
+                        )]
+                        // SAFETY: parent keeps its descriptor live and part is
+                        // a live NUL-terminated component name.
+                        let created =
+                            unsafe { libc::mkdirat(parent.as_raw_fd(), part.as_ptr(), 0o700) };
+                        if created != 0 {
                             let error = io::Error::last_os_error();
                             if error.kind() != io::ErrorKind::AlreadyExists {
                                 return Err(error);

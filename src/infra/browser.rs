@@ -16,6 +16,9 @@ pub(crate) fn launch(url: &str) -> io::Result<()> {
     let open: Vec<u16> = "open".encode_utf16().chain(Some(0)).collect();
     // ShellExecuteW treats the URL as a single file/URL argument; no shell
     // command or interpolated command line is constructed.
+    #[allow(unsafe_code, reason = "ask the Windows shell to open the URL")]
+    // SAFETY: Both UTF-16 buffers are NUL-terminated and live through the call.
+    // The optional window, parameters, and working directory are null.
     let accepted = unsafe {
         ShellExecuteW(
             std::ptr::null_mut(),

@@ -28,7 +28,10 @@ fn name(path: &Path) -> io::Result<Vec<u16>> {
 }
 fn check(handle: &Handle, directory: bool) -> io::Result<()> {
     let mut info = BY_HANDLE_FILE_INFORMATION::default();
-    if unsafe { GetFileInformationByHandle(handle.0, &mut info) } == 0 {
+    #[allow(unsafe_code, reason = "read metadata from the opened Windows handle")]
+    // SAFETY: handle keeps the kernel handle live and info is a writable output.
+    let queried = unsafe { GetFileInformationByHandle(handle.0, &mut info) };
+    if queried == 0 {
         return Err(io::Error::last_os_error());
     }
     if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
@@ -57,7 +60,14 @@ pub(super) fn open(directory: &Path, role: &str) -> io::Result<SecureFile> {
         }
         let path = name(&current)?;
         let mut created = false;
-        if unsafe { CreateDirectoryW(path.as_ptr(), &security.attributes()) } == 0 {
+        #[allow(
+            unsafe_code,
+            reason = "create a directory with the current-user descriptor"
+        )]
+        // SAFETY: path is NUL-terminated; the attributes and their descriptor
+        // remain live for this synchronous call.
+        let created_result = unsafe { CreateDirectoryW(path.as_ptr(), &security.attributes()) };
+        if created_result == 0 {
             let error = io::Error::last_os_error();
             if error.raw_os_error() != Some(ERROR_ALREADY_EXISTS as i32) {
                 return Err(error);
@@ -67,7 +77,10 @@ pub(super) fn open(directory: &Path, role: &str) -> io::Result<SecureFile> {
         }
         // No FILE_SHARE_DELETE: each verified path component remains pinned while
         // descendants are opened and while the final file lock is held.
-        let handle = Handle::new(unsafe {
+        #[allow(unsafe_code, reason = "open a pinned directory handle through Win32")]
+        // SAFETY: path is a live NUL-terminated string. The optional attributes
+        // and template handle are null; Handle::new takes the successful handle.
+        let raw = unsafe {
             CreateFileW(
                 path.as_ptr(),
                 FILE_READ_ATTRIBUTES | READ_CONTROL,
@@ -77,15 +90,23 @@ pub(super) fn open(directory: &Path, role: &str) -> io::Result<SecureFile> {
                 FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
                 ptr::null_mut(),
             )
-        })?;
+        };
+        let handle = Handle::new(raw)?;
         check(&handle, true)?;
         if created || current == directory {
             security.verify(handle.0, SE_FILE_OBJECT)?;
         }
-        parents.push(unsafe { File::from_raw_handle(handle.into_raw()) });
+        #[allow(unsafe_code, reason = "transfer the verified directory handle to File")]
+        // SAFETY: The handle is valid and owned; into_raw suppresses its close
+        // so File becomes the sole owner.
+        let parent = unsafe { File::from_raw_handle(handle.into_raw()) };
+        parents.push(parent);
     }
     let path = name(&directory.join(role))?;
-    let handle = Handle::new(unsafe {
+    #[allow(unsafe_code, reason = "open or create the lock file through Win32")]
+    // SAFETY: path is live and NUL-terminated. The attributes and descriptor
+    // remain live for the call, and the optional template handle is null.
+    let raw = unsafe {
         CreateFileW(
             path.as_ptr(),
             GENERIC_READ | GENERIC_WRITE | READ_CONTROL,
@@ -95,11 +116,16 @@ pub(super) fn open(directory: &Path, role: &str) -> io::Result<SecureFile> {
             FILE_FLAG_OPEN_REPARSE_POINT,
             ptr::null_mut(),
         )
-    })?;
+    };
+    let handle = Handle::new(raw)?;
     check(&handle, false)?;
     security.verify(handle.0, SE_FILE_OBJECT)?;
+    #[allow(unsafe_code, reason = "transfer the verified lock-file handle to File")]
+    // SAFETY: The handle is valid and owned; into_raw suppresses its close
+    // so File becomes the sole owner.
+    let file = unsafe { File::from_raw_handle(handle.into_raw()) };
     Ok(SecureFile {
-        file: unsafe { File::from_raw_handle(handle.into_raw()) },
+        file,
         _directories: parents,
     })
 }
